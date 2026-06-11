@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ccfiel/pageden/actions/workflows/ci.yml"><img src="https://github.com/ccfiel/pageden/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/PageDen/pageden/actions/workflows/ci.yml"><img src="https://github.com/PageDen/pageden/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="http://www.typescriptlang.org"><img src="https://img.shields.io/badge/%3C%2F%3E-TypeScript-%230074c1.svg" alt="TypeScript"></a>
   <img src="https://img.shields.io/badge/server-Fastify%20%2B%20Prisma-000000.svg" alt="Fastify + Prisma">
   <img src="https://img.shields.io/badge/web-React%20%2B%20Vite-61dafb.svg" alt="React + Vite">
@@ -36,6 +36,13 @@ packages/
   mcp/              Stdio MCP bridge for Codex, Claude, and other agent clients
   tsconfig/         Shared TypeScript base config
 ```
+
+## Repository Boundary
+
+This repository is the public core app. Keep it useful for self-hosted users and avoid
+hosted-service-only deployment, infrastructure, or operations details. If a feature is useful
+to both self-hosted users and the hosted service, it belongs in the core app here and should
+be controlled through configuration where needed.
 
 ## Core Capabilities
 
