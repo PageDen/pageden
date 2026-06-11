@@ -30,6 +30,10 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Enable Pages (with GitHub Actions as the source) via the API if it
+          # isn't already, so the deploy doesn't depend on a manual settings toggle.
+          enablement: true
 
       - name: Upload landing site artifact
         uses: actions/upload-pages-artifact@v3
