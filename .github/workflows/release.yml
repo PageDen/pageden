@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: Optional release name for manual runs
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pageden/server db:generate
+      - run: pnpm --filter @pageden/server build
+      - run: pnpm --filter @pageden/web build
+      - run: pnpm --filter @pageden/obsidian-plugin build
+      - run: pnpm --filter @pageden/mcp build
+      - name: Package release artifacts
+        env:
+          RELEASE_NAME: ${{ inputs.release_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_NAME:-${GITHUB_REF_NAME:-manual}}"
+          mkdir -p release
+          tar -czf "release/pageden-web-${VERSION}.tar.gz" -C apps/web dist
+          tar -czf "release/pageden-server-${VERSION}.tar.gz" \
+            apps/server/dist \
+            apps/server/package.json \
+            apps/server/prisma \
+            packages/api-types \
+            package.json \
+            pnpm-lock.yaml \
+            pnpm-workspace.yaml
+          tar -czf "release/pageden-obsidian-plugin-${VERSION}.tar.gz" \
+            -C apps/obsidian-plugin main.js manifest.json styles.css README.md
+          tar -czf "release/pageden-mcp-${VERSION}.tar.gz" \
+            packages/mcp/dist \
+            packages/mcp/package.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pageden-release-artifacts
+          path: release/*.tar.gz
+          if-no-files-found: error
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.tar.gz
+          generate_release_notes: true

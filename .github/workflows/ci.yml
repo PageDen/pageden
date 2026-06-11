@@ -4,77 +4,149 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CI: "true"
 
 jobs:
-  build:
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.filter.outputs.config }}
+      server: ${{ steps.filter.outputs.server }}
+      web: ${{ steps.filter.outputs.web }}
+      plugin: ${{ steps.filter.outputs.plugin }}
+      packages: ${{ steps.filter.outputs.packages }}
+      deps: ${{ steps.filter.outputs.deps }}
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            config:
+              - ".github/**"
+              - "eslint.config.mjs"
+              - "tsconfig.base.json"
+              - "pnpm-workspace.yaml"
+            server:
+              - "apps/server/**"
+              - "packages/api-types/**"
+              - "packages/tsconfig/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+            web:
+              - "apps/web/**"
+              - "packages/api-types/**"
+              - "packages/tsconfig/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+            plugin:
+              - "apps/obsidian-plugin/**"
+              - "packages/api-types/**"
+              - "packages/tsconfig/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+            packages:
+              - "packages/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+            deps:
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "**/package.json"
+            code:
+              - "apps/**"
+              - "packages/**"
+              - "scripts/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "tsconfig.base.json"
+              - "eslint.config.mjs"
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: pageden_test
-          POSTGRES_USER: pageden
-          # Passwordless trust auth for the throwaway CI container — no DB credential in the repo.
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U pageden"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+  lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' || needs.changes.outputs.config == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
 
+  typecheck:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' || needs.changes.outputs.config == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pageden/server db:generate
+      - run: pnpm typecheck
+
+  unit:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' || needs.changes.outputs.config == 'true' }}
+    runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://pageden@localhost:5432/pageden_test
       STORAGE_ROOT: ./storage
       WEB_ORIGIN: http://localhost:3000
-
     steps:
       - uses: actions/checkout@v6
-
       - name: Generate ephemeral secrets
         run: |
           echo "SESSION_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           echo "TOKEN_HASH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
-
       - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pageden/server db:generate
+      - run: pnpm test
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Prisma client
-        run: pnpm --filter @pageden/server db:generate
-
-      - name: Apply migrations
-        run: pnpm db:migrate
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Build
-        run: pnpm build
-
-      - name: Unit tests
-        run: pnpm test
-
-      - name: Integration / contract / security tests + coverage gate (real Postgres)
-        run: pnpm --filter @pageden/server test:coverage
-
-  e2e:
+  build:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' || needs.changes.outputs.config == 'true' }}
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pageden/server db:generate
+      - run: pnpm build
 
+  server-integration:
+    needs: changes
+    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.config == 'true' }}
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16
@@ -89,13 +161,49 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+    env:
+      DATABASE_URL: postgresql://pageden@localhost:5432/pageden_test
+      STORAGE_ROOT: ./storage
+      WEB_ORIGIN: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v6
+      - name: Generate ephemeral secrets
+        run: |
+          echo "SESSION_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TOKEN_HASH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pageden/server db:generate
+      - run: pnpm db:migrate
+      - name: Integration / contract / security tests + coverage gate
+        run: pnpm --filter @pageden/server test:coverage
 
+  e2e:
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' || needs.changes.outputs.server == 'true' || needs.changes.outputs.config == 'true' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: pageden_test
+          POSTGRES_USER: pageden
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pageden"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgresql://pageden@localhost:5432/pageden_test
       STORAGE_ROOT: ./.e2e-storage
       BOOTSTRAP_ADMIN_EMAIL: admin@e2e.test
-      CI: "true"
-
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -103,21 +211,14 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+      - run: pnpm install --frozen-lockfile
       - name: Generate ephemeral secrets
         run: |
           echo "SESSION_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           echo "TOKEN_HASH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           echo "BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
-
-      - name: Generate Prisma client
-        run: pnpm --filter @pageden/server db:generate
-
+      - run: pnpm --filter @pageden/server db:generate
       - name: Install Playwright browser
         run: pnpm --filter @pageden/web exec playwright install --with-deps chromium
-
-      - name: End-to-end tests (Playwright)
+      - name: End-to-end tests
         run: pnpm --filter @pageden/web e2e
