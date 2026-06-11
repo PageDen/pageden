@@ -1,0 +1,43 @@
+name: Deploy Landing Page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/landing/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Allow the workflow to publish to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deploy at a time; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload landing site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Static site lives here; the CNAME file in this folder
+          # keeps the pageden.app custom domain.
+          path: apps/landing
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
