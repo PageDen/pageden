@@ -26,21 +26,21 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@fastify/cookie": "^9.3.1",
-    "@fastify/cors": "^9.0.1",
-    "@fastify/rate-limit": "^9.1.0",
-    "@fastify/websocket": "^8.3.1",
+    "@aws-sdk/client-s3": "^3.658.0",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/rate-limit": "^11.0.0",
+    "@fastify/websocket": "^11.2.0",
     "@pageden/api-types": "workspace:*",
     "@prisma/client": "^5.18.0",
     "arctic": "^3.7.0",
     "argon2": "^0.44.0",
-    "fastify": "^4.28.1",
+    "fastify": "^5.8.5",
     "lib0": "^0.2.117",
     "ws": "^8.21.0",
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.31",
-    "zod": "^3.23.8",
-    "@aws-sdk/client-s3": "^3.658.0"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20",

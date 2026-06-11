@@ -27,8 +27,7 @@ const rooms = new Map<string, LiveRoom>();
 export async function registerLiveRoutes(app: FastifyInstance): Promise<void> {
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
 
-  app.get<{ Params: { documentId: string } }>("/api/live/:documentId", { websocket: true }, (connection, request) => {
-    const socket = connection.socket;
+  app.get<{ Params: { documentId: string } }>("/api/live/:documentId", { websocket: true }, (socket, request) => {
     const pending: RawData[] = [];
     let room: LiveRoom | null = null;
     let ready = false;
@@ -38,7 +37,7 @@ export async function registerLiveRoutes(app: FastifyInstance): Promise<void> {
       handleLiveMessage(room, socket, message);
     };
 
-    socket.on("message", (message) => {
+    socket.on("message", (message: RawData) => {
       if (!ready) {
         pending.push(message);
         return;

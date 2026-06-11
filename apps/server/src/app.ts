@@ -19,8 +19,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   // CSRF: validate Origin/Referer for unsafe, cookie-authenticated browser requests.
   app.addHook("onRequest", csrfGuard);
 
-  app.setErrorHandler((error, _request, reply) => {
-    const statusCode = "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;
+  app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+    const statusCode = typeof error.statusCode === "number" ? error.statusCode : 500;
     if (statusCode === 401) {
       return reply.code(401).send({ error: "unauthorized", message: "Authentication required." });
     }
