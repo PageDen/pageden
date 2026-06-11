@@ -116,9 +116,9 @@ Run `pnpm db:generate` after changing `apps/server/prisma/schema.prisma`.
 
 ## Deployment
 
-This public repository is for the open-source app and local/self-host development. Pageden's
-hosted cloud deployment assets and production/staging automation live in the private
-[`PageDen/pageden-cloud`](https://github.com/PageDen/pageden-cloud) repository.
+This public repository is for the open-source app and local/self-host development. For
+self-hosting, build the app with the commands above and run it with your own PostgreSQL
+database, object storage, reverse proxy, and TLS setup.
 
 ## Troubleshooting
 
