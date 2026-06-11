@@ -1,11 +1,11 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowRight, Bot, Building2, ChevronDown, FileText, Home, KeyRound, LogOut, Monitor, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck, Sun, UploadCloud, UserRound, X } from "lucide-react";
 import type { z } from "zod";
 import { searchSchema, treeSchema } from "@pageden/api-types";
 import { api } from "../../lib/api";
-import { meQuery, searchQuery, treeQuery } from "../../lib/queries";
+import { currentWorkspaceQuery, meQuery, searchQuery, treeQuery } from "../../lib/queries";
 import { Input } from "../../components/ui/input";
 import { TreePanel } from "./tree-panel";
 import { CommandPalette } from "./command-palette";
@@ -492,6 +492,7 @@ export function WorkspaceEmptyState() {
   const params = useParams({ strict: false });
   const workspaceId = params.workspaceId ?? "";
   const tree = useQuery(treeQuery(workspaceId));
+  const currentWorkspace = useQuery(currentWorkspaceQuery);
   const [tab, setTab] = useState<HomeTab>("recent");
 
   if (tree.isLoading) {
@@ -503,8 +504,17 @@ export function WorkspaceEmptyState() {
   }
 
   const docs = tree.data?.documents ?? [];
-  const foldersById = new Map((tree.data?.folders ?? []).map((folder) => [folder.id, folder]));
+  const folders = tree.data?.folders ?? [];
+  const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
   const visibleDocs = documentsForHomeTab(docs, tab);
+
+  const isCloud =
+    currentWorkspace.data?.routingMode === "cloud_subdomain" ||
+    currentWorkspace.data?.routingMode === "custom_domain";
+
+  if (isCloud && docs.length === 0 && folders.length === 0) {
+    return <OnboardingView workspaceId={workspaceId} />;
+  }
 
   return (
     <div className="min-h-screen px-8 py-10">
@@ -545,6 +555,86 @@ export function WorkspaceEmptyState() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function OnboardingView({ workspaceId }: { workspaceId: string }) {
+  return (
+    <div className="min-h-screen px-8 py-12">
+      <div className="mx-auto w-full max-w-3xl">
+        <div className="mb-10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-orange-700">Welcome to Pageden</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">Your workspace is ready</h1>
+          <p className="mt-2 text-base text-slate-500">Here are a few ways to get started.</p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <OnboardingCard
+            icon={<FileText size={22} aria-hidden="true" />}
+            title="Write your first document"
+            description="Use the sidebar on the left to create a folder and add your first document. Your team can view and edit it together."
+            action={
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-orange-700">
+                Use the sidebar <ArrowRight size={14} aria-hidden="true" />
+              </span>
+            }
+          />
+
+          <OnboardingCard
+            icon={<UploadCloud size={22} aria-hidden="true" />}
+            title="Bring in your Obsidian notes"
+            description="Already have notes in Obsidian? Import your vault and everything will be searchable and editable right here."
+            action={
+              <Link
+                to="/w/$workspaceId/import"
+                params={{ workspaceId }}
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-orange-700 hover:text-orange-800"
+              >
+                Import vault <ArrowRight size={14} aria-hidden="true" />
+              </Link>
+            }
+          />
+
+          <OnboardingCard
+            icon={<Bot size={22} aria-hidden="true" />}
+            title="Connect your AI assistant"
+            description="Give Claude, Codex, or any AI tool instant access to your workspace. Ask questions, get summaries, and write new content without leaving your AI app."
+            action={
+              <Link
+                to="/w/$workspaceId/agents"
+                params={{ workspaceId }}
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-orange-700 hover:text-orange-800"
+              >
+                Set up AI access <ArrowRight size={14} aria-hidden="true" />
+              </Link>
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingCard({
+  icon,
+  title,
+  description,
+  action,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  action: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
+        {icon}
+      </div>
+      <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+      <p className="mt-1.5 flex-1 text-sm leading-6 text-slate-500">{description}</p>
+      <div className="mt-4">{action}</div>
     </div>
   );
 }
