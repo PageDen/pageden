@@ -35,7 +35,6 @@ packages/
   api-types/        Shared zod schemas + inferred API types
   mcp/              Stdio MCP bridge for Codex, Claude, and other agent clients
   tsconfig/         Shared TypeScript base config
-deploy/             Runnable host/deploy assets used by CI and staging/prod deploys
 ```
 
 ## Core Capabilities
@@ -117,13 +116,9 @@ Run `pnpm db:generate` after changing `apps/server/prisma/schema.prisma`.
 
 ## Deployment
 
-Runnable deploy assets remain in this repo because CI and staging/prod deployment use them:
-
-- [deploy/docker-compose.yml](deploy/docker-compose.yml)
-- [deploy/nginx/edge.conf](deploy/nginx/edge.conf)
-- [deploy/scripts](deploy/scripts)
-- [deploy/env.production.example](deploy/env.production.example)
-- [deploy/env.staging.example](deploy/env.staging.example)
+This public repository is for the open-source app and local/self-host development. Pageden's
+hosted cloud deployment assets and production/staging automation live in the private
+[`PageDen/pageden-cloud`](https://github.com/PageDen/pageden-cloud) repository.
 
 ## Troubleshooting
 
