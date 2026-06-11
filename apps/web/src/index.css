@@ -1,0 +1,337 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+body { @apply bg-slate-50 text-slate-900 antialiased; }
+
+.dark body {
+  @apply bg-slate-950 text-slate-100;
+}
+
+.dark .bg-white {
+  background-color: rgb(15 23 42) !important;
+}
+
+.dark .bg-slate-50,
+.dark .bg-slate-50\/80,
+.dark .bg-slate-100 {
+  background-color: rgb(2 6 23) !important;
+}
+
+.dark .bg-orange-50\/40,
+.dark .bg-orange-50 {
+  background-color: rgb(67 20 7 / 0.35) !important;
+}
+
+.dark .bg-orange-100 {
+  background-color: rgb(67 20 7 / 0.75) !important;
+}
+
+.dark .border-slate-200,
+.dark .border-slate-300 {
+  border-color: rgb(51 65 85) !important;
+}
+
+.dark .text-slate-950,
+.dark .text-slate-900,
+.dark .text-slate-800 {
+  color: rgb(248 250 252) !important;
+}
+
+.dark .text-slate-700,
+.dark .text-slate-600 {
+  color: rgb(203 213 225) !important;
+}
+
+.dark .text-slate-500,
+.dark .text-slate-400 {
+  color: rgb(148 163 184) !important;
+}
+
+.dark .text-slate-300 {
+  color: rgb(100 116 139) !important;
+}
+
+.dark .placeholder\:text-slate-400::placeholder {
+  color: rgb(100 116 139) !important;
+}
+
+.dark input,
+.dark select,
+.dark textarea {
+  background-color: rgb(15 23 42) !important;
+  color: rgb(226 232 240) !important;
+}
+
+.dark input:focus,
+.dark select:focus,
+.dark textarea:focus {
+  border-color: rgb(251 146 60) !important;
+  box-shadow: 0 0 0 2px rgb(251 146 60 / 0.18) !important;
+}
+
+.dark .shadow-sm,
+.dark .shadow-lg,
+.dark .shadow-xl,
+.dark .shadow-2xl {
+  box-shadow: 0 14px 30px rgb(0 0 0 / 0.32) !important;
+}
+
+.dark .hover\:bg-white:hover,
+.dark .hover\:bg-slate-50:hover,
+.dark .hover\:bg-slate-100:hover,
+.dark .hover\:bg-slate-200:hover,
+.dark .group:hover .group-hover\:bg-orange-50\/40 {
+  background-color: rgb(30 41 59) !important;
+}
+
+.dark .hover\:text-slate-950:hover,
+.dark .hover\:text-slate-900:hover,
+.dark .hover\:text-slate-800:hover,
+.dark .hover\:text-slate-700:hover {
+  color: rgb(248 250 252) !important;
+}
+
+.dark .ring-black\/5 {
+  --tw-ring-color: rgb(255 255 255 / 0.08) !important;
+}
+
+.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgb(51 65 85) !important;
+}
+
+.dark a.active {
+  border-color: rgb(71 85 105) !important;
+  background-color: rgb(30 41 59) !important;
+  color: rgb(248 250 252) !important;
+}
+
+.dark a.active:hover {
+  background-color: rgb(51 65 85) !important;
+}
+
+.dark .prose {
+  --tw-prose-body: rgb(226 232 240);
+  --tw-prose-headings: rgb(248 250 252);
+  --tw-prose-lead: rgb(203 213 225);
+  --tw-prose-links: rgb(251 146 60);
+  --tw-prose-bold: rgb(248 250 252);
+  --tw-prose-counters: rgb(148 163 184);
+  --tw-prose-bullets: rgb(100 116 139);
+  --tw-prose-hr: rgb(51 65 85);
+  --tw-prose-quotes: rgb(226 232 240);
+  --tw-prose-quote-borders: rgb(234 88 12);
+  --tw-prose-captions: rgb(148 163 184);
+  --tw-prose-code: rgb(248 250 252);
+  --tw-prose-pre-code: rgb(226 232 240);
+  --tw-prose-pre-bg: rgb(2 6 23);
+  --tw-prose-th-borders: rgb(71 85 105);
+  --tw-prose-td-borders: rgb(51 65 85);
+}
+
+.rich-markdown-editor .ProseMirror {
+  @apply mx-auto min-h-full w-full max-w-[920px] text-[15px] leading-7 text-slate-900 outline-none;
+}
+
+.dark .rich-markdown-editor .ProseMirror {
+  color: rgb(226 232 240);
+}
+
+.rich-markdown-editor .ProseMirror > * + * {
+  @apply mt-3;
+}
+
+.rich-markdown-editor .ProseMirror p {
+  @apply m-0;
+}
+
+.rich-markdown-editor .ProseMirror h1 {
+  @apply mt-7 text-3xl font-semibold leading-tight tracking-tight text-slate-950;
+}
+
+.dark .rich-markdown-editor .ProseMirror h1,
+.dark .rich-markdown-editor .ProseMirror h2,
+.dark .rich-markdown-editor .ProseMirror h3 {
+  color: rgb(248 250 252);
+}
+
+.rich-markdown-editor .ProseMirror h2 {
+  @apply mt-6 text-2xl font-semibold leading-tight tracking-tight text-slate-950;
+}
+
+.rich-markdown-editor .ProseMirror h3 {
+  @apply mt-5 text-xl font-semibold leading-snug text-slate-950;
+}
+
+.rich-markdown-editor .ProseMirror p.is-editor-empty:first-child::before {
+  @apply pointer-events-none float-left h-0 text-slate-400;
+  content: attr(data-placeholder);
+}
+
+.dark .rich-markdown-editor .ProseMirror p.is-editor-empty:first-child::before {
+  color: rgb(100 116 139);
+}
+
+.rich-markdown-editor .ProseMirror ul,
+.rich-markdown-editor .ProseMirror ol {
+  @apply pl-6 leading-7;
+}
+
+.rich-markdown-editor .ProseMirror ul {
+  @apply list-disc;
+}
+
+.rich-markdown-editor .ProseMirror ol {
+  @apply list-decimal;
+}
+
+.rich-markdown-editor .ProseMirror ul[data-type="taskList"] {
+  @apply list-none pl-0;
+}
+
+.rich-markdown-editor .ProseMirror li[data-type="taskItem"] {
+  @apply flex gap-2;
+}
+
+.rich-markdown-editor .ProseMirror li[data-type="taskItem"] > label {
+  @apply mt-1;
+}
+
+.rich-markdown-editor .ProseMirror li[data-type="taskItem"] > div {
+  @apply flex-1;
+}
+
+.rich-markdown-editor .ProseMirror blockquote {
+  @apply rounded-r-md border-l-4 border-orange-200 bg-orange-50/40 py-1 pl-4 pr-3 text-slate-600;
+}
+
+.rich-markdown-editor .ProseMirror code {
+  @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.9em];
+}
+
+.dark .rich-markdown-editor .ProseMirror code {
+  background-color: rgb(30 41 59);
+  color: rgb(248 250 252);
+}
+
+.rich-markdown-editor .ProseMirror pre {
+  @apply overflow-auto rounded-md bg-slate-950 p-4 text-sm leading-6 text-slate-50;
+}
+
+.rich-markdown-editor .ProseMirror pre code {
+  @apply bg-transparent p-0 text-slate-50;
+}
+
+.rich-markdown-editor .ProseMirror a {
+  @apply text-orange-700 underline underline-offset-2;
+}
+
+.dark .rich-markdown-editor .ProseMirror a {
+  color: rgb(251 146 60);
+}
+
+.rich-markdown-editor .ProseMirror img {
+  @apply my-5 max-h-[520px] max-w-full rounded-lg border border-slate-200 shadow-sm;
+}
+
+.dark .rich-markdown-editor .ProseMirror img {
+  border-color: rgb(51 65 85);
+}
+
+.rich-markdown-editor .ProseMirror img.ProseMirror-selectednode {
+  @apply outline outline-2 outline-orange-500 outline-offset-2;
+}
+
+.pd-image-resize-handle {
+  position: absolute;
+  z-index: 25;
+  width: 0.5rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid rgb(148 163 184);
+  border-radius: 9999px;
+  background: white;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.18);
+  cursor: ew-resize;
+  transform: translate(-50%, -50%);
+}
+
+.dark .pd-image-resize-handle {
+  border-color: rgb(71 85 105);
+  background: rgb(15 23 42);
+}
+
+.pd-image-resize-handle:hover,
+.pd-image-resize-handle:focus-visible {
+  border-color: rgb(234 88 12);
+  outline: 2px solid rgb(251 146 60 / 0.24);
+  outline-offset: 2px;
+}
+
+.pd-image-resizing,
+.pd-image-resizing * {
+  cursor: ew-resize !important;
+  user-select: none !important;
+}
+
+.rich-markdown-editor .ProseMirror img[data-align="left"],
+.prose img[data-align="left"] {
+  display: block;
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.rich-markdown-editor .ProseMirror img[data-align="center"],
+.prose img[data-align="center"] {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.rich-markdown-editor .ProseMirror img[data-align="right"],
+.prose img[data-align="right"] {
+  display: block;
+  margin-left: auto;
+  margin-right: 0;
+}
+
+.rich-markdown-editor .ProseMirror table {
+  @apply my-5 w-full table-fixed border-collapse overflow-hidden rounded-md text-left text-sm;
+}
+
+.rich-markdown-editor .ProseMirror th,
+.rich-markdown-editor .ProseMirror td {
+  @apply border border-slate-200 px-3 py-2 align-top;
+}
+
+.rich-markdown-editor .ProseMirror th {
+  @apply bg-slate-50 font-semibold;
+}
+
+.dark .rich-markdown-editor .ProseMirror th {
+  background-color: rgb(15 23 42);
+}
+
+/* Editor media: responsive video + embeds */
+.rich-markdown-editor .pd-video,
+.rich-markdown-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.375rem;
+}
+.rich-markdown-editor .pd-embed {
+  position: relative;
+  width: 100%;
+  max-width: 42rem;
+  aspect-ratio: 16 / 9;
+  margin: 0.5rem 0;
+}
+.rich-markdown-editor .pd-embed iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0.375rem;
+}

@@ -1,0 +1,143 @@
+# Pageden — SINGLE DROPLET running BOTH production (go.pageden.app) and staging
+# (go.pageden.io) to save cost. One edge nginx + one certbot front both stacks.
+#
+# Isolation: prod and staging each get their own Docker network on which their server
+# is aliased "server" (so the unchanged web image's `proxy_pass http://server:4000`
+# resolves to the right backend). They use SEPARATE databases (one managed PG cluster,
+# two DBs) and SEPARATE Spaces buckets — set in .env.production / .env.staging.
+name: pageden
+
+x-logging: &log
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+x-server-health: &server-health
+  test: ["CMD-SHELL", "node -e \"fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+
+services:
+  # ---------------- production ----------------
+  prod-server:
+    build: { context: .., dockerfile: apps/server/Dockerfile }
+    restart: unless-stopped
+    logging: *log
+    env_file: .env.production
+    environment: { NODE_ENV: production, PORT: "4000" }
+    mem_limit: 1g
+    memswap_limit: 1g
+    networks:
+      prodnet: { aliases: ["server"] }
+    healthcheck: *server-health
+
+  prod-web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args: { VITE_WORKSPACE_BASE_DOMAIN: pageden.app }
+    restart: unless-stopped
+    logging: *log
+    mem_limit: 256m
+    memswap_limit: 256m
+    networks: ["prodnet"]
+    depends_on:
+      prod-server: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  # ---------------- staging ----------------
+  staging-server:
+    build: { context: .., dockerfile: apps/server/Dockerfile }
+    restart: unless-stopped
+    logging: *log
+    env_file: .env.staging
+    environment: { NODE_ENV: production, PORT: "4000" }
+    mem_limit: 768m
+    memswap_limit: 768m
+    networks:
+      stagingnet: { aliases: ["server"] }
+    healthcheck: *server-health
+
+  staging-web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args: { VITE_WORKSPACE_BASE_DOMAIN: pageden.io }
+    restart: unless-stopped
+    logging: *log
+    mem_limit: 256m
+    memswap_limit: 256m
+    networks: ["stagingnet"]
+    depends_on:
+      staging-server: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  # ---------------- one-off migration/seed runners (no "server" alias) ----------------
+  # Used by deploy.sh so migrations never add a second `server` endpoint to a live network.
+  prod-migrate:
+    build: { context: .., dockerfile: apps/server/Dockerfile }
+    profiles: ["tools"]
+    logging: *log
+    env_file: .env.production
+    environment: { NODE_ENV: production }
+    networks: ["prodnet"]
+
+  staging-migrate:
+    build: { context: .., dockerfile: apps/server/Dockerfile }
+    profiles: ["tools"]
+    logging: *log
+    env_file: .env.staging
+    environment: { NODE_ENV: production }
+    networks: ["stagingnet"]
+
+  # ---------------- shared edge + certs ----------------
+  edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    logging: *log
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx/edge.conf:/etc/nginx/conf.d/default.conf:ro
+      - certbot_etc:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+      - ./secrets/staging.htpasswd:/etc/nginx/staging.htpasswd:ro
+      - ./secrets/staging-auth-cookie.conf:/etc/nginx/staging-auth-cookie.conf:ro
+    networks: ["prodnet", "stagingnet"]
+    depends_on: ["prod-web", "staging-web"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    command: >-
+      sh -c "while :; do sleep 1h & wait $${!}; nginx -t && nginx -s reload; done & nginx -g 'daemon off;'"
+
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    logging: *log
+    environment:
+      PORKBUN_PROPAGATION_SECONDS: "600"
+    volumes:
+      - certbot_etc:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+      - ./secrets/porkbun.ini:/conf/porkbun.ini:ro
+      - ./scripts/certbot-hooks:/hooks:ro
+    entrypoint: >-
+      sh -c "trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done"
+
+networks:
+  prodnet:
+  stagingnet:
+
+volumes:
+  certbot_etc:
+  certbot_www:

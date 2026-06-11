@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About – Pageden</title>
+  <meta name="description" content="Pageden is an open-source, Markdown-native knowledge base built for teams and AI agents. Learn about our mission." />
+  <link rel="icon" href="https://raw.githubusercontent.com/ccfiel/pageden/main/apps/web/public/favicon.svg" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --orange: #f4510b; --orange-light: #fff7f0;
+      --navy: #0a0f1e; --gray: #6b7280;
+      --gray-light: #f9fafb; --border: #e5e7eb; --text: #374151;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font); color: var(--text); background: #fff; line-height: 1.6; }
+    a { text-decoration: none; color: inherit; }
+    img { display: block; max-width: 100%; }
+    .container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+
+    /* NAV */
+    .nav {
+      position: sticky; top: 0; z-index: 100;
+       
+      background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 0 24px;
+    }
+    .nav-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; height: 60px; }
+    .nav-logo img { height: 36px; width: auto; }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-link { font-size: 14px; font-weight: 500; color: var(--gray); transition: color .15s; }
+    .nav-link:hover { color: var(--navy); }
+    .nav-cta { background: var(--navy); color: #fff; font-size: 14px; font-weight: 600; padding: 8px 18px; border-radius: 8px; }
+
+    /* HERO */
+    .page-hero { padding: 72px 24px 56px; text-align: center; border-bottom: 1px solid var(--border); }
+    .page-tag { display: inline-block; background: var(--orange-light); color: var(--orange); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 4px 12px; border-radius: 20px; margin-bottom: 20px; }
+    .page-hero h1 { font-size: clamp(32px, 4vw, 48px); font-weight: 800; color: var(--navy); line-height: 1.15; margin-bottom: 16px; }
+    .page-hero p { font-size: 18px; color: var(--gray); max-width: 560px; margin: 0 auto; line-height: 1.7; }
+
+    /* CONTENT */
+    .content { padding: 64px 24px; }
+    .content-inner { max-width: 720px; margin: 0 auto; }
+
+    .prose h2 { font-size: 22px; font-weight: 800; color: var(--navy); margin: 48px 0 14px; }
+    .prose h2:first-child { margin-top: 0; }
+    .prose p { font-size: 16px; color: var(--text); line-height: 1.8; margin-bottom: 16px; }
+    .prose p:last-child { margin-bottom: 0; }
+    .prose a { color: var(--orange); font-weight: 500; }
+    .prose a:hover { text-decoration: underline; }
+    .prose strong { color: var(--navy); font-weight: 700; }
+
+    /* VALUES */
+    .values { background: var(--gray-light); border-radius: 16px; padding: 40px; margin: 48px 0; }
+    .values h2 { font-size: 20px; font-weight: 800; color: var(--navy); margin-bottom: 28px; }
+    .value-list { display: flex; flex-direction: column; gap: 24px; }
+    .value-item { display: flex; gap: 16px; }
+    .value-num { width: 28px; height: 28px; border-radius: 50%; background: var(--orange); color: #fff; font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px; }
+    .value-text h3 { font-size: 15px; font-weight: 700; color: var(--navy); margin-bottom: 4px; }
+    .value-text p { font-size: 14px; color: var(--gray); line-height: 1.6; }
+
+    /* TEAM */
+    .team-card { display: flex; align-items: center; gap: 20px; background: #fff; border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin: 48px 0; }
+    .team-avatar { width: 64px; height: 64px; border-radius: 50%; background: linear-gradient(135deg, var(--orange), #ff8c42); display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0; color: #fff; font-weight: 800; }
+    .team-info h3 { font-size: 17px; font-weight: 700; color: var(--navy); margin-bottom: 4px; }
+    .team-info p { font-size: 14px; color: var(--gray); line-height: 1.5; }
+    .team-links { display: flex; gap: 12px; margin-top: 10px; }
+    .team-link { font-size: 13px; color: var(--orange); font-weight: 600; }
+
+    /* OPEN SOURCE CALLOUT */
+    .oss-callout { border: 1.5px solid var(--border); border-radius: 16px; padding: 32px; margin: 48px 0; display: flex; gap: 20px; align-items: flex-start; }
+    .oss-icon { font-size: 32px; flex-shrink: 0; }
+    .oss-text h3 { font-size: 17px; font-weight: 700; color: var(--navy); margin-bottom: 8px; }
+    .oss-text p { font-size: 14px; color: var(--gray); line-height: 1.6; margin-bottom: 14px; }
+    .oss-btn { display: inline-flex; align-items: center; gap: 8px; background: var(--navy); color: #fff; font-size: 13px; font-weight: 700; padding: 8px 16px; border-radius: 8px; }
+
+    /* CTA */
+    .about-cta { background: var(--navy); border-radius: 16px; padding: 48px 40px; text-align: center; margin: 48px 0 0; }
+    .about-cta h2 { font-size: 24px; font-weight: 800; color: #fff; margin-bottom: 10px; }
+    .about-cta p { font-size: 15px; color: #9ca3af; margin-bottom: 28px; }
+    .about-cta-btns { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+    .btn-white { background: #fff; color: var(--navy); font-size: 14px; font-weight: 700; padding: 10px 22px; border-radius: 8px; }
+    .btn-ghost { background: transparent; color: #9ca3af; border: 1.5px solid #374151; font-size: 14px; font-weight: 600; padding: 10px 22px; border-radius: 8px; }
+
+    /* FOOTER */
+    .footer { background: #060b16; padding: 40px 24px 28px; margin-top: 80px; }
+    .footer-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+    .footer-logo img { height: 28px; }
+    .footer-copy { font-size: 13px; color: #4b5563; }
+    .footer-links { display: flex; gap: 20px; }
+    .footer-links a { font-size: 13px; color: #4b5563; }
+    .footer-links a:hover { color: #6b7280; }
+
+    @media (max-width: 600px) {
+      .nav-links { display: none; }
+      .team-card { flex-direction: column; }
+      .oss-callout { flex-direction: column; }
+      .values { padding: 28px 20px; }
+      .about-cta { padding: 32px 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-logo">
+      <img src="/logo-nav-transparent.png" alt="Pageden" />
+    </a>
+    <div class="nav-links">
+      <a href="/#features" class="nav-link">Features</a>
+      <a href="/#how-it-works" class="nav-link">How it works</a>
+      <a href="https://github.com/ccfiel/pageden" class="nav-link" target="_blank">GitHub</a>
+      <a href="https://go.pageden.app/register" class="nav-cta">Get started free</a>
+    </div>
+  </div>
+</nav>
+
+<div class="page-hero">
+  <div class="page-tag">About</div>
+  <h1>We're building the knowledge layer<br />for humans and AI.</h1>
+  <p>Pageden started as a personal project to make team knowledge actually useful — not just searchable, but trustworthy, permissioned, and ready for the age of AI agents.</p>
+</div>
+
+<div class="content">
+  <div class="content-inner prose">
+
+    <h2>The problem we're solving</h2>
+    <p>Most teams store knowledge in three places: Slack threads nobody can find, Google Docs nobody keeps updated, and someone's head. When a new teammate joins — or an AI agent needs context — neither works.</p>
+    <p>We built Pageden to be the <strong>one canonical place</strong> where your team's knowledge lives: version-safe, permissioned, always up to date. Human-written. Agent-readable.</p>
+
+    <h2>Why Markdown, why Obsidian</h2>
+    <p>Markdown is the only format that's simultaneously great for humans to write, easy for developers to version-control, and trivial for AI agents to consume. We built Pageden to be Markdown-native from day one — no proprietary formats, no lock-in.</p>
+    <p>Obsidian has proven that people <em>love</em> writing in local Markdown vaults. We took that model and made it collaborative: your Obsidian vault syncs directly to Pageden, turning a personal tool into a team's shared source of truth.</p>
+
+    <h2>Why agents change everything</h2>
+    <p>AI agents like Claude, Codex, and others are only as good as the context they have access to. Today most teams give agents ad-hoc, unpermissioned access to everything — or nothing at all. That's not safe, and it's not useful.</p>
+    <p>Pageden's built-in MCP server gives agents structured, permissioned access to your knowledge base. You decide what they can read and write. Agents get reliable context. Your team stays in control.</p>
+
+  </div>
+
+  <div class="values">
+    <h2>What we believe</h2>
+    <div class="value-list">
+      <div class="value-item">
+        <div class="value-num">1</div>
+        <div class="value-text">
+          <h3>Knowledge should have one home</h3>
+          <p>Scattered docs create scattered thinking. One canonical source of truth — version-controlled, permissioned, always current — is worth more than a dozen half-updated wikis.</p>
+        </div>
+      </div>
+      <div class="value-item">
+        <div class="value-num">2</div>
+        <div class="value-text">
+          <h3>Open standards over vendor lock-in</h3>
+          <p>Markdown, Git, MCP. We build on open standards so your knowledge is always yours — readable, portable, and not trapped in a proprietary format.</p>
+        </div>
+      </div>
+      <div class="value-item">
+        <div class="value-num">3</div>
+        <div class="value-text">
+          <h3>Agents need trustworthy context</h3>
+          <p>AI is only as good as what it knows. We believe giving agents structured, permissioned access to verified knowledge is more valuable than giving them unrestricted access to everything.</p>
+        </div>
+      </div>
+      <div class="value-item">
+        <div class="value-num">4</div>
+        <div class="value-text">
+          <h3>Open source builds trust</h3>
+          <p>If your team's knowledge is in it, you should be able to audit it, self-host it, and own it completely. Pageden is open source and always will be.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="content-inner prose">
+    <h2>Who's building this</h2>
+  </div>
+
+  <div class="team-card">
+    <div class="team-avatar">C</div>
+    <div class="team-info">
+      <h3>Chris Fiel</h3>
+      <p>Building Pageden as an open-source project. Full-stack developer passionate about developer tools, knowledge management, and the intersection of human and AI collaboration.</p>
+      <div class="team-links">
+        <a href="https://github.com/ccfiel" class="team-link" target="_blank">GitHub →</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="oss-callout">
+    <div class="oss-icon">🌐</div>
+    <div class="oss-text">
+      <h3>Pageden is fully open source</h3>
+      <p>The entire codebase is on GitHub under the MIT license. Self-host it, fork it, contribute to it — or just kick the tires. We build in public and welcome contributions from anyone who believes in the mission.</p>
+      <a href="https://github.com/ccfiel/pageden" class="oss-btn" target="_blank">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+  </div>
+
+  <div class="about-cta">
+    <h2>Try Pageden today</h2>
+    <p>Free to start. Syncs with Obsidian. Connects to Claude, Codex, and any MCP agent.</p>
+    <div class="about-cta-btns">
+      <a href="https://go.pageden.app/register" class="btn-white">Get started free →</a>
+      <a href="/" class="btn-ghost">Back to home</a>
+    </div>
+  </div>
+
+</div>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <img src="https://raw.githubusercontent.com/ccfiel/pageden/main/apps/web/public/logo-footer.png" alt="Pageden" style="height:28px;" />
+    <p class="footer-copy">© 2026 Pageden. Open source under MIT.</p>
+    <div class="footer-links">
+      <a href="https://github.com/ccfiel/pageden" target="_blank">GitHub</a>
+      <a href="/about.html">About</a>
+      <a href="/privacy.html">Privacy</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

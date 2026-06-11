@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pageden}
+      POSTGRES_USER: ${POSTGRES_USER:-pageden}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pageden_dev_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pageden}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: "4000"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pageden}:${POSTGRES_PASSWORD:-pageden_dev_password}@postgres:5432/${POSTGRES_DB:-pageden}
+      SESSION_SECRET: ${SESSION_SECRET:-replace-in-development-session-secret-32-plus-chars}
+      TOKEN_HASH_SECRET: ${TOKEN_HASH_SECRET:-replace-in-development-token-secret-32-plus-chars}
+      STORAGE_ROOT: /data/storage
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      CLOUD_HOSTED: ${CLOUD_HOSTED:-false}
+      BASE_DOMAIN: ${BASE_DOMAIN:-pageden.com}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-change-me}
+    volumes:
+      - pageden_storage:/data/storage
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      # Vite exposes only VITE_-prefixed vars to the browser bundle.
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4000/api}
+    ports:
+      - "3000:3000"
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pageden_storage:

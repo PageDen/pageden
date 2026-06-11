@@ -1,0 +1,32 @@
+{
+  "name": "pageden",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pageden \u2014 a shared Markdown vault for teams, editable from Obsidian.",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "db:generate": "pnpm --filter @pageden/server db:generate",
+    "db:migrate": "pnpm --filter @pageden/server db:migrate",
+    "db:migrate:dev": "pnpm --filter @pageden/server db:migrate:dev",
+    "db:seed": "pnpm --filter @pageden/server db:seed",
+    "test:integration": "pnpm --filter @pageden/server test:integration",
+    "test:report": "node scripts/test-coverage.mjs",
+    "test:all": "bash scripts/test-all.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "dotenv-cli": "^11.0.0",
+    "eslint": "^10.4.1",
+    "globals": "^17.6.0",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.60.1"
+  }
+}

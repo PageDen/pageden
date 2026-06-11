@@ -1,0 +1,61 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to deploy (must have already passed staging QA)"
+        required: true
+        type: string
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Validate SHA format
+        run: |
+          if ! echo "${{ github.event.inputs.sha }}" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::SHA must be a full 40-character commit hash"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.PAGEDEN_DEPLOY_SSH_KEY }}" > ~/.ssh/pageden_deploy
+          chmod 600 ~/.ssh/pageden_deploy
+          printf '%s\n' "${{ secrets.PAGEDEN_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Deploy production
+        env:
+          SHA: ${{ github.event.inputs.sha }}
+        run: |
+          ssh -i ~/.ssh/pageden_deploy root@go.pageden.io "set -euo pipefail
+            cd /opt/pageden
+            git fetch origin $SHA
+            git switch --detach $SHA
+            cd deploy
+            docker compose build prod-web prod-server prod-migrate
+            docker compose run --rm prod-migrate pnpm --filter @pageden/server db:migrate:deploy
+            docker compose up -d --force-recreate prod-web prod-server
+            docker image prune -f
+            echo 'Deployed $SHA to production'
+          "
+
+      - name: Verify production health
+        run: |
+          ssh -i ~/.ssh/pageden_deploy root@go.pageden.io \
+            "docker exec pageden-prod-server-1 node -e \
+              \"fetch('http://localhost:4000/api/health').then(r=>r.json()).then(d=>{if(d.status!=='ok'){console.error(d);process.exit(1)}else{console.log('healthy')}}).catch(e=>{console.error(e);process.exit(1)})\""
+
+      - name: Write deployment summary
+        run: |
+          echo "### Production deployed :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.event.inputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** https://go.pageden.app" >> $GITHUB_STEP_SUMMARY

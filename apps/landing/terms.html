@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terms of Service – Pageden</title>
+  <meta name="description" content="Pageden's terms of service — the rules for using our platform." />
+  <link rel="icon" href="https://raw.githubusercontent.com/ccfiel/pageden/main/apps/web/public/favicon.svg" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --orange: #f4510b; --orange-light: #fff7f0;
+      --navy: #0a0f1e; --gray: #6b7280;
+      --gray-light: #f9fafb; --border: #e5e7eb; --text: #374151;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font); color: var(--text); background: #fff; line-height: 1.6; }
+    a { text-decoration: none; color: inherit; }
+    img { display: block; max-width: 100%; }
+
+    .nav {
+      position: sticky; top: 0; z-index: 100;
+       
+      background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 0 24px;
+    }
+    .nav-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; height: 60px; }
+    .nav-logo img { height: 36px; width: auto; }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-link { font-size: 14px; font-weight: 500; color: var(--gray); }
+    .nav-link:hover { color: var(--navy); }
+    .nav-cta { background: var(--navy); color: #fff; font-size: 14px; font-weight: 600; padding: 8px 18px; border-radius: 8px; }
+
+    .page-hero { padding: 72px 24px 56px; text-align: center; border-bottom: 1px solid var(--border); }
+    .page-tag { display: inline-block; background: var(--orange-light); color: var(--orange); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 4px 12px; border-radius: 20px; margin-bottom: 20px; }
+    .page-hero h1 { font-size: clamp(28px, 3.5vw, 42px); font-weight: 800; color: var(--navy); line-height: 1.2; margin-bottom: 12px; }
+    .page-hero .updated { font-size: 14px; color: var(--gray); }
+
+    .content { padding: 64px 24px 80px; }
+    .prose { max-width: 720px; margin: 0 auto; }
+    .prose h2 { font-size: 20px; font-weight: 800; color: var(--navy); margin: 40px 0 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .prose h2:first-child { border-top: none; margin-top: 0; }
+    .prose p { font-size: 15px; color: var(--text); line-height: 1.8; margin-bottom: 14px; }
+    .prose p:last-child { margin-bottom: 0; }
+    .prose ul { padding-left: 20px; margin-bottom: 14px; }
+    .prose li { font-size: 15px; color: var(--text); line-height: 1.8; margin-bottom: 6px; list-style: disc; }
+    .prose a { color: var(--orange); font-weight: 500; }
+    .prose strong { color: var(--navy); font-weight: 700; }
+
+    .toc { background: var(--gray-light); border-radius: 12px; padding: 24px 28px; margin-bottom: 40px; }
+    .toc h3 { font-size: 13px; font-weight: 700; color: var(--gray); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 12px; }
+    .toc ol { padding-left: 18px; }
+    .toc li { font-size: 14px; margin-bottom: 6px; }
+    .toc a { color: var(--navy); font-weight: 500; }
+    .toc a:hover { color: var(--orange); }
+
+    .footer { background: #060b16; padding: 40px 24px 28px; }
+    .footer-inner { max-width: 1080px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+    .footer-copy { font-size: 13px; color: #4b5563; }
+    .footer-links { display: flex; gap: 20px; }
+    .footer-links a { font-size: 13px; color: #4b5563; }
+
+    @media (max-width: 600px) { .nav-links { display: none; } }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-logo">
+      <img src="/logo-nav-transparent.png" alt="Pageden" />
+    </a>
+    <div class="nav-links">
+      <a href="/#features" class="nav-link">Features</a>
+      <a href="/about.html" class="nav-link">About</a>
+      <a href="https://github.com/ccfiel/pageden" class="nav-link" target="_blank">GitHub</a>
+      <a href="https://go.pageden.app/register" class="nav-cta">Get started free</a>
+    </div>
+  </div>
+</nav>
+
+<div class="page-hero">
+  <div class="page-tag">Legal</div>
+  <h1>Terms of Service</h1>
+  <p class="updated">Last updated: June 10, 2026</p>
+</div>
+
+<div class="content">
+  <div class="prose">
+
+    <div class="toc">
+      <h3>Contents</h3>
+      <ol>
+        <li><a href="#acceptance">Acceptance of terms</a></li>
+        <li><a href="#service">The service</a></li>
+        <li><a href="#accounts">Accounts</a></li>
+        <li><a href="#content">Your content</a></li>
+        <li><a href="#acceptable-use">Acceptable use</a></li>
+        <li><a href="#open-source">Open-source license</a></li>
+        <li><a href="#disclaimer">Disclaimer of warranties</a></li>
+        <li><a href="#limitation">Limitation of liability</a></li>
+        <li><a href="#termination">Termination</a></li>
+        <li><a href="#changes">Changes to these terms</a></li>
+        <li><a href="#contact">Contact</a></li>
+      </ol>
+    </div>
+
+    <p>These Terms of Service ("Terms") govern your access to and use of Pageden's hosted service at <a href="https://pageden.app">pageden.app</a> ("Service"), operated by Pageden ("we", "us"). By using the Service you agree to these Terms.</p>
+
+    <h2 id="acceptance">1. Acceptance of terms</h2>
+    <p>By creating an account or using the Service, you confirm that you are at least 16 years old and have the authority to enter into these Terms. If you use the Service on behalf of an organization, you agree to these Terms on behalf of that organization.</p>
+
+    <h2 id="service">2. The service</h2>
+    <p>Pageden provides a collaborative Markdown knowledge base with Obsidian sync, access controls, and an MCP server for AI agent integration. We reserve the right to modify, suspend, or discontinue any part of the Service at any time with reasonable notice.</p>
+
+    <h2 id="accounts">3. Accounts</h2>
+    <p>You are responsible for maintaining the security of your account credentials. Notify us immediately at <a href="mailto:security@pageden.io">security@pageden.io</a> if you suspect unauthorized access. We are not liable for losses caused by unauthorized use of your account.</p>
+
+    <h2 id="content">4. Your content</h2>
+    <p><strong>You own your content.</strong> Documents and files you create in Pageden remain yours. You grant us a limited license to store, display, and transmit your content solely as needed to provide the Service.</p>
+    <p><strong>Responsibility.</strong> You are responsible for all content you create, upload, or share. You must have the rights to any content you upload.</p>
+    <p><strong>Backups.</strong> While we perform regular backups, you are responsible for maintaining your own copies of critical content.</p>
+
+    <h2 id="acceptable-use">5. Acceptable use</h2>
+    <p>You agree not to use the Service to:</p>
+    <ul>
+      <li>Upload or distribute malicious code, malware, or harmful content</li>
+      <li>Violate any applicable law or third-party rights</li>
+      <li>Infringe on intellectual property rights</li>
+      <li>Attempt to gain unauthorized access to the Service or other users' accounts</li>
+      <li>Use the Service to send spam or unsolicited communications</li>
+      <li>Scrape or systematically extract data without permission</li>
+    </ul>
+    <p>We may suspend or terminate accounts that violate these restrictions.</p>
+
+    <h2 id="open-source">6. Open-source license</h2>
+    <p>Pageden's source code is available on <a href="https://github.com/ccfiel/pageden" target="_blank">GitHub</a> under the MIT License. Self-hosted deployments are governed by that license. These Terms apply only to the hosted Service at pageden.app.</p>
+
+    <h2 id="disclaimer">7. Disclaimer of warranties</h2>
+    <p>The Service is provided <strong>"as is"</strong> and <strong>"as available"</strong> without warranties of any kind, express or implied, including merchantability, fitness for a particular purpose, or non-infringement. We do not warrant that the Service will be uninterrupted, error-free, or free of viruses.</p>
+
+    <h2 id="limitation">8. Limitation of liability</h2>
+    <p>To the fullest extent permitted by law, Pageden's total liability to you for any claims arising from these Terms or the Service is limited to the greater of (a) the amount you paid us in the 12 months before the claim, or (b) $100 USD. We are not liable for indirect, incidental, punitive, or consequential damages.</p>
+
+    <h2 id="termination">9. Termination</h2>
+    <p>You may stop using the Service and delete your account at any time. We may suspend or terminate your access if you violate these Terms, with or without notice depending on severity. Upon termination, your content will be deleted within 30 days.</p>
+
+    <h2 id="changes">10. Changes to these terms</h2>
+    <p>We may update these Terms from time to time. We will notify you of material changes by email or by posting a notice in the app at least 14 days before they take effect. Continued use of the Service after changes take effect constitutes acceptance of the new Terms.</p>
+
+    <h2 id="contact">11. Contact</h2>
+    <p>Questions about these Terms? Email us at <a href="mailto:legal@pageden.io">legal@pageden.io</a>.</p>
+
+  </div>
+</div>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <img src="https://raw.githubusercontent.com/ccfiel/pageden/main/apps/web/public/logo-footer.png" alt="Pageden" style="height:28px;" />
+    <p class="footer-copy">© 2026 Pageden. Open source under MIT.</p>
+    <div class="footer-links">
+      <a href="https://github.com/ccfiel/pageden" target="_blank">GitHub</a>
+      <a href="/about.html">About</a>
+      <a href="/privacy.html">Privacy</a>
+      <a href="/terms.html">Terms</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

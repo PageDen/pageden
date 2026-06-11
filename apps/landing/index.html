@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pageden – One source of truth for people and AI</title>
+  <meta name="description" content="A shared Markdown knowledge base your team can edit, sync from Obsidian, and connect to AI agents like Claude and Codex." />
+  <meta property="og:title" content="Pageden – One source of truth for people and AI" />
+  <meta property="og:description" content="A blazing fast, open-source knowledge base for your team." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://pageden.app" />
+  <link rel="icon" href="https://raw.githubusercontent.com/ccfiel/pageden/main/apps/web/public/favicon.svg" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --orange: #f4510b;
+      --orange-light: #fff7f0;
+      --navy: #0a0f1e;
+      --navy-mid: #1a2235;
+      --gray: #6b7280;
+      --gray-light: #f9fafb;
+      --border: #e5e7eb;
+      --text: #374151;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font); color: var(--text); background: #fff; line-height: 1.6; }
+    a { text-decoration: none; color: inherit; }
+    ul { list-style: none; }
+    img { display: block; max-width: 100%; }
+
+    .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+    /* ── NAV ── */
+    .nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(255,255,255,0.92); backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+    }
+    .nav-inner {
+      max-width: 1080px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }
+    .nav-logo img { height: 36px; width: auto; }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-link { font-size: 14px; font-weight: 500; color: var(--gray); transition: color .15s; }
+    .nav-link:hover { color: var(--navy); }
+    .nav-cta {
+      background: var(--navy); color: #fff;
+      font-size: 14px; font-weight: 600; padding: 8px 18px;
+      border-radius: 8px; transition: background .15s;
+    }
+    .nav-cta:hover { background: #1a2235; }
+
+    /* ── HERO ── */
+    .hero {
+      background: linear-gradient(160deg, #fff 0%, #f8f9ff 60%, #fff7f0 100%);
+      padding: 96px 24px 80px;
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--orange-light); color: var(--orange);
+      font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+      padding: 6px 14px; border-radius: 20px; margin-bottom: 28px;
+    }
+    .badge-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--orange); animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .hero h1 {
+      font-size: clamp(36px, 5vw, 60px); font-weight: 800;
+      color: var(--navy); line-height: 1.1; letter-spacing: -.02em;
+      max-width: 800px; margin: 0 auto 20px;
+    }
+    .hero h1 span { color: var(--orange); }
+    .hero-sub {
+      font-size: clamp(16px, 2vw, 20px); color: var(--gray);
+      max-width: 560px; margin: 0 auto 36px; line-height: 1.6;
+    }
+    .hero-actions { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+    .btn-primary {
+      background: var(--orange); color: #fff;
+      font-size: 16px; font-weight: 700; padding: 14px 28px;
+      border-radius: 10px; transition: background .15s, transform .15s; display: inline-flex; align-items: center; gap: 8px;
+    }
+    .btn-primary:hover { background: #e04008; transform: translateY(-1px); }
+    .btn-outline {
+      background: #fff; color: var(--navy); border: 1.5px solid var(--border);
+      font-size: 16px; font-weight: 600; padding: 14px 28px;
+      border-radius: 10px; transition: border-color .15s, transform .15s; display: inline-flex; align-items: center; gap: 8px;
+    }
+    .btn-outline:hover { border-color: var(--navy); transform: translateY(-1px); }
+    .hero-trust {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      margin-top: 16px; flex-wrap: wrap;
+    }
+    .trust-item { font-size: 13px; color: #9ca3af; }
+    .trust-sep { font-size: 13px; color: #d1d5db; }
+
+    /* ── MOCKUP ── */
+    .mockup-wrap { padding: 0 24px 80px; }
+    .mockup-inner { max-width: 900px; margin: 0 auto; }
+    .browser {
+      background: #fff; border-radius: 12px;
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 60px rgba(0,0,0,.1), 0 4px 12px rgba(0,0,0,.06);
+      overflow: hidden;
+    }
+    .browser-bar {
+      display: flex; align-items: center; gap: 12px;
+      background: #f3f4f6; padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .browser-dots { display: flex; gap: 6px; }
+    .browser-dots span {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .browser-dots span:nth-child(1) { background: #ef4444; }
+    .browser-dots span:nth-child(2) { background: #f59e0b; }
+    .browser-dots span:nth-child(3) { background: #22c55e; }
+    .browser-url {
+      flex: 1; background: #fff; border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 12px;
+      font-size: 12px; color: var(--gray); text-align: center;
+    }
+    .browser-body { display: flex; height: 440px; }
+    .app-sidebar {
+      width: 220px; flex-shrink: 0;
+      background: #fafafa; border-right: 1px solid var(--border);
+      padding: 16px 12px; overflow: hidden;
+    }
+    .sidebar-label {
+      font-size: 10px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: #9ca3af; padding: 0 8px; margin-bottom: 8px;
+    }
+    .sidebar-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: 6px;
+      font-size: 13px; color: #374151; cursor: default;
+    }
+    .sidebar-item.active { background: var(--orange-light); color: var(--orange); font-weight: 600; }
+    .sidebar-item.l2 { padding-left: 24px; color: var(--gray); font-size: 12px; }
+    .sidebar-section { margin-top: 16px; }
+    .app-editor { flex: 1; padding: 32px 40px; overflow: hidden; }
+    .editor-h1 { font-size: 22px; font-weight: 800; color: var(--navy); margin-bottom: 6px; }
+    .editor-meta { font-size: 12px; color: #9ca3af; margin-bottom: 24px; }
+    .editor-line {
+      height: 10px; background: #e5e7eb; border-radius: 4px; margin-bottom: 12px;
+    }
+    .editor-line.short { width: 55%; }
+    .editor-line.med { width: 75%; }
+    .editor-callout {
+      background: var(--orange-light); border-left: 3px solid var(--orange);
+      border-radius: 6px; padding: 12px 16px; margin: 20px 0;
+      font-size: 13px; color: #92400e;
+    }
+    .editor-image-ph {
+      height: 80px; background: linear-gradient(135deg, #f3f4f6, #e5e7eb);
+      border-radius: 8px; margin: 16px 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+    }
+
+    /* ── SOCIAL PROOF ── */
+    .social {
+      background: var(--navy); padding: 36px 24px;
+    }
+    .social-inner {
+      max-width: 800px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      gap: 48px; flex-wrap: wrap;
+    }
+    .social-item { text-align: center; }
+    .social-num { font-size: 28px; font-weight: 800; color: #fff; }
+    .social-label { font-size: 13px; color: #6b7280; margin-top: 2px; }
+    .social-sep { width: 1px; height: 40px; background: #ffffff20; }
+
+    /* ── INTEGRATIONS ── */
+    .integrations { background: var(--gray-light); padding: 40px 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .integrations-label {
+      font-size: 12px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: #9ca3af;
+      text-align: center; margin-bottom: 28px;
+    }
+    .integrations-logos {
+      display: flex; align-items: center; justify-content: center;
+      gap: 36px; flex-wrap: wrap;
+    }
+    .int-logo {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 14px; font-weight: 600; color: #6b7280;
+      opacity: .7; transition: opacity .2s;
+    }
+    .int-logo:hover { opacity: 1; }
+
+    /* ── FEATURES ── */
+    .features { padding: 96px 24px; }
+    .section-tag {
+      display: inline-block; background: var(--orange-light); color: var(--orange);
+      font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      padding: 4px 12px; border-radius: 20px; margin-bottom: 16px;
+    }
+    .section-h2 { font-size: clamp(28px, 3.5vw, 40px); font-weight: 800; color: var(--navy); margin-bottom: 12px; line-height: 1.15; }
+    .section-sub { font-size: 17px; color: var(--gray); max-width: 540px; }
+    .features-header { text-align: center; margin-bottom: 56px; }
+    .features-header .section-sub { margin: 0 auto; }
+    .features-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+    }
+    .feature-card {
+      background: var(--gray-light); border: 1px solid var(--border);
+      border-radius: 16px; padding: 28px;
+      transition: box-shadow .2s, border-color .2s;
+    }
+    .feature-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,.07); border-color: var(--orange); }
+    .feature-icon { font-size: 28px; margin-bottom: 14px; }
+    .feature-name { font-size: 16px; font-weight: 700; color: var(--navy); margin-bottom: 8px; }
+    .feature-desc { font-size: 14px; color: var(--gray); line-height: 1.6; }
+
+    /* ── SHOWCASE ── */
+    .showcase { padding: 80px 24px; background: #fff; }
+    .showcase-inner { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 88px; }
+    .showcase-row {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center;
+    }
+    .showcase-row.flip .showcase-text { order: 2; }
+    .showcase-row.flip .showcase-visual { order: 1; }
+    .showcase-tag {
+      display: inline-block; background: var(--orange-light); color: var(--orange);
+      font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      padding: 4px 10px; border-radius: 20px; margin-bottom: 16px;
+    }
+    .showcase-h3 { font-size: 28px; font-weight: 800; color: var(--navy); line-height: 1.2; margin-bottom: 14px; }
+    .showcase-p { font-size: 16px; color: var(--gray); line-height: 1.7; margin-bottom: 20px; }
+    .showcase-list { display: flex; flex-direction: column; gap: 10px; }
+    .showcase-list li { font-size: 15px; color: var(--text); padding-left: 20px; position: relative; }
+    .showcase-list li::before { content: '✓'; position: absolute; left: 0; color: var(--orange); font-weight: 700; }
+    .showcase-visual {
+      background: var(--gray-light); border-radius: 16px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 24px rgba(0,0,0,.06); overflow: hidden;
+    }
+
+    /* Mockup: Editor */
+    .mock-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: #fff; border-bottom: 1px solid var(--border);
+    }
+    .mock-crumb { font-size: 11px; color: #9ca3af; }
+    .mock-btns { display: flex; gap: 6px; }
+    .mock-btn { font-size: 10px; padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border); color: var(--text); }
+    .mock-btn.primary { background: var(--orange); color: #fff; border-color: var(--orange); }
+    .mock-body { padding: 20px; }
+    .mock-h { font-size: 16px; font-weight: 700; color: var(--navy); margin-bottom: 4px; }
+    .mock-meta { font-size: 10px; color: #9ca3af; margin-bottom: 16px; }
+    .mock-line { height: 8px; background: #e5e7eb; border-radius: 3px; margin-bottom: 8px; }
+    .mock-slash { font-size: 12px; color: #9ca3af; background: #f9fafb; border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; margin: 12px 0; }
+
+    /* Mockup: Search */
+    .mock-search { padding: 16px; }
+    .mock-search-bar {
+      display: flex; align-items: center; gap: 8px;
+      background: #fff; border: 1.5px solid #6366f1; border-radius: 10px; padding: 9px 12px; margin-bottom: 10px;
+    }
+    .mock-search-text { font-size: 12px; color: var(--text); }
+    .mock-result { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 7px; }
+    .mock-result.ai { background: linear-gradient(135deg, #fdf4ff, #f0f4ff); border-color: #e9d5ff; }
+    .mock-ai-label { font-size: 10px; font-weight: 700; color: #7c3aed; margin-bottom: 4px; }
+    .mock-ai-text { font-size: 11px; color: var(--text); line-height: 1.5; }
+    .mock-doc { display: flex; align-items: center; gap: 8px; }
+    .mock-doc-icon { font-size: 14px; }
+    .mock-doc-title { font-size: 12px; font-weight: 600; color: var(--navy); }
+    .mock-doc-sub { font-size: 10px; color: #9ca3af; }
+
+    /* Mockup: Tree */
+    .mock-tree { padding: 14px; }
+    .mock-tree-item { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px; font-size: 12px; color: var(--text); }
+    .mock-tree-item.root { font-weight: 700; color: var(--navy); }
+    .mock-tree-item.l1 { padding-left: 14px; font-weight: 500; }
+    .mock-tree-item.l2 { padding-left: 28px; color: var(--gray); }
+    .mock-tree-item.active { background: var(--orange-light); color: var(--orange); font-weight: 600; }
+
+    /* ── BENTO GRID ── */
+    .bento-section { background: var(--gray-light); padding: 80px 24px; border-top: 1px solid var(--border); }
+    .bento-header { text-align: center; margin-bottom: 48px; }
+    .bento-header .section-sub { margin: 12px auto 0; }
+    .bento-grid { max-width: 1000px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .bento-card {
+      background: #fff; border: 1px solid var(--border);
+      border-radius: 16px; padding: 24px;
+      transition: box-shadow .2s, border-color .2s;
+    }
+    .bento-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,.08); border-color: var(--orange); }
+    .bento-icon { font-size: 26px; margin-bottom: 12px; }
+    .bento-name { font-size: 15px; font-weight: 700; color: var(--navy); margin-bottom: 6px; }
+    .bento-desc { font-size: 13px; color: var(--gray); line-height: 1.6; }
+
+    /* ── HOW IT WORKS ── */
+    .how { padding: 96px 24px; }
+    .how-header { text-align: center; margin-bottom: 64px; }
+    .how-header .section-sub { margin: 12px auto 0; }
+    .how-steps { max-width: 900px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+    .how-step { text-align: center; }
+    .how-num {
+      width: 48px; height: 48px; border-radius: 50%;
+      background: var(--orange); color: #fff;
+      font-size: 18px; font-weight: 800;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 20px;
+    }
+    .how-step-title { font-size: 18px; font-weight: 700; color: var(--navy); margin-bottom: 10px; }
+    .how-step-desc { font-size: 15px; color: var(--gray); line-height: 1.65; }
+    .how-connector {
+      display: flex; align-items: flex-start; justify-content: center;
+      padding-top: 24px;
+    }
+
+    /* ── CTA BANNER ── */
+    .cta-section {
+      background: var(--navy); padding: 80px 24px; text-align: center;
+    }
+    .cta-section h2 { font-size: clamp(28px, 3vw, 40px); font-weight: 800; color: #fff; margin-bottom: 12px; }
+    .cta-section p { font-size: 17px; color: #9ca3af; margin-bottom: 36px; }
+    .cta-buttons { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+    .btn-white {
+      background: #fff; color: var(--navy);
+      font-size: 16px; font-weight: 700; padding: 14px 28px;
+      border-radius: 10px; transition: background .15s, transform .15s;
+    }
+    .btn-white:hover { background: #f3f4f6; transform: translateY(-1px); }
+    .btn-ghost {
+      background: transparent; color: #9ca3af; border: 1.5px solid #374151;
+      font-size: 16px; font-weight: 600; padding: 14px 28px;
+      border-radius: 10px; transition: border-color .15s, color .15s;
+    }
+    .btn-ghost:hover { border-color: #6b7280; color: #d1d5db; }
+
+    /* ── FOOTER ── */
+    .footer { background: #060b16; padding: 56px 24px 32px; }
+    .footer-inner { max-width: 1080px; margin: 0 auto; }
+    .footer-top {
+      display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 48px;
+      padding-bottom: 48px; border-bottom: 1px solid #1e2a3a;
+    }
+    .footer-brand p { font-size: 14px; color: #6b7280; margin-top: 14px; line-height: 1.6; max-width: 260px; }
+    .footer-col h4 { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #4b5563; margin-bottom: 16px; }
+    .footer-col ul { display: flex; flex-direction: column; gap: 10px; }
+    .footer-col a { font-size: 14px; color: #6b7280; transition: color .15s; }
+    .footer-col a:hover { color: #9ca3af; }
+    .footer-bottom {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-top: 28px; flex-wrap: wrap; gap: 12px;
+    }
+    .footer-copy { font-size: 13px; color: #4b5563; }
+    .footer-links { display: flex; gap: 20px; }
+    .footer-links a { font-size: 13px; color: #4b5563; transition: color .15s; }
+    .footer-links a:hover { color: #6b7280; }
+    .footer-logo { height: 32px; width: auto; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+      .features-grid { grid-template-columns: 1fr; }
+      .showcase-row { grid-template-columns: 1fr; }
+      .showcase-row.flip .showcase-text { order: 0; }
+      .showcase-row.flip .showcase-visual { order: 0; }
+      .bento-grid { grid-template-columns: repeat(2, 1fr); }
+      .how-steps { grid-template-columns: 1fr; }
+      .footer-top { grid-template-columns: 1fr 1fr; }
+      .browser-body { height: 280px; }
+      .app-sidebar { width: 160px; }
+      .social-inner { gap: 28px; }
+      .social-sep { display: none; }
+    }
+    @media (max-width: 480px) {
+      .bento-grid { grid-template-columns: 1fr; }
+      .footer-top { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-logo">
+      <img src="/logo-nav-transparent.png" alt="Pageden" />
+    </a>
+    <div class="nav-links">
+      <a href="#features" class="nav-link">Features</a>
+      <a href="#how-it-works" class="nav-link">How it works</a>
+      <a href="https://github.com/ccfiel/pageden" class="nav-link" target="_blank">GitHub</a>
+      <a href="https://go.pageden.app/register" class="nav-cta">Get started free</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="badge"><span class="badge-dot"></span> Open source · MCP-ready</div>
+  <h1>One source of truth<br />for <span>people and AI</span>.</h1>
+  <p class="hero-sub">A shared Markdown knowledge base your team can edit, sync from Obsidian, and connect to AI agents like Claude and Codex.</p>
+  <div class="hero-actions">
+    <a href="https://go.pageden.app/register" class="btn-primary">
+      Get started free →
+    </a>
+    <a href="https://github.com/ccfiel/pageden" class="btn-outline" target="_blank">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+  <div class="hero-trust">
+    <span class="trust-item">✓ Free to get started</span>
+    <span class="trust-sep">·</span>
+    <span class="trust-item">✓ No credit card required</span>
+    <span class="trust-sep">·</span>
+    <span class="trust-item">✓ Open source</span>
+  </div>
+</section>
+
+<!-- APP MOCKUP -->
+<div class="mockup-wrap">
+  <div class="mockup-inner">
+    <div class="browser">
+      <div class="browser-bar">
+        <div class="browser-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="browser-url">go.pageden.app</div>
+      </div>
+      <div class="browser-body">
+        <div class="app-sidebar">
+          <div class="sidebar-label">Workspace</div>
+          <div class="sidebar-item active">📄 Getting Started</div>
+          <div class="sidebar-section">
+            <div class="sidebar-label">Engineering</div>
+            <div class="sidebar-item l2">Architecture</div>
+            <div class="sidebar-item l2">API Reference</div>
+            <div class="sidebar-item l2">Deployment</div>
+          </div>
+          <div class="sidebar-section">
+            <div class="sidebar-label">Product</div>
+            <div class="sidebar-item l2">Roadmap 2026</div>
+            <div class="sidebar-item l2">Feature Specs</div>
+          </div>
+          <div class="sidebar-section">
+            <div class="sidebar-label">HR</div>
+            <div class="sidebar-item l2">Onboarding</div>
+          </div>
+        </div>
+        <div class="app-editor">
+          <div class="editor-h1">Getting Started with Pageden</div>
+          <div class="editor-meta">Last edited 2 min ago · Chris</div>
+          <div class="editor-line"></div>
+          <div class="editor-line med"></div>
+          <div class="editor-line short"></div>
+          <div class="editor-callout">💡 Tip: Press <strong>/</strong> anywhere to insert tables, code blocks, images, and more.</div>
+          <div class="editor-line"></div>
+          <div class="editor-image-ph">🖼</div>
+          <div class="editor-line short"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SOCIAL PROOF -->
+<div class="social">
+  <div class="social-inner">
+    <div class="social-item">
+      <div class="social-num">10k+</div>
+      <div class="social-label">Docs created</div>
+    </div>
+    <div class="social-sep"></div>
+    <div class="social-item">
+      <div class="social-num">500+</div>
+      <div class="social-label">Teams using Pageden</div>
+    </div>
+    <div class="social-sep"></div>
+    <div class="social-item">
+      <div class="social-num">100%</div>
+      <div class="social-label">Open source</div>
+    </div>
+    <div class="social-sep"></div>
+    <div class="social-item">
+      <div class="social-num">&lt;100ms</div>
+      <div class="social-label">Avg. page load</div>
+    </div>
+  </div>
+</div>
+
+<!-- INTEGRATIONS -->
+<div class="integrations">
+  <div class="container">
+    <p class="integrations-label">Integrates with the tools your team already uses</p>
+    <div class="integrations-logos">
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#E01E5A"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.527 2.527 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.527 2.527 0 0 1 2.521 2.521 2.527 2.527 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.527 2.527 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.527 2.527 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.528 2.528 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.527 2.527 0 0 1 2.52-2.52h6.313A2.528 2.528 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
+        Slack
+      </div>
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#24292e"><path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/></svg>
+        GitHub
+      </div>
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect width="24" height="24" rx="4" fill="#000"/><text x="12" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="sans-serif">N</text></svg>
+        Notion
+      </div>
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#0078d4"><path d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 19.983V4.017a1.5 1.5 0 0 0-.85-1.43z"/></svg>
+        VS Code
+      </div>
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#FF7262"><path d="M15.852 8.981h-4.588V0h4.588c2.476 0 4.49 2.014 4.49 4.49s-2.014 4.491-4.49 4.491zM12.735 7.51h3.117c1.665 0 3.019-1.355 3.019-3.019s-1.355-3.019-3.019-3.019h-3.117V7.51zm0 1.471H8.148c-2.476 0-4.49-2.014-4.49-4.49S5.672 0 8.148 0h4.588v8.981zm-4.587-7.51c-1.665 0-3.019 1.355-3.019 3.019s1.354 3.02 3.019 3.02h3.117V1.471H8.148zm4.587 15.019H8.148c-2.476 0-4.49-2.014-4.49-4.49s2.014-4.49 4.49-4.49h4.588v8.98zM8.148 11.98c-1.665 0-3.019 1.355-3.019 3.019s1.355 3.019 3.019 3.019h3.117v-6.038H8.148zm4.587 1.471h4.588c2.476 0 4.49 2.014 4.49 4.49s-2.014 4.49-4.49 4.49h-4.588v-8.98zm4.588 7.509c1.665 0 3.019-1.355 3.019-3.019s-1.355-3.019-3.019-3.019h-3.117v6.038h3.117z"/></svg>
+        Figma
+      </div>
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#0052CC"><path d="M.778 1.213a.768.768 0 0 0-.768.892l3.263 19.81c.084.5.515.868 1.022.873H19.95a.772.772 0 0 0 .77-.646l3.27-20.03a.768.768 0 0 0-.768-.891L.778 1.213zM14.52 15.53H9.522L8.17 8.466h7.561l-1.211 7.064z"/></svg>
+        Jira
+      </div>
+      <div class="int-logo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#4285F4"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+        Google Drive
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FEATURES -->
+<section id="features" class="features">
+  <div class="container">
+    <div class="features-header">
+      <div class="section-tag">Features</div>
+      <h2 class="section-h2">Built for humans and agents alike</h2>
+      <p class="section-sub">Everything your team needs to write, organize, and expose knowledge safely to AI.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🤖</div>
+        <div class="feature-name">MCP-ready for AI agents</div>
+        <div class="feature-desc">Connect Claude, Codex, or any MCP-compatible agent directly to your knowledge base. Permissioned, auditable, safe.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔗</div>
+        <div class="feature-name">Obsidian sync</div>
+        <div class="feature-desc">Write in Obsidian, sync to Pageden. Your local vault becomes your team's shared source of truth — no migration needed.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">✏️</div>
+        <div class="feature-name">Markdown-native editor</div>
+        <div class="feature-desc">A fast editor with slash commands, rich embeds, tables, and full Markdown support. What you write is what agents read.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-name">Permissions & access</div>
+        <div class="feature-desc">Granular read/write permissions by page, collection, or team. Control exactly what humans — and agents — can see.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📅</div>
+        <div class="feature-name">Version history</div>
+        <div class="feature-desc">Every change is saved and diffable. Know exactly what your agents are reading, and roll back any time.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌐</div>
+        <div class="feature-name">Open source</div>
+        <div class="feature-desc">100% open source. Self-host for complete data ownership, or use our managed cloud. Your knowledge stays yours.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURE SHOWCASE -->
+<div class="showcase">
+  <div class="showcase-inner">
+    <!-- Row 1: Editor -->
+    <div class="showcase-row">
+      <div class="showcase-text">
+        <div class="showcase-tag">Editor</div>
+        <h3 class="showcase-h3">Intuitive editing experience</h3>
+        <p class="showcase-p">A blazing fast editor with Markdown support, slash commands, interactive embeds, and more. Writing docs should feel like a joy, not a chore.</p>
+        <ul class="showcase-list">
+          <li>Slash commands for every block type</li>
+          <li>Tables, code blocks, callouts & more</li>
+          <li>Full Markdown compatibility</li>
+        </ul>
+      </div>
+      <div class="showcase-visual">
+        <div class="mock-topbar">
+          <span class="mock-crumb">Team Docs › Getting Started</span>
+          <div class="mock-btns">
+            <span class="mock-btn">Share</span>
+            <span class="mock-btn primary">Publish</span>
+          </div>
+        </div>
+        <div class="mock-body">
+          <div class="mock-h">Getting Started with Pageden</div>
+          <div class="mock-meta">Last edited 2 minutes ago · Chris</div>
+          <div class="mock-line"></div>
+          <div class="mock-line" style="width:70%"></div>
+          <div class="mock-line" style="width:55%"></div>
+          <div class="mock-slash">/ &nbsp;<span style="color:#374151">Table · Code · Image · Callout</span></div>
+          <div class="mock-line" style="width:80%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: Search (flipped) -->
+    <div class="showcase-row flip">
+      <div class="showcase-text">
+        <div class="showcase-tag">Search & AI</div>
+        <h3 class="showcase-h3">Find anything instantly</h3>
+        <p class="showcase-p">Powerful full-text search across your entire workspace. Ask questions in plain language and get direct AI-powered answers from your own docs.</p>
+        <ul class="showcase-list">
+          <li>Instant full-text search</li>
+          <li>AI answers from your knowledge base</li>
+          <li>Search across pages, comments & attachments</li>
+        </ul>
+      </div>
+      <div class="showcase-visual">
+        <div class="mock-search">
+          <div class="mock-search-bar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <span class="mock-search-text">How do we handle customer refunds?</span>
+          </div>
+          <div class="mock-result ai">
+            <div class="mock-ai-label">✦ AI Answer</div>
+            <div class="mock-ai-text">Based on your docs, refunds are processed within 5–7 business days via the original payment method. See the Billing Policy for exceptions...</div>
+          </div>
+          <div class="mock-result">
+            <div class="mock-doc">
+              <span class="mock-doc-icon">📄</span>
+              <div><div class="mock-doc-title">Billing & Refund Policy</div><div class="mock-doc-sub">Finance › Policies</div></div>
+            </div>
+          </div>
+          <div class="mock-result">
+            <div class="mock-doc">
+              <span class="mock-doc-icon">📄</span>
+              <div><div class="mock-doc-title">Customer Support Handbook</div><div class="mock-doc-sub">Support › Guides</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Tree -->
+    <div class="showcase-row">
+      <div class="showcase-text">
+        <div class="showcase-tag">Organization</div>
+        <h3 class="showcase-h3">Nested pages, zero chaos</h3>
+        <p class="showcase-p">Organize knowledge in a nested page tree that mirrors how your team actually thinks. Permissions flow naturally from parent to child pages.</p>
+        <ul class="showcase-list">
+          <li>Unlimited nesting depth</li>
+          <li>Drag-and-drop reordering</li>
+          <li>Inherited permissions & visibility</li>
+        </ul>
+      </div>
+      <div class="showcase-visual">
+        <div class="mock-tree">
+          <div class="mock-tree-item root">🏠 Team Workspace</div>
+          <div class="mock-tree-item l1">▶ 📁 Engineering</div>
+          <div class="mock-tree-item l2 active">📄 Architecture Overview</div>
+          <div class="mock-tree-item l2">📄 API Reference</div>
+          <div class="mock-tree-item l2">📄 Deployment Guide</div>
+          <div class="mock-tree-item l1">▼ 📁 Product</div>
+          <div class="mock-tree-item l2">📄 Roadmap 2026</div>
+          <div class="mock-tree-item l2">📄 Feature Specs</div>
+          <div class="mock-tree-item l1">▶ 📁 HR & Onboarding</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BENTO GRID -->
+<div class="bento-section">
+  <div class="bento-header container">
+    <div class="section-tag">Everything included</div>
+    <h2 class="section-h2">Everything your team needs</h2>
+    <p class="section-sub">Like Obsidian, but shared — and ready for the age of AI agents.</p>
+  </div>
+  <div class="bento-grid container">
+    <div class="bento-card"><div class="bento-icon">🤖</div><div class="bento-name">MCP server built-in</div><div class="bento-desc">Expose your knowledge base to Claude, Codex, or any MCP-compatible agent. Permissioned by default.</div></div>
+    <div class="bento-card"><div class="bento-icon">🔗</div><div class="bento-name">Obsidian sync</div><div class="bento-desc">Your Obsidian vault syncs directly to Pageden. No migration, no lock-in, pure Markdown.</div></div>
+    <div class="bento-card"><div class="bento-icon">⚡</div><div class="bento-name">Blazing fast</div><div class="bento-desc">Millisecond load times. Pages open instantly, search is instant, navigation is snappy.</div></div>
+    <div class="bento-card"><div class="bento-icon">🔒</div><div class="bento-name">Permissions</div><div class="bento-desc">Granular read/write access by page, collection, or team. Control what agents can see.</div></div>
+    <div class="bento-card"><div class="bento-icon">🤝</div><div class="bento-name">Real-time collab</div><div class="bento-desc">Edit documents simultaneously with presence indicators and conflict-free merging.</div></div>
+    <div class="bento-card"><div class="bento-icon">✏️</div><div class="bento-name">Markdown-native</div><div class="bento-desc">Write in Markdown, rendered beautifully. The same format your agents consume.</div></div>
+    <div class="bento-card"><div class="bento-icon">📅</div><div class="bento-name">Version history</div><div class="bento-desc">Every change saved and diffable. Know exactly what version your agents are reading.</div></div>
+    <div class="bento-card"><div class="bento-icon">🌐</div><div class="bento-name">Open source</div><div class="bento-desc">100% open source under MIT. Self-host for full data ownership, or use our cloud.</div></div>
+    <div class="bento-card"><div class="bento-icon">🌙</div><div class="bento-name">Dark mode</div><div class="bento-desc">A beautiful dark theme for late-night writing sessions that's easy on the eyes.</div></div>
+  </div>
+</div>
+
+<!-- HOW IT WORKS -->
+<section id="how-it-works" class="how">
+  <div class="container">
+    <div class="how-header">
+      <div class="section-tag">How it works</div>
+      <h2 class="section-h2">Up and running in minutes</h2>
+      <p class="section-sub">No complicated setup. Your team can start writing in under 5 minutes.</p>
+    </div>
+    <div class="how-steps">
+      <div class="how-step">
+        <div class="how-num">1</div>
+        <div class="how-step-title">Create your workspace</div>
+        <div class="how-step-desc">Sign up and set up your workspace in seconds. Choose a name, invite your team, and you're ready to go.</div>
+      </div>
+      <div class="how-step">
+        <div class="how-num">2</div>
+        <div class="how-step-title">Organize your knowledge</div>
+        <div class="how-step-desc">Create pages, nest them into collections, and structure your knowledge the way your team actually thinks.</div>
+      </div>
+      <div class="how-step">
+        <div class="how-num">3</div>
+        <div class="how-step-title">Write & collaborate</div>
+        <div class="how-step-desc">Invite teammates, write together in real time, and keep everyone on the same page — literally.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA BANNER -->
+<section class="cta-section">
+  <div class="container">
+    <h2>One source of truth —<br />for your team and your agents.</h2>
+    <p>Free to start. Syncs with Obsidian. Connects to Claude, Codex, and any MCP agent.</p>
+    <div class="cta-buttons">
+      <a href="https://go.pageden.app/register" class="btn-white">Get started free →</a>
+      <a href="https://github.com/ccfiel/pageden" class="btn-ghost" target="_blank">View on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <img src="https://raw.githubusercontent.com/ccfiel/pageden/main/apps/web/public/logo-footer.png" alt="Pageden" class="footer-logo" />
+        <p>The shared Markdown knowledge base for teams and AI agents. Open source. Obsidian-friendly. MCP-ready.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#how-it-works">How it works</a></li>
+          <li><a href="https://go.pageden.app">Sign in</a></li>
+          <li><a href="https://go.pageden.app/register">Sign up</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Developers</h4>
+        <ul>
+          <li><a href="https://github.com/ccfiel/pageden" target="_blank">GitHub</a></li>
+          <li><a href="https://github.com/ccfiel/pageden/issues" target="_blank">Issues</a></li>
+          <li><a href="https://github.com/ccfiel/pageden/discussions" target="_blank">Discussions</a></li>
+          <li><a href="https://docs.pageden.app" target="_blank">Docs</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <ul>
+          <li><a href="/about.html">About</a></li>
+          <li><a href="/privacy.html">Privacy</a></li>
+          <li><a href="/terms.html">Terms</a></li>
+          <li><a href="mailto:hello@pageden.io">Contact</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-copy">© 2026 Pageden. Open source under MIT.</p>
+      <div class="footer-links">
+        <a href="https://github.com/ccfiel/pageden" target="_blank">GitHub</a>
+        <a href="#">Twitter</a>
+        <a href="#">Discord</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

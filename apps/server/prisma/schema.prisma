@@ -1,0 +1,353 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum WorkspaceRole {
+  member
+  admin
+}
+
+enum CustomDomainStatus {
+  pending
+  verified
+  active
+  failed
+}
+
+enum PermissionRole {
+  viewer
+  editor
+  manager
+}
+
+enum PermissionSubjectType {
+  user
+  group
+}
+
+enum PermissionResourceType {
+  folder
+  document
+}
+
+enum ChangeSource {
+  web_app
+  obsidian_plugin
+  agent
+  import
+  system
+}
+
+model User {
+  id                      String                   @id @default(cuid())
+  email                   String                   @unique
+  name                    String
+  passwordHash            String? // argon2id; null for OAuth-only accounts
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  workspaceMemberships    WorkspaceMembership[]
+  groupMemberships        GroupMembership[]
+  createdDocuments        Document[]               @relation("DocumentCreatedBy")
+  updatedDocuments        Document[]               @relation("DocumentUpdatedBy")
+  createdFolders          Folder[]                 @relation("FolderCreatedBy")
+  updatedFolders          Folder[]                 @relation("FolderUpdatedBy")
+  revisions               DocumentRevision[]
+  sessionVersion          Int                      @default(0)
+  emailVerified           Boolean                  @default(false)
+  apiTokens               ApiToken[]
+  auditEvents             AuditEvent[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  oauthAccounts           OAuthAccount[]
+  mcpOAuthCodes           McpOAuthCode[]
+  uploadedAttachments     Attachment[]             @relation("AttachmentUploadedBy")
+}
+
+model Workspace {
+  id                     String                @id @default(cuid())
+  name                   String
+  slug                   String                @unique
+  subdomain              String?               @unique
+  customDomain           String?               @unique
+  customDomainStatus     CustomDomainStatus    @default(pending)
+  customDomainVerifiedAt DateTime?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  members                WorkspaceMembership[]
+  groups                 Group[]
+  folders                Folder[]
+  documents              Document[]
+  permissions            Permission[]
+  auditEvents            AuditEvent[]
+  attachments            Attachment[]
+  mcpOAuthCodes          McpOAuthCode[]
+}
+
+model WorkspaceMembership {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(member)
+  createdAt   DateTime      @default(now())
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Group {
+  id          String            @id @default(cuid())
+  workspaceId String
+  name        String
+  slug        String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  memberships GroupMembership[]
+
+  @@unique([workspaceId, slug])
+}
+
+model GroupMembership {
+  id        String   @id @default(cuid())
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+// M7: createdBy/updatedBy are now real relations, and Folder gets soft-delete parity
+// with Document so the partial-unique migration (B4) can cover both tables.
+model Folder {
+  id             String     @id @default(cuid())
+  workspaceId    String
+  parentFolderId String?
+  name           String
+  slug           String
+  path           String
+  createdById    String
+  updatedById    String
+  deletedAt      DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  workspace      Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parentFolder   Folder?    @relation("FolderTree", fields: [parentFolderId, workspaceId], references: [id, workspaceId])
+  childFolders   Folder[]   @relation("FolderTree")
+  createdBy      User       @relation("FolderCreatedBy", fields: [createdById], references: [id])
+  updatedBy      User       @relation("FolderUpdatedBy", fields: [updatedById], references: [id])
+  documents      Document[]
+
+  // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
+  // in a raw migration, so soft-deleted rows do not block reuse.
+  @@unique([id, workspaceId])
+  @@index([workspaceId, parentFolderId])
+}
+
+model Document {
+  id               String             @id @default(cuid())
+  workspaceId      String
+  folderId         String
+  title            String
+  slug             String
+  path             String
+  currentVersionId String? // == the wire `version`; FK-free to avoid a write cycle
+  currentChecksum  String?
+  searchText       String? // denormalized current content for full-text search
+  createdById      String
+  updatedById      String
+  deletedAt        DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder           Folder             @relation(fields: [folderId, workspaceId], references: [id, workspaceId])
+  createdBy        User               @relation("DocumentCreatedBy", fields: [createdById], references: [id])
+  updatedBy        User               @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
+  revisions        DocumentRevision[]
+  attachments      Attachment[]
+
+  // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
+  // in a raw migration, so soft-deleted rows do not block reuse.
+  @@index([workspaceId, folderId])
+  @@index([currentVersionId])
+}
+
+model DocumentRevision {
+  id            String       @id @default(cuid()) // this id is the wire `version`/`baseVersion`
+  documentId    String
+  versionNumber Int // display only
+  storageKey    String // content-addressed (checksum-derived); immutable
+  checksum      String
+  createdById   String
+  createdAt     DateTime     @default(now())
+  changeSource  ChangeSource
+  message       String?
+  document      Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdBy     User         @relation(fields: [createdById], references: [id])
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId, createdAt])
+}
+
+model Permission {
+  id           String                 @id @default(cuid())
+  workspaceId  String
+  subjectType  PermissionSubjectType
+  subjectId    String
+  resourceType PermissionResourceType
+  resourceId   String
+  role         PermissionRole
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId, resourceType, resourceId])
+  @@index([workspaceId, resourceType, resourceId])
+  @@index([workspaceId, subjectType, subjectId])
+}
+
+// B5: token lookup must be deterministic, so tokenHash is HMAC-SHA256(token, TOKEN_HASH_SECRET).
+// Never bcrypt/argon2 here — those are salted and cannot be looked up by hash.
+model ApiToken {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  kind        String    @default("personal") // personal | obsidian | agent
+  scopes      String[]  @default(["search", "read", "create", "update", "append", "attachments"])
+  workspaceId String?
+  tokenHash   String    @unique // HMAC-SHA256, keyed by TOKEN_HASH_SECRET
+  lastUsedAt  DateTime?
+  lastUsedIp  String?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([kind])
+  @@index([workspaceId])
+}
+
+// Device-code login (M6): the Obsidian plugin starts a request, the user approves it in the
+// web app by entering the short userCode, then the plugin polls and receives a token once.
+model DeviceAuthRequest {
+  id             String    @id @default(cuid())
+  userCode       String    @unique // short, human-entered approval code (one-time, short-lived)
+  deviceCodeHash String    @unique // HMAC of the secret device code the plugin polls with
+  status         String    @default("pending") // pending | approved | denied | consumed
+  userId         String?
+  tokenId        String?
+  approvedAt     DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+  ipAddress      String?
+
+  @@index([expiresAt])
+}
+
+model AuditEvent {
+  id          String     @id @default(cuid())
+  workspaceId String?
+  userId      String?
+  action      String
+  targetType  String
+  targetId    String?
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime   @default(now())
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([userId, createdAt])
+  @@index([targetType, targetId])
+}
+
+model Attachment {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  documentId   String
+  filename     String
+  contentType  String
+  size         Int
+  sha256       String // sha256 hex of the stored bytes
+  storageKey   String // content-addressed posix key under attachments/
+  uploadedById String
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploadedBy   User      @relation("AttachmentUploadedBy", fields: [uploadedById], references: [id])
+
+  @@index([documentId, deletedAt])
+  @@index([workspaceId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique // HMAC-SHA256 of the raw token; the raw token is only emailed
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String // e.g. "google"
+  providerAccountId String // the provider's stable subject id
+  createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model McpOAuthCode {
+  id            String    @id @default(cuid())
+  jti           String    @unique
+  codeHash      String?   @unique // HMAC of the opaque authorization code returned to the client
+  userId        String
+  workspaceId   String
+  clientId      String
+  redirectUri   String
+  codeChallenge String? // PKCE S256 challenge; nullable only for pre-migration short-lived rows
+  scopes        String[]  @default([])
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([userId])
+  @@index([workspaceId])
+}

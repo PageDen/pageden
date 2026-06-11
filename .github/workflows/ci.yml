@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: pageden_test
+          POSTGRES_USER: pageden
+          # Passwordless trust auth for the throwaway CI container — no DB credential in the repo.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pageden"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://pageden@localhost:5432/pageden_test
+      STORAGE_ROOT: ./storage
+      WEB_ORIGIN: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate ephemeral secrets
+        run: |
+          echo "SESSION_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TOKEN_HASH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @pageden/server db:generate
+
+      - name: Apply migrations
+        run: pnpm db:migrate
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Integration / contract / security tests + coverage gate (real Postgres)
+        run: pnpm --filter @pageden/server test:coverage
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: pageden_test
+          POSTGRES_USER: pageden
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pageden"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://pageden@localhost:5432/pageden_test
+      STORAGE_ROOT: ./.e2e-storage
+      BOOTSTRAP_ADMIN_EMAIL: admin@e2e.test
+      CI: "true"
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate ephemeral secrets
+        run: |
+          echo "SESSION_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TOKEN_HASH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+
+      - name: Generate Prisma client
+        run: pnpm --filter @pageden/server db:generate
+
+      - name: Install Playwright browser
+        run: pnpm --filter @pageden/web exec playwright install --with-deps chromium
+
+      - name: End-to-end tests (Playwright)
+        run: pnpm --filter @pageden/web e2e
+
+  deploy-staging:
+    needs: [build, e2e]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.PAGEDEN_DEPLOY_SSH_KEY }}" > ~/.ssh/pageden_deploy
+          chmod 600 ~/.ssh/pageden_deploy
+          printf '%s\n' "${{ secrets.PAGEDEN_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Deploy staging
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/pageden_deploy root@go.pageden.io "set -euo pipefail
+            cd /opt/pageden
+            git fetch origin $SHA
+            git switch --detach $SHA
+            cd deploy
+            docker compose build staging-web staging-server staging-migrate
+            docker compose run --rm staging-migrate pnpm --filter @pageden/server db:migrate:deploy
+            docker compose up -d --force-recreate staging-web staging-server
+            docker image prune -f
+            echo 'Deployed $SHA to staging'
+          "
+
+      - name: Verify staging health
+        run: |
+          ssh -i ~/.ssh/pageden_deploy root@go.pageden.io \
+            "docker exec pageden-staging-server-1 node -e \
+              \"fetch('http://localhost:4000/api/health').then(r=>r.json()).then(d=>{if(d.status!=='ok'){console.error(d);process.exit(1)}else{console.log('healthy')}}).catch(e=>{console.error(e);process.exit(1)})\""
+
+      - name: Write deployment summary
+        run: |
+          echo "### Staging deployed :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** https://go.pageden.io" >> $GITHUB_STEP_SUMMARY

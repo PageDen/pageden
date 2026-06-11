@@ -1,0 +1,4 @@
+# Exclude generated/vendored artifacts from GitHub language stats (Linguist)
+apps/obsidian-plugin/main.js linguist-generated=true
+pnpm-lock.yaml              linguist-generated=true
+*.min.js                   linguist-vendored=true

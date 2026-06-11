@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pageden">
+  <path
+    d="M19 8h24l11 11v35a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Z"
+    fill="none"
+    stroke="#0f172a"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M43 8v11h11"
+    fill="#0f172a"
+    stroke="#0f172a"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M23 40c1-6 3-12 6-16 3 3 5 6 6 10h3c1-4 3-7 6-10 3 4 5 10 6 16-5-2-10-1-13 2l-2 8-2-8c-3-3-8-4-13-2Z"
+    fill="#f4510b"
+  />
+  <path d="M35 50l-3-8h6l-3 8Z" fill="#ff6a00"/>
+</svg>
