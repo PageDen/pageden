@@ -508,9 +508,7 @@ export function WorkspaceEmptyState() {
   const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
   const visibleDocs = documentsForHomeTab(docs, tab);
 
-  const isCloud =
-    currentWorkspace.data?.routingMode === "cloud_subdomain" ||
-    currentWorkspace.data?.routingMode === "custom_domain";
+  const isCloud = currentWorkspace.data?.routingMode !== "self_hosted";
 
   if (isCloud && docs.length === 0 && folders.length === 0) {
     return <OnboardingView workspaceId={workspaceId} />;
