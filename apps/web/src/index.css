@@ -383,7 +383,7 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
 }
 
 .pageden-document-view.prose pre {
-  @apply my-5 overflow-x-auto rounded-md border border-slate-800 bg-slate-950 p-4 text-sm leading-6 text-slate-100 shadow-sm;
+  @apply my-0 overflow-x-auto rounded-md border border-slate-800 bg-slate-950 p-4 pr-14 text-sm leading-6 text-slate-100 shadow-sm;
 }
 
 .pageden-document-view.prose pre code {
@@ -444,6 +444,18 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
 
 .pageden-document-view.prose input[type="checkbox"] {
   @apply mr-2 align-middle accent-orange-600;
+}
+
+.pageden-document-view.prose .pageden-code-block {
+  @apply relative my-5;
+}
+
+.pageden-document-view.prose .pageden-code-block pre {
+  @apply my-0;
+}
+
+.pageden-code-copy-button {
+  @apply absolute right-2.5 top-2.5 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-white/10 text-slate-300 shadow-sm backdrop-blur transition hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300;
 }
 
 /* Editor media: responsive video + embeds */
