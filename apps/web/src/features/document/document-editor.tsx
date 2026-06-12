@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, CheckCircle2, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Clipboard, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -271,6 +271,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                     video: ({ ...props }) => (
                       <video {...props} controls className="max-w-full rounded" />
                     ),
+                    pre: ({ children }) => <CopyableCodeBlock>{children}</CopyableCodeBlock>,
                     h1: ({ children, ...props }) => <h1 {...props} id={headingId(markdownText(children))}>{children}</h1>,
                     h2: ({ children, ...props }) => <h2 {...props} id={headingId(markdownText(children))}>{children}</h2>,
                     h3: ({ children, ...props }) => <h3 {...props} id={headingId(markdownText(children))}>{children}</h3>,
@@ -297,6 +298,49 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
       </div>
     </article>
   );
+}
+
+function CopyableCodeBlock({ children }: { children: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const code = markdownText(children).replace(/\n$/, "");
+
+  async function copyCode() {
+    await copyTextToClipboard(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  return (
+    <div className="pageden-code-block group">
+      <button
+        type="button"
+        className="pageden-code-copy-button"
+        onClick={() => void copyCode()}
+        aria-label={copied ? "Copied code" : "Copy code"}
+        title={copied ? "Copied" : "Copy code"}
+      >
+        {copied ? <Check size={15} /> : <Clipboard size={15} />}
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
 }
 
 function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
