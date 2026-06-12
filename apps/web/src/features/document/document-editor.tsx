@@ -255,9 +255,13 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                   remarkPlugins={[remarkGfm]}
                   rehypePlugins={[rehypeRaw, [rehypeSanitize, previewSanitizeSchema], rehypeAllowlistIframes]}
                   components={{
-                    a: ({ href, children, ...props }) => {
+                    a: ({ href, children, className, ...props }) => {
                       const resolved = href ? attachmentUrls.get(cleanAttachmentHref(href)) : undefined;
-                      return <a {...props} href={resolved ?? href}>{children}</a>;
+                      const linkClassName = [
+                        "font-medium text-orange-700 underline decoration-orange-300 underline-offset-4 transition hover:text-orange-800 hover:decoration-orange-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300",
+                        className,
+                      ].filter(Boolean).join(" ");
+                      return <a {...props} href={resolved ?? href} className={linkClassName}>{children}</a>;
                     },
                     img: ({ src, alt, ...props }) => {
                       const resolved = src ? attachmentUrls.get(cleanAttachmentHref(src)) : undefined;
