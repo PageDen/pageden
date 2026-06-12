@@ -41,7 +41,7 @@ export function TableOfContents({ content, embedded = false }: { content: string
   );
 }
 
-function extractHeadings(markdown: string): Heading[] {
+export function extractHeadings(markdown: string): Heading[] {
   const headings: Heading[] = [];
   const lines = markdown.split("\n");
 
@@ -54,17 +54,20 @@ function extractHeadings(markdown: string): Heading[] {
       if (!marks || !rawText) continue;
       const level = marks.length;
       const text = rawText.trim();
-      // Generate ID from text (kebab-case)
-      const id = text
-        .toLowerCase()
-        .replace(/[^\w\s-]/g, "")
-        .replace(/\s+/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-|-$/g, "");
+      const id = headingId(text);
 
       headings.push({ level, text, id });
     }
   }
 
   return headings;
+}
+
+export function headingId(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
 }

@@ -35,6 +35,7 @@ test("first-build loop: login → create folder + document → edit → save →
 
   // Open the document and edit it.
   await page.locator("nav").getByRole("link", { name: documentTitle }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
   const editor = page.getByLabel("Document body");
   await expect(editor).toBeVisible();
   await editor.click();
@@ -62,5 +63,5 @@ test("first-build loop: login → create folder + document → edit → save →
   await expect(page.locator("nav").getByRole("link", { name: new RegExp(documentTitle) })).toBeVisible();
   await page.locator("nav").getByRole("link", { name: new RegExp(documentTitle) }).click();
   await page.reload();
-  await expect(page.getByLabel("Document body")).toContainText("Hello E2E");
+  await expect(page.getByRole("heading", { name: new RegExp("Hello E2E") })).toBeVisible();
 });

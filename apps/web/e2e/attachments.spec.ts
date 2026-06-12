@@ -30,6 +30,7 @@ test("attachments: upload an image in the editor, save, reload, it persists and 
   await dialog.getByRole("textbox", { name: "Title" }).fill(documentTitle);
   await dialog.getByRole("button", { name: "Save" }).click();
   await page.locator("nav").getByRole("link", { name: documentTitle }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
   await expect(page.getByLabel("Document body")).toBeVisible();
 
   // Upload an image through the editor's hidden file input.

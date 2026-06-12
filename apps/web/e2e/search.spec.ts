@@ -27,6 +27,7 @@ test("search: title + body search from sidebar and command palette, open a resul
   await dialog.getByRole("textbox", { name: "Title" }).fill(documentTitle);
   await dialog.getByRole("button", { name: "Save" }).click();
   await page.locator("nav").getByRole("link", { name: documentTitle }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
   const editor = page.getByLabel("Document body");
   await editor.click();
   await page.keyboard.type(`Body content ${bodyToken}`);
@@ -52,5 +53,5 @@ test("search: title + body search from sidebar and command palette, open a resul
   await palette.getByLabel("Search document content").press("Enter");
   await expect(palette).not.toBeVisible();
   // Navigated to the document.
-  await expect(page.getByLabel("Document body")).toContainText(bodyToken);
+  await expect(page.getByText(bodyToken)).toBeVisible();
 });

@@ -33,7 +33,7 @@ test("permissions UI: viewer is read-only, editor can save", async ({ page, brow
   await dialog.getByRole("textbox", { name: "Title" }).fill(docTitle);
   await dialog.getByRole("button", { name: "Save" }).click();
   await page.locator("nav").getByRole("link", { name: docTitle }).click();
-  await expect(page.getByLabel("Document body")).toBeVisible();
+  await expect(page.getByRole("heading", { name: docTitle })).toBeVisible();
   const m = page.url().match(/\/w\/([^/]+)\/d\/([^/?#]+)/);
   expect(m).toBeTruthy();
   const [, workspaceId, documentId] = m as RegExpMatchArray;
@@ -83,6 +83,7 @@ test("permissions UI: viewer is read-only, editor can save", async ({ page, brow
   const editorPage = await editorCtx.newPage();
   await login(editorPage, memberEmail, memberPass);
   await editorPage.goto(`/w/${workspaceId}/d/${documentId}`);
+  await editorPage.getByRole("button", { name: "Edit" }).click();
   await expect(editorPage.getByLabel("Document body")).toBeVisible();
   await expect(editorPage.getByRole("button", { name: "Save" })).toBeVisible();
   await editorCtx.close();
