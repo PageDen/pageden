@@ -1,13 +1,17 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { TurnstileWidget } from "../../components/turnstile";
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
-  const mutation = useMutation({ mutationFn: () => api.forgotPassword(email) });
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const authConfig = useQuery({ queryKey: ["auth-config"], queryFn: () => api.authConfig() });
+  const captcha = authConfig.data?.captcha ?? null;
+  const mutation = useMutation({ mutationFn: () => api.forgotPassword(email, captchaToken ?? undefined) });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -29,8 +33,9 @@ export function ForgotPasswordPage() {
               <span className="text-sm font-medium">Email</span>
               <Input type="email" aria-label="Email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
             </label>
+            {captcha ? <TurnstileWidget siteKey={captcha.siteKey} onToken={setCaptchaToken} /> : null}
             {mutation.isError ? <p className="text-sm text-red-600">Could not send the reset link. Try again.</p> : null}
-            <Button type="submit" className="w-full" disabled={mutation.isPending}>
+            <Button type="submit" className="w-full" disabled={mutation.isPending || (captcha !== null && captchaToken === null)}>
               {mutation.isPending ? "Sending…" : "Send reset link"}
             </Button>
           </>

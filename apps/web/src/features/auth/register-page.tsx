@@ -7,6 +7,7 @@ import { Input } from "../../components/ui/input";
 import { PasswordInput } from "../../components/ui/password-input";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
+import { TurnstileWidget } from "../../components/turnstile";
 
 function subdomainFromName(value: string): string {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
@@ -23,6 +24,9 @@ export function RegisterPage() {
   const [subdomainEdited, setSubdomainEdited] = useState(false);
   const debouncedSubdomain = useDebouncedValue(subdomain.trim(), 250);
   const [error, setError] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const authConfig = useQuery({ queryKey: ["auth-config"], queryFn: () => api.authConfig() });
+  const captcha = authConfig.data?.captcha ?? null;
   const availability = useQuery({
     queryKey: ["workspace-availability", debouncedSubdomain],
     queryFn: () => api.workspaceAvailability(debouncedSubdomain),
@@ -30,7 +34,7 @@ export function RegisterPage() {
   });
 
   const mutation = useMutation({
-    mutationFn: () => api.register(email, name, password, companyName, subdomain),
+    mutationFn: () => api.register(email, name, password, companyName, subdomain, captchaToken ?? undefined),
     onSuccess: (me) => {
       queryClient.setQueryData(["me"], me);
       void navigate({ to: "/" });
@@ -111,10 +115,11 @@ export function RegisterPage() {
             </p>
           ) : null}
         </label>
+        {captcha ? <TurnstileWidget siteKey={captcha.siteKey} onToken={setCaptchaToken} /> : null}
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <button
           type="submit"
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || (captcha !== null && captchaToken === null)}
           className="w-full h-10 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-medium text-sm rounded-md transition-colors"
         >
           {mutation.isPending ? "Creating account…" : "Create account"}

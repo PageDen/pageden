@@ -18,6 +18,7 @@ import { registerDeviceRoutes } from "./device/routes.js";
 import { registerAttachmentRoutes } from "./attachments/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
+import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -72,7 +73,7 @@ async function mePayload(userId: string) {
 
 // Resolve a Google profile to a user id: an existing linked account logs in; a verified email
 // matching an existing user links Google to it; otherwise a new user + workspace is created.
-async function resolveGoogleUser(profile: GoogleProfile): Promise<string | null> {
+async function resolveGoogleUser(profile: GoogleProfile, ip: string): Promise<string | null> {
   const linked = await prisma.oAuthAccount.findUnique({
     where: { provider_providerAccountId: { provider: "google", providerAccountId: profile.sub } },
     select: { userId: true },
@@ -92,6 +93,16 @@ async function resolveGoogleUser(profile: GoogleProfile): Promise<string | null>
   // Creating a brand-new account via Google must honor the same self-signup policy as password
   // registration (linking/login to an existing account is still allowed when signup is disabled).
   if (process.env.AUTH_ALLOW_SIGNUP === "false") return null;
+  // Google signups skip CAPTCHA (the OAuth callback carries no CAPTCHA token, and completing a
+  // Google login is itself a bot barrier) but still get the deployment's domain/quota checks.
+  const guarded = await runSignupGuard({
+    email: profile.email,
+    emailDomain: profile.email.split("@")[1] ?? "",
+    ip,
+    kind: "register",
+    source: "google",
+  });
+  if (!guarded.allow) return null;
   const name = profile.name || profile.email.split("@")[0] || "User";
   const base = slugify(name) || "workspace";
   const created = await prisma.$transaction(async (tx) => {
@@ -258,7 +269,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Request a password reset. Always returns 200 so callers can't probe which emails exist;
   // when the email matches a user we invalidate any prior unused links and email a fresh one.
-  app.post<{ Body: { email?: string } }>(
+  app.post<{ Body: { email?: string; captchaToken?: string } }>(
     "/api/auth/forgot-password",
     {
       config: {
@@ -268,6 +279,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const email = request.body?.email?.trim().toLowerCase() ?? "";
       if (!email) return validationError(reply, { email: "Email is required." });
+
+      // Recovery runs CAPTCHA only (no signup domain/quota policy — guards distinguish by kind).
+      // A CAPTCHA failure is a real 403; the existence-hiding 200 applies only after it passes.
+      const guarded = await runSignupGuard({
+        email,
+        emailDomain: email.split("@")[1] ?? "",
+        ip: request.ip,
+        captchaToken: request.body?.captchaToken,
+        kind: "forgot-password",
+        source: "password",
+      });
+      if (!guarded.allow) {
+        return reply.code(403).send({ error: "signup_blocked", reason: guarded.reason ?? "captcha_failed" });
+      }
 
       const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
       if (user) {
@@ -365,7 +390,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Open self-signup: create the user + their own workspace (as admin), sign them in, and send a
   // verification email. Email verification is non-blocking (the account is usable immediately);
   // the web shows a "verify your email" banner driven by /api/me.
-  app.post<{ Body: { email?: string; name?: string; password?: string; companyName?: string; subdomain?: string } }>(
+  app.post<{ Body: { email?: string; name?: string; password?: string; companyName?: string; subdomain?: string; captchaToken?: string } }>(
     "/api/auth/register",
     {
       config: {
@@ -390,6 +415,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       if (subdomainError) fields.subdomain = subdomainError;
       if (password.length < MIN_PASSWORD_LENGTH) fields.password = `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
       if (Object.keys(fields).length > 0) return validationError(reply, fields);
+
+      // Abuse controls (CAPTCHA, domain blocklist, quotas) run before the duplicate-email
+      // check so blocked clients cannot probe which addresses have accounts.
+      const guarded = await runSignupGuard({
+        email,
+        emailDomain: email.split("@")[1] ?? "",
+        ip: request.ip,
+        captchaToken: request.body?.captchaToken,
+        kind: "register",
+        source: "password",
+      });
+      if (!guarded.allow) {
+        return reply.code(403).send({ error: "signup_blocked", reason: guarded.reason ?? "signups_paused" });
+      }
 
       if (await prisma.user.findUnique({ where: { email }, select: { id: true } })) {
         return validationError(reply, { email: "An account with this email already exists." });
@@ -505,7 +544,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // Which third-party sign-in providers are configured (lets the web show the right buttons).
-  app.get("/api/auth/config", async () => ({ googleEnabled: getGoogleClient() !== null }));
+  app.get("/api/auth/config", async () => ({
+    googleEnabled: getGoogleClient() !== null,
+    captcha: getSignupGuardCaptcha(),
+  }));
 
   const OAUTH_COOKIE_OPTIONS = {
     httpOnly: true,
@@ -547,7 +589,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     if (!profile.email) return fail();
 
-    const userId = await resolveGoogleUser(profile);
+    const userId = await resolveGoogleUser(profile, request.ip);
     if (!userId) return fail();
 
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { sessionVersion: true } });

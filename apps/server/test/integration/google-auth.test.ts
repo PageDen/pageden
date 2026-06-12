@@ -44,13 +44,13 @@ const profile = (over: Partial<GoogleProfile> = {}): GoogleProfile => ({
 describe("google oauth", () => {
   it("reports config and 404s the routes when not configured", async () => {
     setGoogleClient(null);
-    expect((await req({ method: "GET", url: "/api/auth/config" })).json()).toEqual({ googleEnabled: false });
+    expect((await req({ method: "GET", url: "/api/auth/config" })).json()).toEqual({ googleEnabled: false, captcha: null });
     expect((await req({ method: "GET", url: "/api/auth/google/start" })).statusCode).toBe(404);
   });
 
   it("start sets state + verifier cookies and redirects to Google", async () => {
     useGoogle();
-    expect((await req({ method: "GET", url: "/api/auth/config" })).json()).toEqual({ googleEnabled: true });
+    expect((await req({ method: "GET", url: "/api/auth/config" })).json()).toEqual({ googleEnabled: true, captcha: null });
     const start = await req({ method: "GET", url: "/api/auth/google/start" });
     expect(start.statusCode).toBe(302);
     expect(start.headers.location).toContain("accounts.google.test");
