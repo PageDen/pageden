@@ -3,6 +3,7 @@ import { getApp, closeApp, req, sessionFor, bearer } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { createUser, createWorkspace, addMember, PW } from "../fixtures/seed.js";
 import { setMailer } from "../../src/mailer.js";
+import { setSignupGuard, type SignupGuardInput } from "../../src/signup-guard.js";
 import { createRawToken, hashToken } from "../../src/tokens.js";
 import { env } from "../../src/env.js";
 
@@ -280,6 +281,58 @@ describe("registration / email verification", () => {
     password: "Signup-pw-123456789",
     companyName,
     subdomain,
+  });
+
+  it("consults the signup guard and surfaces its rejection (403 signup_blocked)", async () => {
+    const seen: SignupGuardInput[] = [];
+    setSignupGuard(
+      async (input) => {
+        seen.push(input);
+        if (input.emailDomain === "blocked.example") return { allow: false, reason: "domain_blocked" };
+        if (input.kind === "forgot-password" && !input.captchaToken) return { allow: false, reason: "captcha_failed" };
+        return { allow: true };
+      },
+      { captcha: { provider: "turnstile", siteKey: "test-site-key" } },
+    );
+    try {
+      // Config endpoint surfaces the captcha for the web client.
+      expect((await req({ method: "GET", url: "/api/auth/config" })).json().captcha).toEqual({
+        provider: "turnstile",
+        siteKey: "test-site-key",
+      });
+
+      // Blocked domain → 403 with reason; no account created.
+      const blocked = await req({
+        method: "POST",
+        url: "/api/auth/register",
+        payload: { ...registerPayload("bot@blocked.example", "Bot Co", "bot-co"), captchaToken: "tok" },
+      });
+      expect(blocked.statusCode).toBe(403);
+      expect(blocked.json()).toEqual({ error: "signup_blocked", reason: "domain_blocked" });
+      expect(await prisma.user.findUnique({ where: { email: "bot@blocked.example" } })).toBeNull();
+      expect(seen.at(-1)).toMatchObject({ kind: "register", source: "password", captchaToken: "tok" });
+
+      // Allowed domain passes through normally.
+      const ok = await req({
+        method: "POST",
+        url: "/api/auth/register",
+        payload: { ...registerPayload("human@ok.example", "Ok Co", "ok-co"), captchaToken: "tok" },
+      });
+      expect(ok.statusCode).toBe(200);
+
+      // forgot-password runs the guard with its own kind (captcha-only policies key off this).
+      const forgot = await req({ method: "POST", url: "/api/auth/forgot-password", payload: { email: "human@ok.example" } });
+      expect(forgot.statusCode).toBe(403);
+      expect(forgot.json().reason).toBe("captcha_failed");
+      const forgotOk = await req({
+        method: "POST",
+        url: "/api/auth/forgot-password",
+        payload: { email: "human@ok.example", captchaToken: "tok" },
+      });
+      expect(forgotOk.statusCode).toBe(200);
+    } finally {
+      setSignupGuard(null);
+    }
   });
 
   it("registers a user, creates their workspace (admin), signs them in, and sends verification", async () => {

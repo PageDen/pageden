@@ -106,8 +106,8 @@ export const api = {
     request("POST", "/workspaces", { body: { name, subdomain }, schema: workspaceCreateSchema }),
   setWorkspaceCustomDomain: (workspaceId: string, customDomain: string | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/custom-domain`, { body: { customDomain }, schema: workspaceCreateSchema }),
-  register: (email: string, name: string, password: string, companyName: string, subdomain: string) =>
-    request("POST", "/auth/register", { body: { email, name, password, companyName, subdomain }, schema: meResponseSchema }),
+  register: (email: string, name: string, password: string, companyName: string, subdomain: string, captchaToken?: string) =>
+    request("POST", "/auth/register", { body: { email, name, password, companyName, subdomain, captchaToken }, schema: meResponseSchema }),
   verifyEmail: (token: string) => request("POST", "/auth/verify-email", { body: { token }, schema: okSchema }),
   resendVerification: () => request("POST", "/auth/resend-verification", { schema: okSchema }),
   login: (email: string, password: string) =>
@@ -116,7 +116,8 @@ export const api = {
   authConfig: () => request("GET", "/auth/config", { schema: authConfigSchema }),
   changePassword: (currentPassword: string, newPassword: string) =>
     request("POST", "/auth/change-password", { body: { currentPassword, newPassword }, schema: okSchema }),
-  forgotPassword: (email: string) => request("POST", "/auth/forgot-password", { body: { email }, schema: okSchema }),
+  forgotPassword: (email: string, captchaToken?: string) =>
+    request("POST", "/auth/forgot-password", { body: { email, captchaToken }, schema: okSchema }),
   resetPassword: (token: string, password: string) =>
     request("POST", "/auth/reset-password", { body: { token, password }, schema: okSchema }),
   tree: (workspaceId: string) =>

@@ -47,7 +47,12 @@ export const meResponseSchema = z
   .strict();
 
 export const okSchema = z.object({ ok: z.literal(true) }).strict();
-export const authConfigSchema = z.object({ googleEnabled: z.boolean() }).strict();
+export const authConfigSchema = z
+  .object({
+    googleEnabled: z.boolean(),
+    captcha: z.object({ provider: z.literal("turnstile"), siteKey: z.string() }).strict().nullable(),
+  })
+  .strict();
 export const okDeletedSchema = z.object({ ok: z.literal(true), deletedAt: iso }).strict();
 
 // Tokens
