@@ -80,12 +80,12 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
       const contentType =
         (typeof ctHeader === "string" && ctHeader.split(";")[0]?.trim()) || "application/octet-stream";
 
-      const { storageKey, hex, size } = await writeBlob(body);
-
       const doc = await prisma.document.findUniqueOrThrow({
         where: { id: request.params.id },
         select: { workspaceId: true },
       });
+      const { storageKey, hex, size } = await writeBlob(body, doc.workspaceId);
+
       const attachment = await prisma.attachment.create({
         data: {
           workspaceId: doc.workspaceId,

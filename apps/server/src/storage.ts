@@ -8,17 +8,27 @@ import type { StorageBackend } from "./storage/backend.js";
 import { FsBackend } from "./storage/fs-backend.js";
 import { S3Backend } from "./storage/s3-backend.js";
 
-// Content is stored content-addressed and immutable: the storage key is derived from the
-// sha256 of the canonical content. Identical content reuses the same object, so writes are
-// idempotent and a retry after a crash cannot create a divergent object (review H4).
+// Content is stored content-addressed and immutable inside a workspace scope: the storage key
+// includes the workspace id plus the sha256 of the canonical content. Identical content in the
+// same workspace reuses the same object, so writes are idempotent and a retry after a crash
+// cannot create a divergent object (review H4).
 // Keys are logical posix paths (forward slashes) — persisted in the DB and compared
 // equal regardless of host OS, and used directly as object keys in S3/Spaces.
-export function storageKeyForHex(hex: string): string {
-  return ["objects", hex.slice(0, 2), `${hex}.md`].join("/");
+const WORKSPACE_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+function workspacePrefix(workspaceId: string): string {
+  if (!WORKSPACE_ID_RE.test(workspaceId)) {
+    throw new Error(`Refusing to write malformed workspace id: ${workspaceId}`);
+  }
+  return `workspaces/${workspaceId}`;
 }
 
-export function attachmentKeyForHex(hex: string): string {
-  return ["attachments", hex.slice(0, 2), hex].join("/");
+export function storageKeyForHex(hex: string, workspaceId: string): string {
+  return [workspacePrefix(workspaceId), "objects", hex.slice(0, 2), `${hex}.md`].join("/");
+}
+
+export function attachmentKeyForHex(hex: string, workspaceId: string): string {
+  return [workspacePrefix(workspaceId), "attachments", hex.slice(0, 2), hex].join("/");
 }
 
 // Backend is chosen once by STORAGE_DRIVER. `fs` (default) is used by dev/test/CI; `spaces`
@@ -54,10 +64,10 @@ export function setStorageBackend(b: StorageBackend | undefined): void {
 }
 
 /** Write canonical content; returns the immutable storage key and its sha256 hex. */
-export async function writeContent(content: string): Promise<{ storageKey: string; hex: string }> {
+export async function writeContent(content: string, workspaceId: string): Promise<{ storageKey: string; hex: string }> {
   const canonical = canonicalize(content);
   const hex = createHash("sha256").update(canonical, "utf8").digest("hex");
-  const storageKey = storageKeyForHex(hex);
+  const storageKey = storageKeyForHex(hex, workspaceId);
   await backend().putText(storageKey, canonical);
   return { storageKey, hex };
 }
@@ -68,9 +78,9 @@ export async function readContent(storageKey: string): Promise<string> {
 }
 
 /** Write raw bytes content-addressed; returns the immutable key, sha256 hex, and byte length. */
-export async function writeBlob(data: Buffer): Promise<{ storageKey: string; hex: string; size: number }> {
+export async function writeBlob(data: Buffer, workspaceId: string): Promise<{ storageKey: string; hex: string; size: number }> {
   const hex = createHash("sha256").update(data).digest("hex");
-  const storageKey = attachmentKeyForHex(hex);
+  const storageKey = attachmentKeyForHex(hex, workspaceId);
   await backend().putBytes(storageKey, data);
   return { storageKey, hex, size: data.length };
 }
@@ -86,8 +96,9 @@ export async function readBlob(storageKey: string): Promise<Buffer> {
 // DocumentRevision references. This sweep deletes unreferenced objects older than a
 // grace period (so it never races an in-flight, not-yet-committed write). Backend-agnostic.
 // ---------------------------------------------------------------------------
-const OBJECT_KEY_RE = /^objects\/[0-9a-f]{2}\/[0-9a-f]{64}\.md$/;
-const ATTACHMENT_KEY_RE = /^attachments\/[0-9a-f]{2}\/[0-9a-f]{64}$/;
+const SCOPED_KEY_PREFIX_RE = `(?:workspaces\\/${WORKSPACE_ID_RE.source.slice(1, -1)}\\/)?`;
+const OBJECT_KEY_RE = new RegExp(`^${SCOPED_KEY_PREFIX_RE}objects\\/[0-9a-f]{2}\\/[0-9a-f]{64}\\.md$`);
+const ATTACHMENT_KEY_RE = new RegExp(`^${SCOPED_KEY_PREFIX_RE}attachments\\/[0-9a-f]{2}\\/[0-9a-f]{64}$`);
 
 // Reads only accept well-formed content-addressed keys. Keys come from our own DB rows,
 // but validating here is cheap defense-in-depth against ever reading an arbitrary object.
@@ -104,7 +115,7 @@ export async function sweepOrphanObjects(
   minAgeMs = 60 * 60 * 1000,
 ): Promise<{ removed: number; kept: number }> {
   const b = backend();
-  const listed = [...(await b.list("objects/")), ...(await b.list("attachments/"))].filter(
+  const listed = [...(await b.list("objects/")), ...(await b.list("attachments/")), ...(await b.list("workspaces/"))].filter(
     (o) => OBJECT_KEY_RE.test(o.key) || ATTACHMENT_KEY_RE.test(o.key),
   );
   const revisions = await client.documentRevision.findMany({ select: { storageKey: true } });

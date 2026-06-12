@@ -15,27 +15,37 @@ beforeAll(async () => {
 });
 
 describe("content-addressed storage", () => {
+  const workspaceId = "workspace_test";
+
   it("is idempotent: identical content reuses the same key", async () => {
-    const a = await storage.writeContent("# Hello\n");
-    const b = await storage.writeContent("# Hello\n");
+    const a = await storage.writeContent("# Hello\n", workspaceId);
+    const b = await storage.writeContent("# Hello\n", workspaceId);
     expect(a.storageKey).toBe(b.storageKey);
     expect(a.hex).toBe(b.hex);
   });
 
+  it("scopes keys by workspace so tenant cleanup has a clear prefix", async () => {
+    const a = await storage.writeContent("# Hello\n", "workspace_a");
+    const b = await storage.writeContent("# Hello\n", "workspace_b");
+    expect(a.hex).toBe(b.hex);
+    expect(a.storageKey).toBe(`workspaces/workspace_a/objects/${a.hex.slice(0, 2)}/${a.hex}.md`);
+    expect(b.storageKey).toBe(`workspaces/workspace_b/objects/${b.hex.slice(0, 2)}/${b.hex}.md`);
+  });
+
   it("canonicalizes before hashing so CRLF and trailing newlines do not change the key", async () => {
-    const lf = await storage.writeContent("line1\nline2");
-    const crlf = await storage.writeContent("line1\r\nline2\r\n\r\n");
+    const lf = await storage.writeContent("line1\nline2", workspaceId);
+    const crlf = await storage.writeContent("line1\r\nline2\r\n\r\n", workspaceId);
     expect(crlf.storageKey).toBe(lf.storageKey);
   });
 
   it("round-trips content", async () => {
-    const { storageKey } = await storage.writeContent("# Roundtrip\n\nBody.\n");
+    const { storageKey } = await storage.writeContent("# Roundtrip\n\nBody.\n", workspaceId);
     expect(await storage.readContent(storageKey)).toBe("# Roundtrip\n\nBody.\n");
   });
 
   it("distinct content yields distinct keys", async () => {
-    const a = await storage.writeContent("alpha\n");
-    const b = await storage.writeContent("beta\n");
+    const a = await storage.writeContent("alpha\n", workspaceId);
+    const b = await storage.writeContent("beta\n", workspaceId);
     expect(a.storageKey).not.toBe(b.storageKey);
   });
 });
