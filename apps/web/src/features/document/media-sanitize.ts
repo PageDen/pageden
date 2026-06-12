@@ -27,7 +27,7 @@ export const previewSanitizeSchema: Options = {
       "title",
       "className",
     ],
-    img: [...((base.attributes ?? {}).img ?? []), "className", "loading", "width", "height", "data-align"],
+    img: [...((base.attributes ?? {}).img ?? []), "className", "loading", "width", "height", "data-align", "dataAlign"],
   },
   // Only http(s) for media sources (defaultSchema already restricts most; be explicit).
   protocols: {

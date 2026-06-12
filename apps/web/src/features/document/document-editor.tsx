@@ -261,7 +261,8 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                     },
                     img: ({ src, alt, ...props }) => {
                       const resolved = src ? attachmentUrls.get(cleanAttachmentHref(src)) : undefined;
-                      return <img {...props} src={resolved ?? src} alt={alt ?? ""} className="max-w-full rounded" />;
+                      const align = imageAlign(props);
+                      return <img {...props} src={resolved ?? src} alt={alt ?? ""} data-align={align} className="max-w-full rounded" />;
                     },
                     video: ({ ...props }) => (
                       <video {...props} controls className="max-w-full rounded" />
@@ -429,6 +430,11 @@ function markdownText(children: ReactNode): string {
     return markdownText((children as { props?: { children?: ReactNode } }).props?.children);
   }
   return "";
+}
+
+function imageAlign(props: Record<string, unknown>) {
+  const align = props["data-align"] ?? props.dataAlign;
+  return align === "left" || align === "right" || align === "center" ? align : undefined;
 }
 
 function buildAttachmentUrlMap(data?: AttachmentList): Map<string, string> {

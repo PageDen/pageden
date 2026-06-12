@@ -63,5 +63,5 @@ test("first-build loop: login → create folder + document → edit → save →
   await expect(page.locator("nav").getByRole("link", { name: new RegExp(documentTitle) })).toBeVisible();
   await page.locator("nav").getByRole("link", { name: new RegExp(documentTitle) }).click();
   await page.reload();
-  await expect(page.getByText("Hello E2E")).toBeVisible();
+  await expect(page.getByRole("heading", { name: new RegExp("Hello E2E") })).toBeVisible();
 });
