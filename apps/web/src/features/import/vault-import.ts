@@ -1,4 +1,4 @@
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import type { z } from "zod";
 import type { treeSchema } from "@pageden/api-types";
 import { frontmatterTitle } from "../document/frontmatter";
@@ -133,7 +133,9 @@ export async function importFilesToWorkspace({
     const targetRootSlug = preview.targetRootSlug;
     let parent = folderByPath.get(targetRootSlug);
     if (!parent) {
-      const created = await api.createFolder({ workspaceId, parentFolderId: null, name: targetRootName, slug: targetRootSlug });
+      const created = await withRateLimitRetry(() =>
+        api.createFolder({ workspaceId, parentFolderId: null, name: targetRootName, slug: targetRootSlug }),
+      );
       parent = { id: created.id, path: created.path, parentFolderId: null, name: targetRootName, slug: targetRootSlug, permission: "manager" };
       folderByPath.set(trimSlashes(created.path), parent);
       foldersCreated += 1;
@@ -148,7 +150,10 @@ export async function importFilesToWorkspace({
         parent = existing;
         continue;
       }
-      const created = await api.createFolder({ workspaceId, parentFolderId: parent.id, name: segment, slug });
+      const parentFolderId: string = parent.id;
+      const created = await withRateLimitRetry(() =>
+        api.createFolder({ workspaceId, parentFolderId, name: segment, slug }),
+      );
       parent = { id: created.id, path: created.path, parentFolderId: parent.id, name: segment, slug, permission: "manager" };
       folderByPath.set(trimSlashes(created.path), parent);
       foldersCreated += 1;
@@ -175,13 +180,15 @@ export async function importFilesToWorkspace({
     const slug = conflictPolicy === "rename" ? uniqueDocumentSlug(baseSlug, folderPath, documentPaths) : baseSlug;
     if (slug !== baseSlug) remotePath = [folderPath, `${slug}.md`].filter(Boolean).join("/");
     const title = slug === baseSlug ? baseTitle : `${baseTitle} (${slug.replace(new RegExp(`^${escapeRegExp(baseSlug)}-?`), "")})`;
-    const created = await api.createDocument({
-      workspaceId,
-      folderId: folder.id,
-      title,
-      slug,
-      content,
-    });
+    const created = await withRateLimitRetry(() =>
+      api.createDocument({
+        workspaceId,
+        folderId: folder.id,
+        title,
+        slug,
+        content,
+      }),
+    );
     documentsCreated += 1;
     rows.push({ path: note.path, status: "created", message: remotePath === remotePathForNote(note.path, preview.targetRootSlug) ? `Created ${created.path}` : `Created duplicate as ${created.path}` });
     documentPaths.add(trimSlashes(created.path));
@@ -389,12 +396,40 @@ function trimSlashes(path: string): string {
   return path.replace(/^\/+|\/+$/g, "");
 }
 
+// Bulk imports fire one request per folder/document/attachment and can exceed the
+// server's per-IP rate limit. Instead of failing the whole import, wait out 429s
+// (honoring the "retry in N seconds" hint) and continue.
+const MAX_RATE_LIMIT_RETRIES = 6;
+
+function rateLimitDelayMs(error: ApiError): number {
+  const message =
+    error.body && typeof error.body === "object" && "message" in error.body
+      ? String((error.body as { message: unknown }).message)
+      : "";
+  const seconds = Number(/retry in (\d+)/i.exec(message)?.[1] ?? 10);
+  return Math.min(Math.max(seconds, 1), 60) * 1000 + 250;
+}
+
+async function withRateLimitRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, rateLimitDelayMs(error)));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 async function uploadAttachmentWithRetry(documentId: string, file: File): Promise<void> {
   try {
-    await api.uploadAttachment(documentId, file);
+    await withRateLimitRetry(() => api.uploadAttachment(documentId, file));
   } catch (firstError) {
     try {
-      await api.uploadAttachment(documentId, file);
+      await withRateLimitRetry(() => api.uploadAttachment(documentId, file));
     } catch {
       throw firstError;
     }

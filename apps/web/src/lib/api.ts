@@ -290,6 +290,7 @@ export function crudErrorMessage(error: unknown): string {
       const m = (error.body as { message?: string } | null)?.message;
       return m ?? "This changed on the server — reload and try again.";
     }
+    if (error.status === 429) return "Too many requests — wait a moment and try again.";
   }
   return "Something went wrong.";
 }
