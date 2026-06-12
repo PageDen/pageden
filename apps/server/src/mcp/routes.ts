@@ -52,13 +52,21 @@ const tools = [
   },
   {
     name: "pageden_read_document",
-    description: "Read a document by id or path.",
+    description:
+      "Read a document by id or path. Large documents are returned in chunks: use offset/maxChars and the truncated/nextOffset response fields to page through the full content.",
     inputSchema: {
       type: "object",
       properties: {
         workspaceId: { type: "string" },
         documentId: { type: "string" },
         path: { type: "string" },
+        offset: { type: "number", minimum: 0, description: "Character offset to start reading from. Default 0." },
+        maxChars: {
+          type: "number",
+          minimum: 1,
+          maximum: 200000,
+          description: "Maximum characters of content to return. Default 50000.",
+        },
       },
     },
   },
@@ -427,7 +435,7 @@ async function callTool(
   let data: unknown;
   if (name === "pageden_search") data = await searchDocuments(auth, args, request);
   else if (name === "pageden_list_documents") data = await listDocuments(auth, await resolveWorkspaceId(auth, maybeString(args.workspaceId), request));
-  else if (name === "pageden_read_document") data = await readDocument(auth, args);
+  else if (name === "pageden_read_document") data = await readDocumentChunked(auth, args);
   else if (name === "pageden_recent_changes") data = await recentChanges(auth, args, request);
   else if (name === "pageden_answer_from_docs") data = await answerFromDocs(auth, args, request);
   else if (name === "pageden_find_related_docs") data = await findRelatedDocs(auth, args, request);
@@ -571,6 +579,37 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
     headings: context.headings,
     wikilinks: context.wikilinks,
     aiReadiness: readiness,
+  };
+}
+
+const READ_CHUNK_DEFAULT = 50_000;
+const READ_CHUNK_MAX = 200_000;
+
+/**
+ * MCP tool response for pageden_read_document: full read internally, but the returned
+ * content is windowed by offset/maxChars so large documents are pageable by agents with
+ * limited context. Internal callers (append/update) keep using readDocument directly.
+ */
+async function readDocumentChunked(auth: AuthContext, args: Record<string, unknown>) {
+  const doc = await readDocument(auth, args);
+  const rawOffset = typeof args.offset === "number" && Number.isFinite(args.offset) ? Math.floor(args.offset) : 0;
+  const offset = Math.max(0, rawOffset);
+  const rawMax = typeof args.maxChars === "number" && Number.isFinite(args.maxChars) ? Math.floor(args.maxChars) : READ_CHUNK_DEFAULT;
+  const maxChars = Math.min(Math.max(1, rawMax), READ_CHUNK_MAX);
+  const totalChars = doc.content.length;
+  const chunk = doc.content.slice(offset, offset + maxChars);
+  const truncated = offset > 0 || offset + chunk.length < totalChars;
+  return {
+    ...doc,
+    content: chunk,
+    // When truncated, body would duplicate oversized content; frontmatter/headings stay
+    // available (computed from the full document) so agents can navigate.
+    body: truncated ? undefined : doc.body,
+    totalChars,
+    offset,
+    returnedChars: chunk.length,
+    truncated,
+    nextOffset: offset + chunk.length < totalChars ? offset + chunk.length : null,
   };
 }
 

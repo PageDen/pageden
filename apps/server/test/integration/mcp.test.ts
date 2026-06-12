@@ -103,6 +103,54 @@ describe("MCP agent access", () => {
     expect(readData.aiReadiness.issues).toEqual(expect.any(Array));
   });
 
+  it("chunks large document reads with offset/maxChars and paging metadata", async () => {
+    const s = await agentToken(["search", "read", "create"]);
+    const bigBody = `# Big Doc\n\n${"x".repeat(60_000)}`;
+    const created = await tool(s.token, "pageden_create_document", {
+      workspaceId: s.ws.id,
+      folderId: s.folderId,
+      title: "Big Doc",
+      slug: "big-doc",
+      content: bigBody,
+    });
+    const createdData = toolJson(created);
+
+    // Default read caps content at 50000 chars and reports paging metadata.
+    // The write path may normalize content (e.g. trailing newline), so compare
+    // against the stored size reported by the server rather than the input size.
+    const first = toolJson(await tool(s.token, "pageden_read_document", { documentId: createdData.id }));
+    expect(first.totalChars).toBeGreaterThanOrEqual(bigBody.length);
+    expect(first.returnedChars).toBe(50_000);
+    expect(first.content).toHaveLength(50_000);
+    expect(first.truncated).toBe(true);
+    expect(first.nextOffset).toBe(50_000);
+    expect(first.body).toBeUndefined();
+    expect(first.headings[0]).toMatchObject({ level: 1, title: "Big Doc" });
+
+    // Following nextOffset returns the remainder and ends paging.
+    const second = toolJson(
+      await tool(s.token, "pageden_read_document", { documentId: createdData.id, offset: first.nextOffset }),
+    );
+    expect(second.offset).toBe(50_000);
+    expect(second.returnedChars).toBe(first.totalChars - 50_000);
+    expect(second.nextOffset).toBeNull();
+    const reassembled = first.content + second.content;
+    expect(reassembled).toHaveLength(first.totalChars);
+    expect(reassembled.startsWith(bigBody)).toBe(true);
+
+    // Explicit maxChars is honored; small docs remain untruncated with full metadata.
+    const windowed = toolJson(
+      await tool(s.token, "pageden_read_document", { documentId: createdData.id, offset: 2, maxChars: 5 }),
+    );
+    expect(windowed.content).toBe(bigBody.slice(2, 7));
+    expect(windowed.truncated).toBe(true);
+
+    const small = toolJson(await tool(s.token, "pageden_read_document", { documentId: s.docId }));
+    expect(small.truncated).toBe(false);
+    expect(small.nextOffset).toBeNull();
+    expect(small.body).toContain("# Runbook");
+  });
+
   it("reports AI-readiness issues that help agents judge document quality", async () => {
     const s = await agentToken(["search", "read", "create"]);
     const longBodyWithoutHeadings = Array.from(
