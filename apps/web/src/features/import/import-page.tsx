@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Loader2, UploadCloud } from "lucide-react";
@@ -20,6 +20,9 @@ export function ImportPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [conflictPolicy, setConflictPolicy] = useState<ImportConflictPolicy>("skip");
+  const [isReadingFolder, setIsReadingFolder] = useState(false);
+  const [sourceLabel, setSourceLabel] = useState<string | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const fileSummary = useMemo(() => {
     const totalBytes = files.reduce((sum, item) => sum + item.file.size, 0);
@@ -44,7 +47,7 @@ export function ImportPage() {
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
     },
   });
-  const canImport = Boolean(workspaceId && tree.data && files.length && preview && !importMutation.isPending);
+  const canImport = Boolean(workspaceId && tree.data && files.length && preview && !importMutation.isPending && !isReadingFolder);
 
   async function updatePreview(nextFiles = files, nextRoot = targetRootName) {
     if (!tree.data || nextFiles.length === 0) {
@@ -59,12 +62,38 @@ export function ImportPage() {
     }
   }
 
-  async function onFilesSelected(selected: FileList | null) {
-    const nextFiles = selected ? filesFromFileList(selected) : [];
+  async function prepareFiles(nextFiles: BrowserImportFile[], label: string) {
+    setSourceLabel(label);
     setFiles(nextFiles);
     setReport(null);
     setProgress(null);
     await updatePreview(nextFiles, targetRootName);
+  }
+
+  async function onFilesSelected(selected: FileList | null) {
+    const nextFiles = selected ? filesFromFileList(selected) : [];
+    await prepareFiles(nextFiles, "Selected folder");
+  }
+
+  async function onFolderPickerClick() {
+    const directoryPicker = getDirectoryPicker();
+    if (directoryPicker) {
+      try {
+        setIsReadingFolder(true);
+        setPreviewError(null);
+        const directory = await directoryPicker();
+        await prepareFiles(await filesFromDirectoryHandle(directory), directory.name);
+      } catch (error) {
+        if (!isAbortError(error)) {
+          setPreviewError(error instanceof Error ? error.message : "Could not read that folder.");
+        }
+      } finally {
+        setIsReadingFolder(false);
+      }
+      return;
+    }
+
+    folderInputRef.current?.click();
   }
 
   async function onRootChange(value: string) {
@@ -103,24 +132,41 @@ export function ImportPage() {
                 placeholder="Imported from Web"
               />
             </label>
-            <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center transition hover:border-orange-300 hover:bg-orange-50/40 dark:border-slate-700 dark:bg-slate-950/40 dark:hover:border-orange-400/60 dark:hover:bg-orange-500/10">
+            <button
+              type="button"
+              className="mt-4 flex w-full cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center transition hover:border-orange-300 hover:bg-orange-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 dark:border-slate-700 dark:bg-slate-950/40 dark:hover:border-orange-400/60 dark:hover:bg-orange-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={importMutation.isPending || isReadingFolder}
+              onClick={() => void onFolderPickerClick()}
+            >
               <FileUp className="h-8 w-8 text-orange-600 dark:text-orange-300" aria-hidden="true" />
-              <span className="mt-3 text-sm font-medium text-slate-900 dark:text-slate-100">Select your vault folder</span>
+              <span className="mt-3 text-sm font-medium text-slate-900 dark:text-slate-100">{isReadingFolder ? "Reading folder..." : "Select your vault folder"}</span>
               <span className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                Markdown files are imported. Local attachments are uploaded when Pageden can find the referenced file; missing files are listed in the report.
+                Opens a local folder picker and previews files before import.
               </span>
-              <input
-                type="file"
-                multiple
-                className="sr-only"
-                onChange={(event) => void onFilesSelected(event.currentTarget.files)}
-                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-              />
-            </label>
+            </button>
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              className="sr-only"
+              disabled={importMutation.isPending}
+              onChange={(event) => {
+                void onFilesSelected(event.currentTarget.files);
+                event.currentTarget.value = "";
+              }}
+              {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            />
 
             {fileSummary.count ? (
               <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-                Selected {fileSummary.count} file{fileSummary.count === 1 ? "" : "s"} ({formatBytes(fileSummary.totalBytes)}).
+                {sourceLabel ? `${sourceLabel}: ` : "Selected "}
+                {fileSummary.count} file{fileSummary.count === 1 ? "" : "s"} ({formatBytes(fileSummary.totalBytes)}).
+              </p>
+            ) : null}
+            {isReadingFolder ? (
+              <p className="mt-3 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Reading selected folder...
               </p>
             ) : null}
           </section>
@@ -329,4 +375,55 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type BrowserFileSystemHandle = BrowserFileSystemDirectoryHandle | BrowserFileSystemFileHandle;
+
+interface BrowserFileSystemDirectoryHandle {
+  kind: "directory";
+  name: string;
+  values(): AsyncIterable<BrowserFileSystemHandle>;
+}
+
+interface BrowserFileSystemFileHandle {
+  kind: "file";
+  name: string;
+  getFile(): Promise<File>;
+}
+
+type WindowWithDirectoryPicker = Window & {
+  showDirectoryPicker?: () => Promise<BrowserFileSystemDirectoryHandle>;
+};
+
+function getDirectoryPicker() {
+  return (window as WindowWithDirectoryPicker).showDirectoryPicker;
+}
+
+async function filesFromDirectoryHandle(directory: BrowserFileSystemDirectoryHandle): Promise<BrowserImportFile[]> {
+  const files: BrowserImportFile[] = [];
+
+  async function walk(current: BrowserFileSystemDirectoryHandle, segments: string[]) {
+    for await (const entry of current.values()) {
+      if (entry.kind === "directory") {
+        await walk(entry, [...segments, entry.name]);
+        continue;
+      }
+      const file = await entry.getFile();
+      const path = [...segments, entry.name].join("/");
+      files.push({
+        file,
+        path,
+        originalPath: `${directory.name}/${path}`,
+        name: entry.name,
+        extension: entry.name.includes(".") ? entry.name.split(".").pop()?.toLowerCase() ?? "" : "",
+      });
+    }
+  }
+
+  await walk(directory, []);
+  return files;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
