@@ -56,10 +56,10 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     [canEdit, doc.id, live],
   );
 
-  // Guard against losing unsaved edits on navigation / tab close.
-  useBlocker({
-    shouldBlockFn: () => draft.dirty && !window.confirm("You have unsaved changes. Leave and discard them?"),
+  const navigationBlocker = useBlocker({
+    shouldBlockFn: () => draft.dirty,
     enableBeforeUnload: () => draft.dirty,
+    withResolver: true,
   });
 
   const save = useMutation({
@@ -211,6 +211,32 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         <div className="mx-6 mb-3 mt-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700">
           {nonConflictMessage}
           {rescue}
+        </div>
+      ) : null}
+      {navigationBlocker.status === "blocked" ? (
+        <div className="fixed inset-x-0 top-4 z-50 mx-auto w-[min(92vw,520px)] rounded-lg border border-amber-200 bg-white p-4 text-sm shadow-2xl ring-1 ring-slate-950/5">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-700">
+              <AlertTriangle size={17} aria-hidden="true" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold text-slate-950">Unsaved changes</div>
+              <p className="mt-1 leading-6 text-slate-600">
+                This document has edits that are not saved yet. Stay here to keep working, or leave and discard the draft.
+              </p>
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
+                <Button type="button" variant="ghost" onClick={() => navigationBlocker.reset()}>
+                  Stay
+                </Button>
+                <Button type="button" variant="secondary" onClick={copyDraft}>
+                  Copy draft
+                </Button>
+                <Button type="button" variant="danger" onClick={() => navigationBlocker.proceed()}>
+                  Leave and discard
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
 
