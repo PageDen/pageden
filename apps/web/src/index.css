@@ -313,6 +313,139 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
   background-color: rgb(15 23 42);
 }
 
+.pageden-document-view.prose {
+  @apply text-slate-800;
+}
+
+.dark .pageden-document-view.prose {
+  color: rgb(226 232 240);
+}
+
+.pageden-document-view.prose h1,
+.pageden-document-view.prose h2,
+.pageden-document-view.prose h3,
+.pageden-document-view.prose h4,
+.pageden-document-view.prose h5,
+.pageden-document-view.prose h6 {
+  @apply scroll-mt-24 text-slate-950;
+}
+
+.dark .pageden-document-view.prose h1,
+.dark .pageden-document-view.prose h2,
+.dark .pageden-document-view.prose h3,
+.dark .pageden-document-view.prose h4,
+.dark .pageden-document-view.prose h5,
+.dark .pageden-document-view.prose h6 {
+  color: rgb(248 250 252);
+}
+
+.pageden-document-view.prose p,
+.pageden-document-view.prose li {
+  @apply leading-7;
+}
+
+.pageden-document-view.prose ul,
+.pageden-document-view.prose ol {
+  @apply my-4 pl-7;
+}
+
+.pageden-document-view.prose li > ul,
+.pageden-document-view.prose li > ol {
+  @apply my-2;
+}
+
+.pageden-document-view.prose blockquote {
+  @apply my-5 overflow-hidden rounded-r-md border-l-4 border-orange-300 bg-orange-50/60 py-2 pl-5 pr-4 font-normal text-slate-700;
+}
+
+.dark .pageden-document-view.prose blockquote {
+  border-color: rgb(251 146 60);
+  background-color: rgb(154 52 18 / 0.12);
+  color: rgb(226 232 240);
+}
+
+.pageden-document-view.prose blockquote p {
+  @apply my-0;
+}
+
+.pageden-document-view.prose code::before,
+.pageden-document-view.prose code::after {
+  content: none;
+}
+
+.pageden-document-view.prose :not(pre) > code {
+  @apply rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[0.9em] font-medium text-slate-800;
+}
+
+.dark .pageden-document-view.prose :not(pre) > code {
+  background-color: rgb(30 41 59);
+  color: rgb(248 250 252);
+}
+
+.pageden-document-view.prose pre {
+  @apply my-5 overflow-x-auto rounded-md border border-slate-800 bg-slate-950 p-4 text-sm leading-6 text-slate-100 shadow-sm;
+}
+
+.pageden-document-view.prose pre code {
+  @apply whitespace-pre bg-transparent p-0 text-inherit;
+  border: 0;
+  font-size: inherit;
+}
+
+.pageden-document-view.prose table {
+  @apply my-5 w-full border-separate border-spacing-0 overflow-hidden rounded-md border border-slate-200 text-sm;
+}
+
+.pageden-document-view.prose th,
+.pageden-document-view.prose td {
+  @apply border-l border-t border-slate-200 px-3 py-2 align-top;
+}
+
+.pageden-document-view.prose tr:first-child th,
+.pageden-document-view.prose tr:first-child td {
+  @apply border-t-0;
+}
+
+.pageden-document-view.prose th:first-child,
+.pageden-document-view.prose td:first-child {
+  @apply border-l-0;
+}
+
+.pageden-document-view.prose th {
+  @apply bg-slate-50 font-semibold text-slate-700;
+}
+
+.dark .pageden-document-view.prose table,
+.dark .pageden-document-view.prose th,
+.dark .pageden-document-view.prose td {
+  border-color: rgb(51 65 85);
+}
+
+.dark .pageden-document-view.prose th {
+  background-color: rgb(15 23 42);
+  color: rgb(203 213 225);
+}
+
+.pageden-document-view.prose hr {
+  @apply my-8 border-slate-200;
+}
+
+.dark .pageden-document-view.prose hr {
+  border-color: rgb(51 65 85);
+}
+
+.pageden-document-view.prose img {
+  @apply my-5 max-h-[520px] max-w-full rounded-lg border border-slate-200 shadow-sm;
+}
+
+.dark .pageden-document-view.prose img {
+  border-color: rgb(51 65 85);
+}
+
+.pageden-document-view.prose input[type="checkbox"] {
+  @apply mr-2 align-middle accent-orange-600;
+}
+
 /* Editor media: responsive video + embeds */
 .rich-markdown-editor .pd-video,
 .rich-markdown-editor img {

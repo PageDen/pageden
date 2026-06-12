@@ -249,7 +249,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         <div className="flex-1 overflow-auto border-r border-slate-200 bg-white">
           {!canEdit || preview ? (
             <div className="mx-auto max-w-[920px] px-8 py-7">
-              <div className="prose prose-slate max-w-none break-words text-[15px] leading-7">
+              <div className="pageden-document-view prose prose-slate max-w-none break-words text-[15px] leading-7">
                 <FrontmatterSummary attributes={parsedPreview.attributes} />
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
