@@ -23,6 +23,18 @@ describe("Obsidian markdown compatibility", () => {
     );
   });
 
+  it("turns section wiki links into in-page anchors", () => {
+    expect(resolveWikiLinks("See [[#Architecture Overview|Architecture Overview]].", "ws1", tree)).toBe(
+      "See [Architecture Overview](#architecture-overview).",
+    );
+  });
+
+  it("preserves document links with section anchors", () => {
+    expect(resolveWikiLinks("See [[Runbook#Deploy Steps|deploy steps]].", "ws1", tree)).toBe(
+      "See [deploy steps](/w/ws1/d/doc1#deploy-steps).",
+    );
+  });
+
   it("keeps unresolved wiki links readable and converts Obsidian embeds to Markdown images", () => {
     expect(resolveWikiLinks("See [[Missing]]\n![[diagram.png|Diagram]]", "ws1", tree)).toBe(
       "See Missing\n![Diagram](diagram.png)",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
@@ -15,7 +15,7 @@ import { useDocumentDraft } from "../../lib/draft";
 import { Button } from "../../components/ui/button";
 import { RichMarkdownEditor } from "./rich-markdown-editor";
 import { isAllowedEmbedSrc } from "./media";
-import { TableOfContents } from "./table-of-contents";
+import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 
 type Doc = z.infer<typeof documentWithContentSchema>;
@@ -27,7 +27,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   const queryClient = useQueryClient();
   const canEdit = doc.permission === "editor" || doc.permission === "manager";
   const draft = useDocumentDraft({ content: doc.content, version: doc.version ?? "" });
-  const [preview, setPreview] = useState(false);
+  const [preview, setPreview] = useState(true);
   const [live, setLive] = useState(false);
   const [liveStatus, setLiveStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
   const [conflict, setConflict] = useState<string | null>(null);
@@ -55,6 +55,11 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         : undefined,
     [canEdit, doc.id, live],
   );
+
+  useEffect(() => {
+    setPreview(true);
+    setLive(false);
+  }, [doc.id]);
 
   const navigationBlocker = useBlocker({
     shouldBlockFn: () => draft.dirty,
@@ -166,10 +171,10 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             {canEdit ? (
               <Button variant="ghost" className="h-9 gap-1.5 px-2.5" onClick={() => setPreview((p) => !p)}>
                 {preview ? <SquarePen size={15} /> : <Eye size={15} />}
-                {preview ? "Edit" : "Preview"}
+                {preview ? "Edit" : "View"}
               </Button>
             ) : null}
-            {canEdit ? (
+            {canEdit && !preview ? (
               <Button variant={live ? "primary" : "ghost"} className="h-9 gap-1.5 px-2.5" onClick={() => setLive((enabled) => !enabled)}>
                 <Radio size={15} />
                 {live ? `Live ${liveStatus === "connected" ? "on" : "connecting"}` : "Live"}
@@ -183,7 +188,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
               <History size={15} />
               History
             </Link>
-            {canEdit ? (
+            {canEdit && !preview ? (
               <Button className="h-9 gap-1.5 px-3" onClick={doSave} disabled={!draft.dirty || save.isPending || reloading}>
                 <Save size={15} />
                 {save.isPending ? "Saving…" : "Save"}
@@ -261,6 +266,12 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                     video: ({ ...props }) => (
                       <video {...props} controls className="max-w-full rounded" />
                     ),
+                    h1: ({ children, ...props }) => <h1 {...props} id={headingId(markdownText(children))}>{children}</h1>,
+                    h2: ({ children, ...props }) => <h2 {...props} id={headingId(markdownText(children))}>{children}</h2>,
+                    h3: ({ children, ...props }) => <h3 {...props} id={headingId(markdownText(children))}>{children}</h3>,
+                    h4: ({ children, ...props }) => <h4 {...props} id={headingId(markdownText(children))}>{children}</h4>,
+                    h5: ({ children, ...props }) => <h5 {...props} id={headingId(markdownText(children))}>{children}</h5>,
+                    h6: ({ children, ...props }) => <h6 {...props} id={headingId(markdownText(children))}>{children}</h6>,
                     iframe: ({ src, ...props }) =>
                       src && isAllowedEmbedSrc(src) ? (
                         <span className="block aspect-video w-full max-w-2xl overflow-hidden rounded">
@@ -388,18 +399,36 @@ function FrontmatterSummary({ attributes }: { attributes: Record<string, string 
 export function resolveWikiLinks(content: string, workspaceId: string, tree?: Pick<Tree, "documents">): string {
   const docs = tree?.documents ?? [];
   return content
-    .replace(/!\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?]]/g, (_match, rawTarget: string, rawLabel?: string) => {
-      const target = rawTarget.trim();
-      const label = (rawLabel ?? target).trim();
+    .replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_match, rawTarget: string, rawLabel?: string) => {
+      const { target, label } = parseWikiTarget(rawTarget, rawLabel);
       return `![${label}](${target})`;
     })
-    .replace(/(?<!!)\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?]]/g, (_match, rawTarget: string, rawLabel?: string) => {
-      const target = rawTarget.trim();
-      const label = (rawLabel ?? target).trim();
+    .replace(/(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_match, rawTarget: string, rawLabel?: string) => {
+      const { target, heading, label } = parseWikiTarget(rawTarget, rawLabel);
+      if (!target && heading) return `[${label}](#${headingId(heading)})`;
       const doc = docs.find((d) => d.title === target || d.path.replace(/^\/+/, "") === target.replace(/^\/+/, ""));
       if (!doc) return label;
-      return `[${label}](/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(doc.id)})`;
+      const hash = heading ? `#${headingId(heading)}` : "";
+      return `[${label}](/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(doc.id)}${hash})`;
     });
+}
+
+function parseWikiTarget(rawTarget: string, rawLabel?: string) {
+  const value = rawTarget.trim();
+  const [targetPart = "", ...headingParts] = value.split("#");
+  const target = targetPart.trim();
+  const heading = headingParts.join("#").trim();
+  const label = (rawLabel ?? (heading || target)).trim();
+  return { target, heading, label };
+}
+
+function markdownText(children: ReactNode): string {
+  if (typeof children === "string" || typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(markdownText).join("");
+  if (children && typeof children === "object" && "props" in children) {
+    return markdownText((children as { props?: { children?: ReactNode } }).props?.children);
+  }
+  return "";
 }
 
 function buildAttachmentUrlMap(data?: AttachmentList): Map<string, string> {
