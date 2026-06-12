@@ -44,6 +44,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { api } from "../../lib/api";
+import { Button } from "../../components/ui/button";
 import {
   MAX_MEDIA_BYTES,
   classifyMediaUrl,
@@ -65,6 +66,8 @@ type RichMarkdownEditorProps = {
 };
 
 type ImageAlign = "left" | "center" | "right";
+type EditorNotice = { id: number; tone: "warning" | "error"; message: string };
+type UrlPanelState = { kind: "link" | "media"; value: string };
 
 type SelectedImageState = {
   src: string;
@@ -232,6 +235,18 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
   const [selectedImage, setSelectedImage] = useState<SelectedImageState | null>(null);
   const [replaceImageMode, setReplaceImageMode] = useState(false);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [notice, setNotice] = useState<EditorNotice | null>(null);
+  const [urlPanel, setUrlPanel] = useState<UrlPanelState | null>(null);
+
+  const showNotice = useCallback((tone: EditorNotice["tone"], message: string) => {
+    setNotice({ id: Date.now(), tone, message });
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = window.setTimeout(() => setNotice((current) => (current?.id === notice.id ? null : current)), 4500);
+    return () => window.clearTimeout(id);
+  }, [notice]);
 
   const refreshSelectedImage = useCallback((ed: Editor | null = editorRef.current) => {
     const shell = shellRef.current;
@@ -292,7 +307,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
     for (const file of Array.from(files)) {
       if (!isUploadableType(file.type)) continue;
       if (file.size > MAX_MEDIA_BYTES) {
-        window.alert(`"${file.name}" exceeds the 25 MB limit.`);
+        showNotice("warning", `"${file.name}" exceeds the 25 MB limit.`);
         continue;
       }
       const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -310,13 +325,13 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
         else chain.insertContent({ type: "video", attrs: { src } }).run();
       } catch (err) {
         console.error("Upload failed:", err);
-        window.alert(`Failed to upload "${file.name}".`);
+        showNotice("error", `Failed to upload "${file.name}".`);
       } finally {
         setUploads((prev) => prev.filter((u) => u.id !== uploadId));
       }
     }
   // setUploads is stable (React guarantee) — safe to omit from deps, keeping this callback stable.
-  }, []);
+  }, [showNotice]);
 
   const insertUrl = useCallback((raw: string): boolean => {
     const ed = editorRef.current;
@@ -451,14 +466,30 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
   const setLink = useCallback(() => {
     if (!editor) return;
     const previousUrl = editor.getAttributes("link").href as string | undefined;
-    const url = window.prompt("Link URL", previousUrl ?? "");
-    if (url === null) return;
-    if (!url.trim()) {
-      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+    setUrlPanel({ kind: "link", value: previousUrl ?? "" });
+  }, [editor]);
+
+  const submitUrlPanel = useCallback((value: string) => {
+    const raw = value.trim();
+    if (urlPanel?.kind === "link") {
+      if (!editor) return;
+      if (!raw) {
+        editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      } else {
+        editor.chain().focus().extendMarkRange("link").setLink({ href: raw }).run();
+      }
+      setUrlPanel(null);
       return;
     }
-    editor.chain().focus().extendMarkRange("link").setLink({ href: url.trim() }).run();
-  }, [editor]);
+    if (urlPanel?.kind === "media") {
+      if (!raw) {
+        setUrlPanel(null);
+        return;
+      }
+      if (insertUrl(raw)) setUrlPanel(null);
+      else showNotice("warning", "That link is not a supported image, video, or YouTube/Vimeo URL.");
+    }
+  }, [editor, insertUrl, showNotice, urlPanel?.kind]);
 
   const pickFile = useCallback(() => fileInputRef.current?.click(), []);
 
@@ -542,17 +573,22 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
   }, [resizeSelectedImage, stopImageResize]);
 
   const insertEmbed = useCallback(() => {
-    const raw = window.prompt("Paste a YouTube or Vimeo link (or an image/video URL)");
-    if (!raw?.trim()) return;
-    if (!insertUrl(raw.trim())) {
-      window.alert("That link isn't a supported image, video, or YouTube/Vimeo URL.");
-    }
-  }, [insertUrl]);
+    setUrlPanel({ kind: "media", value: "" });
+  }, []);
 
   return (
     <div ref={shellRef} className="rich-markdown-editor relative flex h-full flex-col bg-white">
       <EditorToolbar editor={editor} onSetLink={setLink} onPickFile={pickFile} onInsertEmbed={insertEmbed} />
       <UploadProgressToast uploads={uploads} />
+      <EditorNoticeToast notice={notice} onClose={() => setNotice(null)} />
+      {urlPanel ? (
+        <UrlPanel
+          state={urlPanel}
+          onChange={(nextValue) => setUrlPanel((current) => (current ? { ...current, value: nextValue } : current))}
+          onCancel={() => setUrlPanel(null)}
+          onSubmit={() => submitUrlPanel(urlPanel.value)}
+        />
+      ) : null}
       {selectedImage ? (
         <ImageBubbleToolbar
           image={selectedImage}
@@ -598,7 +634,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
                 updateSelectedImage({ src: api.absoluteAttachmentUrl(attachment.id) });
               } catch (err) {
                 console.error("Replace image upload failed:", err);
-                window.alert(`Failed to upload "${file.name}".`);
+                showNotice("error", `Failed to upload "${file.name}".`);
               } finally {
                 setUploads((prev) => prev.filter((u) => u.id !== uploadId));
                 setReplaceImageMode(false);
@@ -609,6 +645,71 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
         }}
       />
       <EditorContent editor={editor} className="min-h-0 flex-1 overflow-auto px-8 py-8" />
+    </div>
+  );
+}
+
+function EditorNoticeToast({ notice, onClose }: { notice: EditorNotice | null; onClose: () => void }) {
+  if (!notice) return null;
+  const classes =
+    notice.tone === "error"
+      ? "border-red-200 bg-red-50 text-red-800"
+      : "border-amber-200 bg-amber-50 text-amber-900";
+  return (
+    <div aria-live="polite" className="fixed right-6 top-24 z-50 w-[min(92vw,360px)]">
+      <div className={`rounded-lg border px-4 py-3 text-sm leading-6 shadow-xl ${classes}`}>
+        <div className="flex items-start justify-between gap-3">
+          <p>{notice.message}</p>
+          <button type="button" className="shrink-0 rounded px-1 font-semibold opacity-70 hover:opacity-100" onClick={onClose} aria-label="Dismiss notice">
+            x
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UrlPanel({
+  state,
+  onChange,
+  onCancel,
+  onSubmit,
+}: {
+  state: UrlPanelState;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const title = state.kind === "link" ? "Add link" : "Embed media";
+  const help = state.kind === "link" ? "Paste a URL, or leave it empty to remove the current link." : "Paste a YouTube, Vimeo, image, or video URL.";
+  const placeholder = state.kind === "link" ? "https://example.com" : "https://youtube.com/watch?v=...";
+  return (
+    <div className="absolute left-1/2 top-14 z-40 w-[min(92vw,520px)] -translate-x-1/2 rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-2xl">
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div>
+          <div className="font-semibold text-slate-950">{title}</div>
+          <p className="mt-1 text-slate-500">{help}</p>
+        </div>
+        <input
+          autoFocus
+          value={state.value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm text-slate-950 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+        />
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit">{state.kind === "link" ? "Apply link" : "Insert media"}</Button>
+        </div>
+      </form>
     </div>
   );
 }
