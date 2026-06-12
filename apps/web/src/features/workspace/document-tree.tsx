@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import type { z } from "zod";
 import { treeSchema } from "@pageden/api-types";
 import { Link } from "@tanstack/react-router";
@@ -42,10 +43,12 @@ interface MenuItem {
 }
 
 function ActionMenu({ items }: { items: MenuItem[] }) {
+  const menuRef = useDismissableMenu();
   if (items.length === 0) return null;
 
   return (
     <details
+      ref={menuRef}
       className="relative shrink-0 opacity-0 transition focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
       onClick={(event) => {
         event.stopPropagation();
