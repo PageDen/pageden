@@ -10,6 +10,7 @@ import { Input } from "../../components/ui/input";
 import { TreePanel } from "./tree-panel";
 import { CommandPalette } from "./command-palette";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
+import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import { highlightSnippet } from "../../lib/search-highlight";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { type ThemeMode, useTheme } from "../../lib/theme";
@@ -30,6 +31,7 @@ export function WorkspaceShell() {
   const [isResizing, setIsResizing] = useState(false);
   const [showQuickAccess, setShowQuickAccess] = useState(() => window.localStorage.getItem("pageden.quickAccess.dismissed") !== "true");
   const sidebarRef = useRef<HTMLElement>(null);
+  const accountMenuRef = useDismissableMenu();
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -287,9 +289,14 @@ export function WorkspaceShell() {
               <span className="block truncate text-[11px] text-slate-400">{me.data?.user.email ?? ""}</span>
             </span>
             <details
+              ref={accountMenuRef}
               className="relative shrink-0"
               onClick={(event) => {
                 event.stopPropagation();
+                // Close the menu when a navigation item is chosen.
+                if ((event.target as HTMLElement).closest("a")) {
+                  event.currentTarget.removeAttribute("open");
+                }
               }}
             >
               <summary
