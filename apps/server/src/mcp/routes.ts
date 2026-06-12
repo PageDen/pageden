@@ -725,7 +725,7 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
   if (!atLeast(folderRole, "editor")) throw new Error("Forbidden.");
 
   const sum = computeChecksum(content);
-  const { storageKey } = await writeContent(content);
+  const { storageKey } = await writeContent(content, workspaceId);
 
   try {
     const result = await prisma.$transaction(async (tx) => {

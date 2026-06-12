@@ -82,7 +82,7 @@ export async function applyDocumentWrite(opts: {
   // write does not perform storage work. Avoids a storage/CPU abuse vector.
   const pre = await prisma.document.findFirst({
     where: { id: opts.documentId, deletedAt: null },
-    select: { currentVersionId: true },
+    select: { currentVersionId: true, workspaceId: true },
   });
   if (!pre) return { ok: false, status: "not_found" };
   const preRole = await resolveDocumentRole(opts.userId, opts.documentId);
@@ -95,7 +95,7 @@ export async function applyDocumentWrite(opts: {
   // Content is written before the transaction so the row lock is held only for the DB work.
   // Orphan objects are harmless: storage is content-addressed and idempotent (review H4).
   const sum = computeChecksum(opts.content);
-  const { storageKey } = await writeContent(opts.content);
+  const { storageKey } = await writeContent(opts.content, pre.workspaceId);
 
   return prisma.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -436,7 +436,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     if (!atLeast(folderRole, "editor")) return forbidden(reply);
 
     const sum = computeChecksum(content);
-    const { storageKey } = await writeContent(content);
+    const { storageKey } = await writeContent(content, workspaceId!);
 
     try {
       const result = await prisma.$transaction(async (tx) => {

@@ -31,21 +31,32 @@ beforeAll(async () => {
 afterAll(() => storage.setStorageBackend(undefined));
 
 describe("storage facade with an injected backend", () => {
+  const workspaceId = "workspace_test";
+
   it("writes/reads blobs through the backend", async () => {
     const mem = new MemBackend();
     storage.setStorageBackend(mem);
-    const { storageKey, size, hex } = await storage.writeBlob(Buffer.from("hello"));
+    const { storageKey, size, hex } = await storage.writeBlob(Buffer.from("hello"), workspaceId);
     expect(size).toBe(5);
-    expect(storageKey).toBe(storage.attachmentKeyForHex(hex));
+    expect(storageKey).toBe(storage.attachmentKeyForHex(hex, workspaceId));
     expect((await storage.readBlob(storageKey)).toString()).toBe("hello");
+  });
+
+  it("still reads legacy unscoped object keys", async () => {
+    const mem = new MemBackend();
+    storage.setStorageBackend(mem);
+    const hex = "a".repeat(64);
+    const legacyKey = `objects/${hex.slice(0, 2)}/${hex}.md`;
+    mem.texts.set(legacyKey, "# legacy\n");
+    expect(await storage.readContent(legacyKey)).toBe("# legacy\n");
   });
 
   it("sweep keeps referenced + too-new objects and removes aged orphans", async () => {
     const mem = new MemBackend();
     storage.setStorageBackend(mem);
-    const referenced = await storage.writeContent("# keep me\n"); // referenced by a revision
-    const orphanOld = await storage.writeContent("# old orphan\n");
-    const orphanNew = await storage.writeContent("# new orphan\n");
+    const referenced = await storage.writeContent("# keep me\n", workspaceId); // referenced by a revision
+    const orphanOld = await storage.writeContent("# old orphan\n", workspaceId);
+    const orphanNew = await storage.writeContent("# new orphan\n", workspaceId);
     // Age the keys: referenced + old orphan are old; new orphan is fresh.
     const old = Date.now() - 2 * 60 * 60 * 1000;
     mem.mtimes.set(referenced.storageKey, old);
