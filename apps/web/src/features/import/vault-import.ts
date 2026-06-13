@@ -365,7 +365,11 @@ function escapeRegExp(value: string): string {
 
 function isIgnoredPath(path: string): boolean {
   const parts = normalizePath(path).split("/");
-  return parts.includes(".obsidian") || parts.includes(".trash") || parts.includes(".git");
+  if (parts.includes(".obsidian") || parts.includes(".trash") || parts.includes(".git")) return true;
+  // macOS archive cruft: the __MACOSX sidecar tree, AppleDouble (._name) files, and .DS_Store.
+  if (parts.includes("__MACOSX")) return true;
+  const base = parts[parts.length - 1] ?? "";
+  return base === ".DS_Store" || base.startsWith("._");
 }
 
 function normalizeMarkdown(value: string): string {
