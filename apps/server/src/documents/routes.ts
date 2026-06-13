@@ -352,7 +352,10 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
 
   // Download a document as a Markdown file with reconstructed frontmatter (read scope).
   // Not a write: no audit event, no revision. Hidden documents 404 like GET /documents/:id.
-  app.get<{ Params: { id: string } }>("/api/documents/:id/download", async (request, reply) => {
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/download",
+    { config: { rateLimit: { max: Number(process.env.DOWNLOAD_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
     const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null } });
