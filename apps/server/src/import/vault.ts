@@ -668,3 +668,6 @@ function contentTypeFor(path: string): string {
 export function newImportJobId(): string {
   return `imp${randomBytes(12).toString("hex")}`;
 }
+
+/** Test-only handle to the streaming zip scanner (caps, zip-slip, data selection). */
+export const scanZipForTests = scanZip;

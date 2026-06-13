@@ -140,7 +140,10 @@ export async function registerImportRoutes(app: FastifyInstance): Promise<void> 
   });
 
   // Boot: fail jobs interrupted by the restart (retryable), then resume any queued ones.
-  void failInterruptedImportJobs().then(() => kickImportWorker());
+  // Must never crash boot: in dev/e2e the server can start before migrations have run.
+  void failInterruptedImportJobs()
+    .then(() => kickImportWorker())
+    .catch((error) => app.log.warn({ err: error }, "import job boot recovery skipped"));
   // Watchdog + 24h cleanup of finished jobs and their zips.
   const interval = setInterval(() => {
     void importJobMaintenance().catch(() => {});

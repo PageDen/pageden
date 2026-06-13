@@ -3,6 +3,7 @@ import { strToU8, zipSync } from "fflate";
 import { getApp, closeApp, req, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario, createUser, addMember, grant, member } from "../fixtures/seed.js";
+import { failInterruptedImportJobs, importJobMaintenance } from "../../src/import/vault.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
@@ -124,6 +125,33 @@ describe("server-side vault import", () => {
     // Job status is existence-hidden from other non-admin users.
     const peek = await req({ method: "GET", url: `/api/import/jobs/${job.id}`, cookies: m.cookie });
     expect(peek.statusCode).toBe(404);
+  });
+
+  it("boot recovery and the watchdog fail stuck jobs; old finished jobs are purged", async () => {
+    const s = await baseScenario();
+    const mkJob = (id: string, data: Record<string, unknown>) =>
+      prisma.importJob.create({
+        data: {
+          id,
+          workspaceId: s.ws.id,
+          userId: s.admin.id,
+          params: { conflictPolicy: "skip", targetRootName: "X" },
+          storageKey: `import/${s.ws.id}/${id}.zip`,
+          ...data,
+        } as never,
+      });
+
+    await mkJob("impboot1", { status: "running" });
+    await failInterruptedImportJobs();
+    const interrupted = await prisma.importJob.findUniqueOrThrow({ where: { id: "impboot1" } });
+    expect(interrupted.status).toBe("failed");
+    expect(interrupted.error).toMatch(/restart/i);
+
+    await mkJob("impstale1", { status: "running", lastHeartbeatAt: new Date(Date.now() - 60 * 60 * 1000) });
+    await mkJob("impold1", { status: "done", finishedAt: new Date(Date.now() - 48 * 60 * 60 * 1000) });
+    await importJobMaintenance();
+    expect((await prisma.importJob.findUniqueOrThrow({ where: { id: "impstale1" } })).status).toBe("failed");
+    expect(await prisma.importJob.findUnique({ where: { id: "impold1" } })).toBeNull();
   });
 
   it("validates the upload request shape", async () => {
