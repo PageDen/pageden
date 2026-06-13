@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { Bot, Check, Clipboard, Code2, Download, ExternalLink, KeyRound, PlugZap, ShieldCheck, Sparkles } from "lucide-react";
+import { Bot, Check, Clipboard, Code2, Download, ExternalLink, KeyRound, PlugZap, ShieldCheck, Sparkles, X } from "lucide-react";
 import { api, crudErrorMessage } from "../../lib/api";
 import { tokensQuery, meQuery } from "../../lib/queries";
 import { formatDateTime } from "../../lib/format";
@@ -72,6 +72,8 @@ export function AgentsPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testMessage, setTestMessage] = useState<string | null>(null);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const endpoint = `${window.location.origin}/mcp`;
   const connectUrl = `${window.location.origin}/w/${encodeURIComponent(workspaceId)}/agents?connect=mcp`;
@@ -181,11 +183,104 @@ export function AgentsPage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-orange-700 dark:text-orange-300">AI agents</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">Connect Codex, Claude, Hermes, or any MCP agent</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-            Pick your app, create a workspace-bound key, download the ready-made setup, follow the short instructions, then test the connection.
+            Use the guided connection flow for a simple setup, or open advanced setup when you need a raw token or config file.
           </p>
         </div>
       </div>
 
+      <section className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="p-6">
+            <div className="flex items-center gap-3">
+              <ConnectionMark label="P" className="bg-orange-600 text-white" />
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-700" />
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-700" />
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-700" />
+              <ConnectionMark label={agentInitial(selectedAgent.name)} className="border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200" />
+            </div>
+            <h2 className="mt-5 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">Connect PageDen to {selectedAgent.name}</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
+              Create a workspace-bound connection for {workspace?.name ?? "this workspace"}. You choose read-only or editor access, and you can revoke the key anytime.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {agentPresets.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setAgent(item.id);
+                    setName(`${item.name} agent`);
+                  }}
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+                    agent === item.id
+                      ? "border-orange-300 bg-orange-50 text-orange-800 dark:border-orange-400/60 dark:bg-orange-500/10 dark:text-orange-100"
+                      : "border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:bg-slate-800"
+                  }`}
+                >
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-950 text-xs font-semibold text-white dark:bg-white dark:text-slate-950">
+                    {agentInitial(item.name)}
+                  </span>
+                  {item.name}
+                </button>
+              ))}
+            </div>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Button type="button" className="gap-2" onClick={() => setConnectOpen(true)}>
+                <PlugZap className="h-4 w-4" aria-hidden="true" />
+                Connect {selectedAgent.name}
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => setAdvancedOpen((open) => !open)}>
+                {advancedOpen ? "Hide manual setup" : "Advanced/manual setup"}
+              </Button>
+            </div>
+          </div>
+          <div className="border-t border-slate-200 bg-slate-50 p-6 dark:border-slate-800 dark:bg-slate-950/40 lg:border-l lg:border-t-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-200">
+              <Check className="h-4 w-4" aria-hidden="true" />
+              Ready for secure agent access
+            </div>
+            <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+              <li className="flex gap-2">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                Token is scoped to this workspace.
+              </li>
+              <li className="flex gap-2">
+                <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                Secret is shown once and stored hashed.
+              </li>
+              <li className="flex gap-2">
+                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                OAuth clients can use discovery; others get a config file.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      {connectOpen ? (
+        <ConnectAgentDialog
+          agent={selectedAgent}
+          workspaceName={workspace?.name ?? "this workspace"}
+          preset={preset}
+          setPreset={setPreset}
+          raw={raw}
+          copied={copied}
+          createPending={create.isPending}
+          testPending={testConnection.isPending}
+          testMessage={testMessage}
+          selectedSnippet={selectedSnippet}
+          selectedSnippetTitle={selectedSnippetTitle}
+          connectUrl={connectUrl}
+          error={error}
+          onClose={() => setConnectOpen(false)}
+          onCreate={() => create.mutate()}
+          onCopy={(label, text) => void copy(label, text)}
+          onDownload={downloadSelectedConfig}
+          onTest={() => testConnection.mutate()}
+        />
+      ) : null}
+
+      <div className={advancedOpen ? "block" : "hidden"}>
       <ol className="mb-6 grid gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-5">
         {setupSteps.map((step, index) => (
           <li
@@ -371,6 +466,7 @@ export function AgentsPage() {
           </div>
         </section>
       </div>
+      </div>
 
       <section className="mt-6 rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
@@ -421,6 +517,167 @@ export function AgentsPage() {
       </section>
     </div>
   );
+}
+
+function ConnectAgentDialog({
+  agent,
+  workspaceName,
+  preset,
+  setPreset,
+  raw,
+  copied,
+  createPending,
+  testPending,
+  testMessage,
+  selectedSnippet,
+  selectedSnippetTitle,
+  connectUrl,
+  error,
+  onClose,
+  onCreate,
+  onCopy,
+  onDownload,
+  onTest,
+}: {
+  agent: (typeof agentPresets)[number];
+  workspaceName: string;
+  preset: "read" | "editor";
+  setPreset: (preset: "read" | "editor") => void;
+  raw: string | null;
+  copied: string | null;
+  createPending: boolean;
+  testPending: boolean;
+  testMessage: string | null;
+  selectedSnippet: string;
+  selectedSnippetTitle: string;
+  connectUrl: string;
+  error: string | null;
+  onClose: () => void;
+  onCreate: () => void;
+  onCopy: (label: string, text: string) => void;
+  onDownload: () => void;
+  onTest: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm" onClick={onClose}>
+      <section
+        className="max-h-[92vh] w-full max-w-2xl overflow-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-800 dark:bg-slate-950"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Connect ${agent.name}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 text-slate-500 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="text-center">
+          <div className="flex items-center justify-center gap-3">
+            <ConnectionMark label="P" className="bg-orange-600 text-white" />
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-700" />
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-700" />
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-700" />
+            <ConnectionMark label={agentInitial(agent.name)} className="border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200" />
+          </div>
+          <h2 className="mt-5 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">Connect {agent.name}</h2>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Developed by PageDen</p>
+          <p className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-200">
+            <Check className="h-4 w-4" aria-hidden="true" />
+            Approved by your workspace
+          </p>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ScopeOption
+              active={preset === "read"}
+              title="Read only"
+              description="Search, read, summarize, and cite documents."
+              scopes={readScopes}
+              onClick={() => setPreset("read")}
+            />
+            <ScopeOption
+              active={preset === "editor"}
+              title="Editor"
+              description="Create, update, and append documents."
+              scopes={editorScopes}
+              onClick={() => setPreset("editor")}
+            />
+          </div>
+          <div className="mt-4 divide-y divide-slate-200 text-left dark:divide-slate-800">
+            <ConnectDetail title="This connection uses your workspace" body={`${agent.name} can access ${workspaceName} only with the scopes you choose.`} />
+            <ConnectDetail title="Private and revocable" body="PageDen stores only a hashed token. You can revoke this connection from Active agent keys anytime." />
+            <ConnectDetail title="Works with OAuth or manual setup" body="Use discovery when your agent supports it, or download a ready-made config file." />
+          </div>
+        </div>
+
+        <div className="mt-5 space-y-3">
+          {!raw ? (
+            <Button type="button" className="h-12 w-full gap-2 rounded-xl" onClick={onCreate} disabled={createPending}>
+              <PlugZap className="h-4 w-4" aria-hidden="true" />
+              {createPending ? "Creating connection..." : `Create ${preset === "read" ? "read-only" : "editor"} connection`}
+            </Button>
+          ) : (
+            <>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100">
+                <div className="flex items-center gap-2 font-medium">
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  Connection key created. Copy or download setup now.
+                </div>
+              </div>
+              <Snippet title={selectedSnippetTitle} copied={copied === "guided-config"} value={selectedSnippet} onCopy={() => onCopy("guided-config", selectedSnippet)} onDownload={onDownload} />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button type="button" className="gap-2" onClick={() => onCopy("guided-connect-url", connectUrl)}>
+                  {copied === "guided-connect-url" ? <Check className="h-4 w-4" aria-hidden="true" /> : <Clipboard className="h-4 w-4" aria-hidden="true" />}
+                  {copied === "guided-connect-url" ? "Copied connect link" : "Copy connect link"}
+                </Button>
+                <Button type="button" variant="secondary" onClick={onTest} disabled={testPending}>
+                  {testPending ? "Testing..." : "Test connection"}
+                </Button>
+              </div>
+              {testMessage ? (
+                <p className={`text-xs ${testMessage.startsWith("Connection works") ? "text-emerald-700 dark:text-emerald-200" : "text-red-600 dark:text-red-300"}`}>
+                  {testMessage}
+                </p>
+              ) : null}
+            </>
+          )}
+          {error ? <p className="text-sm text-red-600 dark:text-red-300">{error}</p> : null}
+          <button type="button" onClick={() => onCopy("guided-connect-url", connectUrl)} className="block w-full text-center text-sm font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+            Advanced settings / OAuth discovery
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ConnectDetail({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="py-3">
+      <div className="font-medium text-slate-950 dark:text-slate-100">{title}</div>
+      <p className="mt-1 text-sm leading-5 text-slate-500 dark:text-slate-400">{body}</p>
+    </div>
+  );
+}
+
+function ConnectionMark({ label, className = "" }: { label: string; className?: string }) {
+  return (
+    <span className={`flex h-16 w-16 items-center justify-center rounded-2xl text-2xl font-bold shadow-sm ${className}`}>
+      {label}
+    </span>
+  );
+}
+
+function agentInitial(name: string) {
+  return name.slice(0, 1).toUpperCase();
 }
 
 function ScopeOption({

@@ -990,7 +990,8 @@ function authorizeApproveUrl(request: FastifyRequest): string {
 function renderAuthorizePage({ appName, workspaceName, scopes, approveUrl }: { appName: string; workspaceName: string; scopes: string[]; approveUrl: string }) {
   const escapedApp = escapeHtml(appName);
   const escapedWorkspace = escapeHtml(workspaceName);
-  const scopeList = scopes.map((scope) => `<li>${escapeHtml(scopeLabel(scope))}</li>`).join("");
+  const appInitial = escapeHtml((appName.trim()[0] ?? "A").toUpperCase());
+  const scopeList = scopes.map((scope) => `<span>${escapeHtml(scopeLabel(scope))}</span>`).join("");
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -998,24 +999,56 @@ function renderAuthorizePage({ appName, workspaceName, scopes, approveUrl }: { a
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Authorize ${escapedApp} - Pageden</title>
   <style>
-    body{margin:0;background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}
+    body{margin:0;background:#e5e7eb;color:#111827;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     main{min-height:100vh;display:grid;place-items:center;padding:24px}
-    section{width:min(520px,100%);background:#fff;border:1px solid #dbe3ef;border-radius:16px;box-shadow:0 20px 60px rgba(15,23,42,.08);padding:28px}
-    .brand{display:flex;align-items:center;gap:12px;font-weight:700}.logo{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:#f45107;color:#fff}
-    h1{font-size:28px;margin:28px 0 8px}p{color:#64748b;line-height:1.55}ul{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px 14px 14px 32px;color:#334155}
-    a{display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;background:#f45107;color:#fff;text-decoration:none;font-weight:700;margin-top:22px}
-    small{display:block;margin-top:14px;color:#94a3b8;text-align:center}
+    section{width:min(640px,100%);background:#fff;border:1px solid #d1d5db;border-radius:28px;box-shadow:0 24px 70px rgba(15,23,42,.18);padding:36px}
+    .top{display:flex;justify-content:center;align-items:center;gap:14px;margin-top:4px}
+    .mark{display:grid;place-items:center;width:76px;height:76px;border-radius:18px;font-size:32px;font-weight:800;box-shadow:0 1px 2px rgba(15,23,42,.12)}
+    .pageden{background:#f45107;color:#fff}.client{background:#fff;color:#334155;border:1px solid #e5e7eb}
+    .dot{width:8px;height:8px;border-radius:999px;background:#e5e7eb}
+    h1{font-size:34px;line-height:1.12;text-align:center;margin:28px 0 8px;letter-spacing:-.02em}
+    .byline{text-align:center;color:#6b7280;font-size:18px;margin:0}
+    .approved{display:flex;align-items:center;justify-content:center;gap:10px;color:#16a34a;font-size:18px;font-weight:600;margin:28px 0}
+    .check{display:grid;place-items:center;width:22px;height:22px;border-radius:999px;background:#16a34a;color:#fff;font-size:15px}
+    .panel{border:1px solid #e5e7eb;border-radius:18px;padding:0 24px;margin-top:8px}
+    .row{padding:20px 0;border-bottom:1px solid #e5e7eb}.row:last-child{border-bottom:0}
+    .row strong{display:block;font-size:17px;margin-bottom:8px}.row p{margin:0;color:#6b7280;line-height:1.45}
+    .scopes{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+    .scopes span{border:1px solid #e5e7eb;background:#f9fafb;border-radius:999px;padding:6px 10px;color:#4b5563;font-size:13px;font-weight:600}
+    a{display:flex;align-items:center;justify-content:center;height:54px;border-radius:999px;background:#111827;color:#fff;text-decoration:none;font-size:17px;font-weight:700;margin-top:28px}
+    small{display:block;margin-top:18px;color:#9ca3af;text-align:center;font-size:15px}
+    @media (max-width:520px){section{padding:24px;border-radius:22px}.mark{width:58px;height:58px;border-radius:15px;font-size:24px}h1{font-size:28px}}
   </style>
 </head>
 <body>
   <main>
     <section>
-      <div class="brand"><span class="logo">P</span><span>Pageden</span></div>
+      <div class="top">
+        <span class="mark pageden">P</span>
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="mark client">${appInitial}</span>
+      </div>
       <h1>Connect ${escapedApp}</h1>
-      <p>This will let <strong>${escapedApp}</strong> access the <strong>${escapedWorkspace}</strong> workspace through Pageden MCP.</p>
-      <ul>${scopeList}</ul>
-      <a href="${escapeHtml(approveUrl)}">Approve connection</a>
-      <small>You can revoke this agent key from Pageden at any time.</small>
+      <p class="byline">Developed by PageDen</p>
+      <div class="approved"><span class="check">✓</span> Approved by your workspace</div>
+      <div class="panel">
+        <div class="row">
+          <strong>This connection uses ${escapedWorkspace}</strong>
+          <p>${escapedApp} can access this workspace through PageDen MCP with the permissions below.</p>
+          <div class="scopes">${scopeList}</div>
+        </div>
+        <div class="row">
+          <strong>Private and secure</strong>
+          <p>PageDen issues a workspace-bound agent key. The raw key is returned only to the connecting app and stored hashed by PageDen.</p>
+        </div>
+        <div class="row">
+          <strong>You're in control</strong>
+          <p>You can revoke this connection from the Pageden AI agents page at any time.</p>
+        </div>
+      </div>
+      <a href="${escapeHtml(approveUrl)}">Continue to PageDen ↗</a>
+      <small>Only approve apps you trust.</small>
     </section>
   </main>
 </body>
