@@ -13,7 +13,8 @@ const SEARCH_TEXT_MAX = 200_000;
 export function searchTextFor(content: string): string {
   // Strip the private-use highlight markers so they can only ever come from ts_headline, never
   // from document content (prevents a control/data collision in snippets).
-  const canonical = canonicalize(content).replace(/[\uE000\uE001]/g, "");
+  // eslint-disable-next-line no-control-regex -- intentionally stripping NUL (0x00)
+  const canonical = canonicalize(content).replace(/[\uE000\uE001\u0000]/g, "");
   return canonical.length > SEARCH_TEXT_MAX ? canonical.slice(0, SEARCH_TEXT_MAX) : canonical;
 }
 
