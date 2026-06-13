@@ -393,7 +393,12 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
 }
 
 .pageden-document-view.prose table {
-  @apply my-5 w-full border-separate border-spacing-0 overflow-hidden rounded-md border border-slate-200 text-sm;
+  @apply my-0 w-full min-w-max border-separate border-spacing-0 overflow-hidden rounded-md border border-slate-200 text-sm;
+}
+
+.pageden-document-view.prose .pageden-table-scroll {
+  @apply my-5 max-w-full overflow-x-auto rounded-md;
+  -webkit-overflow-scrolling: touch;
 }
 
 .pageden-document-view.prose th,
@@ -448,6 +453,8 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
 
 .pageden-document-view.prose .pageden-code-block {
   @apply relative my-5;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .pageden-document-view.prose .pageden-code-block pre {
@@ -456,6 +463,49 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
 
 .pageden-code-copy-button {
   @apply absolute right-2.5 top-2.5 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-white/10 text-slate-300 shadow-sm backdrop-blur transition hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300;
+}
+
+@media (max-width: 640px) {
+  .pageden-document-view.prose {
+    font-size: 1rem;
+    line-height: 1.8;
+  }
+
+  .pageden-document-view.prose h1 {
+    font-size: 1.8rem;
+    line-height: 1.15;
+  }
+
+  .pageden-document-view.prose h2 {
+    font-size: 1.45rem;
+    line-height: 1.25;
+  }
+
+  .pageden-document-view.prose h3 {
+    font-size: 1.2rem;
+    line-height: 1.35;
+  }
+
+  .pageden-document-view.prose p,
+  .pageden-document-view.prose li {
+    line-height: 1.8;
+  }
+
+  .pageden-document-view.prose pre {
+    font-size: 0.875rem;
+    line-height: 1.65;
+    padding: 1rem 3.25rem 1rem 1rem;
+  }
+
+  .pageden-document-view.prose blockquote {
+    padding-left: 1rem;
+    padding-right: 0.875rem;
+  }
+
+  .rich-markdown-editor .ProseMirror {
+    font-size: 1rem;
+    line-height: 1.75;
+  }
 }
 
 /* Editor media: responsive video + embeds */

@@ -644,7 +644,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
           e.target.value = "";
         }}
       />
-      <EditorContent editor={editor} className="min-h-0 flex-1 overflow-auto px-8 py-8" />
+      <EditorContent editor={editor} className="min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-8" />
     </div>
   );
 }
