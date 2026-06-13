@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, Check, CheckCircle2, Clipboard, Download, Eye, History, Info, MoreHorizontal, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Clipboard, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -33,7 +33,6 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   const [conflict, setConflict] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const isMobileActions = useMediaQuery("(max-width: 639px)");
   const tree = useQuery({ ...treeQuery(workspaceId), enabled: preview || !canEdit });
   const attachments = useQuery({
     queryKey: ["attachments", doc.id],
@@ -182,10 +181,10 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             <p className="mt-1 truncate text-xs text-slate-400">{doc.path}</p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-            <span className="hidden sm:inline-flex">
+            <span className="inline-flex">
               <AiReadinessBadge readiness={doc.aiReadiness} />
             </span>
-            <span className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 sm:inline-flex">
+            <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
               {permissionLabel[doc.permission] ?? doc.permission}
             </span>
             {canEdit ? (
@@ -213,7 +212,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             <Link
               to="/w/$workspaceId/d/$documentId/history"
               params={{ workspaceId, documentId: doc.id }}
-              className="hidden h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 sm:inline-flex"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
             >
               <History size={15} />
               History
@@ -224,7 +223,6 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                 {save.isPending ? "Saving…" : "Save"}
               </Button>
             ) : null}
-            {isMobileActions ? <MobileDocumentMenu doc={doc} workspaceId={workspaceId} onDownload={() => void downloadDocument()} downloading={downloading} /> : null}
           </div>
         </div>
       </header>
@@ -397,58 +395,6 @@ function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
       AI {label}
     </span>
   );
-}
-
-function MobileDocumentMenu({ doc, workspaceId, onDownload, downloading }: { doc: Doc; workspaceId: string; onDownload: () => void; downloading: boolean }) {
-  return (
-    <details className="relative sm:hidden">
-      <summary
-        className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 [&::-webkit-details-marker]:hidden"
-        aria-label="Document options"
-        title="More"
-      >
-        <MoreHorizontal size={18} aria-hidden="true" />
-      </summary>
-      <div className="absolute right-0 z-40 mt-2 w-64 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-xl">
-        <div className="flex items-center justify-between gap-3">
-          <span className="font-medium text-slate-700">{permissionLabel[doc.permission] ?? doc.permission}</span>
-          <AiReadinessBadge readiness={doc.aiReadiness} />
-        </div>
-        <Link
-          to="/w/$workspaceId/d/$documentId/history"
-          params={{ workspaceId, documentId: doc.id }}
-          className="mt-3 flex h-9 items-center gap-2 rounded-md px-2 text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-          onClick={(event) => event.currentTarget.closest("details")?.removeAttribute("open")}
-        >
-          <History size={15} aria-hidden="true" />
-          History
-        </Link>
-        <button
-          type="button"
-          className="mt-1 flex h-9 w-full items-center gap-2 rounded-md px-2 text-slate-600 hover:bg-slate-100 hover:text-slate-950 disabled:opacity-50"
-          onClick={() => { (document.querySelector("details[open]") as HTMLDetailsElement | null)?.removeAttribute("open"); onDownload(); }}
-          disabled={downloading}
-        >
-          <Download size={15} aria-hidden="true" />
-          {downloading ? "Downloading…" : "Download"}
-        </button>
-      </div>
-    </details>
-  );
-}
-
-function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
-
-  useEffect(() => {
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, [query]);
-
-  return matches;
 }
 
 function DocumentInsightsPanel({ content, readiness }: { content: string; readiness: Doc["aiReadiness"] }) {
