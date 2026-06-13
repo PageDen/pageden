@@ -18,36 +18,13 @@ export function searchTextFor(content: string): string {
   return canonical.length > SEARCH_TEXT_MAX ? canonical.slice(0, SEARCH_TEXT_MAX) : canonical;
 }
 
-// Snippet highlighting markers: Unicode Private-Use chars that won't occur in normal documents
-// (searchTextFor strips them from stored content). The web layer escapes the snippet text and
-// only bolds the spans between these — no raw HTML, so document content can't inject markup.
-const HL_START = "\uE000";
-const HL_STOP = "\uE001";
-
-// Build a short excerpt around the first case-insensitive occurrence of `q` in the body, with the
-// match wrapped in the highlight markers. Returns null when the term isn't in the body (e.g. the
-// document only matched on its title).
-function buildSnippet(searchText: string | null, q: string): string | null {
-  if (!searchText) return null;
-  const idx = searchText.toLowerCase().indexOf(q.toLowerCase());
-  if (idx === -1) return null;
-  const RADIUS = 60;
-  const start = Math.max(0, idx - RADIUS);
-  const end = Math.min(searchText.length, idx + q.length + RADIUS);
-  const before = searchText.slice(start, idx);
-  const match = searchText.slice(idx, idx + q.length);
-  const after = searchText.slice(idx + q.length, end);
-  let frag = `${before}${HL_START}${match}${HL_STOP}${after}`.replace(/\s+/g, " ").trim();
-  if (start > 0) frag = `… ${frag}`;
-  if (end < searchText.length) frag = `${frag} …`;
-  return frag;
-}
 import { readContent, writeContent } from "../storage.js";
 import { buildDocumentPath, isValidSlug } from "../paths.js";
 import { conflict, forbidden, isUniqueViolation, notFound, validationError } from "../errors.js";
 import { atLeast, authorizeDocumentRole, authorizeFolderRole, canManageWorkspace, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { lockFolderTree } from "../db.js";
+import { clampSearchLimit, searchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -199,51 +176,15 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       requireTokenScope(auth, "search");
       const workspaceId = request.query.workspaceId;
       if (!workspaceId) return validationError(reply, { workspaceId: "workspaceId is required." });
-      const q = (request.query.q ?? "").trim().slice(0, 256);
+      const q = (request.query.q ?? "").trim().slice(0, SEARCH_QUERY_MAX);
       if (!q) return { results: [] };
-      const rawLimit = Number(request.query.limit ?? 20);
-      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 50) : 20;
-
-      // Permission filtering happens in app code, so we page through ranked matches and keep
-      // filtering until we have `limit` readable hits or the candidate set is exhausted, bounded
-      // by a hard scan cap. Ranking: title matches first, then most-recently-updated.
-      const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
-      const PAGE = Math.min(Math.max(limit * 3, 60), 200);
-      const SCAN_CAP = 1000;
-      const results: Array<{ id: string; title: string; path: string; permission: string }> = [];
-      let offset = 0;
-      while (results.length < limit && offset < SCAN_CAP) {
-        const rows = await prisma.$queryRaw<Array<{ id: string; folderId: string; title: string; path: string }>>`
-          SELECT "id", "folderId", "title", "path"
-          FROM "Document"
-          WHERE "workspaceId" = ${workspaceId}
-            AND "deletedAt" IS NULL
-            AND strpos(lower(coalesce("title", '') || ' ' || coalesce("searchText", '')), lower(${q})) > 0
-          ORDER BY
-            (CASE WHEN strpos(lower(coalesce("title", '')), lower(${q})) > 0 THEN 0 ELSE 1 END) ASC,
-            "updatedAt" DESC,
-            "id" ASC
-          LIMIT ${PAGE} OFFSET ${offset}`;
-        if (rows.length === 0) break;
-        for (const doc of rows) {
-          const role = resolver.documentRole({ id: doc.id, folderId: doc.folderId });
-          if (role !== null) {
-            results.push({ id: doc.id, title: doc.title, path: doc.path, permission: role });
-            if (results.length >= limit) break;
-          }
-        }
-        if (rows.length < PAGE) break; // candidate set exhausted
-        offset += PAGE;
-      }
-
-      if (results.length === 0) return { results: [] };
-      // Build body snippets for the final, permission-filtered results.
-      const ids = results.map((r) => r.id);
-      const bodyRows = await prisma.$queryRaw<Array<{ id: string; searchText: string | null }>>`
-        SELECT "id", "searchText" FROM "Document"
-        WHERE "id" IN (${Prisma.join(ids)}) AND "workspaceId" = ${workspaceId} AND "deletedAt" IS NULL`;
-      const snippetById = new Map(bodyRows.map((r) => [r.id, buildSnippet(r.searchText, q)]));
-      return { results: results.map((r) => ({ ...r, snippet: snippetById.get(r.id) ?? null })) };
+      const results = await searchDocuments({
+        userId: auth.userId,
+        workspaceId,
+        query: q,
+        limit: clampSearchLimit(request.query.limit),
+      });
+      return { results: results.map(({ updatedAt: _updatedAt, ...result }) => result) };
     },
   );
 

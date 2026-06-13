@@ -92,6 +92,14 @@ describe("MCP agent access", () => {
     expect(search.statusCode).toBe(200);
     const searchData = JSON.parse(search.json().result.content[0].text);
     expect(searchData.results[0].id).toBe(s.docId);
+    const apiSearch = await req({
+      method: "GET",
+      url: `/api/search?workspaceId=${s.ws.id}&q=Runbook`,
+      headers: bearer(s.token),
+    });
+    expect(searchData.results.map((r: { id: string }) => r.id)).toEqual(
+      apiSearch.json().results.map((r: { id: string }) => r.id),
+    );
 
     const read = await tool(s.token, "pageden_read_document", { documentId: s.docId });
     const readData = toolJson(read);
