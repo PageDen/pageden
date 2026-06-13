@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, Check, CheckCircle2, Clipboard, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Clipboard, Download, Eye, History, Info, MoreHorizontal, Radio, Save, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -33,6 +33,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   const [conflict, setConflict] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const isMobileActions = useMediaQuery("(max-width: 639px)");
   const tree = useQuery({ ...treeQuery(workspaceId), enabled: preview || !canEdit });
   const attachments = useQuery({
     queryKey: ["attachments", doc.id],
@@ -173,16 +174,18 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
       : null;
 
   return (
-    <article className="flex h-screen flex-col bg-white">
-      <header className="border-b border-slate-200 px-8 py-4">
-        <div className="mx-auto flex max-w-[920px] items-start justify-between gap-6">
+    <article className="flex min-h-full flex-col bg-white lg:h-screen">
+      <header className="border-b border-slate-200 px-4 py-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-[920px] flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
           <div className="min-w-0 pt-0.5">
-            <h1 className="truncate text-2xl font-semibold tracking-tight text-slate-950">{doc.title}</h1>
+            <h1 className="break-words text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:truncate">{doc.title}</h1>
             <p className="mt-1 truncate text-xs text-slate-400">{doc.path}</p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <AiReadinessBadge readiness={doc.aiReadiness} />
-            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+            <span className="hidden sm:inline-flex">
+              <AiReadinessBadge readiness={doc.aiReadiness} />
+            </span>
+            <span className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 sm:inline-flex">
               {permissionLabel[doc.permission] ?? doc.permission}
             </span>
             {canEdit ? (
@@ -210,7 +213,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             <Link
               to="/w/$workspaceId/d/$documentId/history"
               params={{ workspaceId, documentId: doc.id }}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              className="hidden h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 sm:inline-flex"
             >
               <History size={15} />
               History
@@ -221,6 +224,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                 {save.isPending ? "Saving…" : "Save"}
               </Button>
             ) : null}
+            {isMobileActions ? <MobileDocumentMenu doc={doc} workspaceId={workspaceId} /> : null}
           </div>
         </div>
       </header>
@@ -272,11 +276,11 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         </div>
       ) : null}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex-1 overflow-auto border-r border-slate-200 bg-white">
           {!canEdit || preview ? (
-            <div className="mx-auto max-w-[920px] px-8 py-7">
-              <div className="pageden-document-view prose prose-slate max-w-none break-words text-[15px] leading-7">
+            <div className="mx-auto max-w-[920px] px-4 py-6 sm:px-6 lg:px-8 lg:py-7">
+              <div className="pageden-document-view prose prose-slate max-w-none break-words text-[16px] leading-8 sm:text-[15px] sm:leading-7">
                 <FrontmatterSummary attributes={parsedPreview.attributes} />
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
@@ -299,6 +303,11 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                       <video {...props} controls className="max-w-full rounded" />
                     ),
                     pre: ({ children }) => <CopyableCodeBlock>{children}</CopyableCodeBlock>,
+                    table: ({ children, ...props }) => (
+                      <div className="pageden-table-scroll">
+                        <table {...props}>{children}</table>
+                      </div>
+                    ),
                     h1: ({ children, ...props }) => <h1 {...props} id={headingId(markdownText(children))}>{children}</h1>,
                     h2: ({ children, ...props }) => <h2 {...props} id={headingId(markdownText(children))}>{children}</h2>,
                     h3: ({ children, ...props }) => <h3 {...props} id={headingId(markdownText(children))}>{children}</h3>,
@@ -388,6 +397,49 @@ function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
       AI {label}
     </span>
   );
+}
+
+function MobileDocumentMenu({ doc, workspaceId }: { doc: Doc; workspaceId: string }) {
+  return (
+    <details className="relative sm:hidden">
+      <summary
+        className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 [&::-webkit-details-marker]:hidden"
+        aria-label="Document options"
+        title="More"
+      >
+        <MoreHorizontal size={18} aria-hidden="true" />
+      </summary>
+      <div className="absolute right-0 z-40 mt-2 w-64 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-xl">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-slate-700">{permissionLabel[doc.permission] ?? doc.permission}</span>
+          <AiReadinessBadge readiness={doc.aiReadiness} />
+        </div>
+        <Link
+          to="/w/$workspaceId/d/$documentId/history"
+          params={{ workspaceId, documentId: doc.id }}
+          className="mt-3 flex h-9 items-center gap-2 rounded-md px-2 text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+          onClick={(event) => event.currentTarget.closest("details")?.removeAttribute("open")}
+        >
+          <History size={15} aria-hidden="true" />
+          History
+        </Link>
+      </div>
+    </details>
+  );
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
 }
 
 function DocumentInsightsPanel({ content, readiness }: { content: string; readiness: Doc["aiReadiness"] }) {
