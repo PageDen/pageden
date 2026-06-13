@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowRight, Bot, Building2, ChevronDown, FileText, Home, KeyRound, LogOut, Monitor, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck, Sun, UploadCloud, UserRound, X } from "lucide-react";
+import { ArrowRight, Bot, Building2, ChevronDown, FileText, Home, KeyRound, LogOut, Monitor, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, ShieldCheck, Sun, UploadCloud, UserRound, X } from "lucide-react";
 import type { z } from "zod";
 import { searchSchema, treeSchema } from "@pageden/api-types";
 import { api } from "../../lib/api";
@@ -93,6 +93,7 @@ export function WorkspaceShell() {
   const tree = useQuery(treeQuery(workspaceId));
   const search = useQuery({ ...searchQuery(workspaceId, debouncedSearch), enabled: debouncedSearch.length > 0 });
   const theme = useTheme();
+  const isRefreshingTree = tree.isFetching && !tree.isLoading;
 
   const resendVerification = useMutation({ mutationFn: () => api.resendVerification() });
   const logout = useMutation({
@@ -269,7 +270,19 @@ export function WorkspaceShell() {
                 <Home size={16} aria-hidden="true" className="text-slate-400 [.active_&]:text-orange-600" />
                 Home
               </Link>
-              <div className="mb-1 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workspace</div>
+              <div className="mb-1 flex items-center justify-between gap-2 px-2 py-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workspace</span>
+                <button
+                  type="button"
+                  onClick={() => void tree.refetch()}
+                  disabled={isRefreshingTree}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-white hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 disabled:cursor-wait disabled:opacity-60"
+                  aria-label={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+                  title={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+                >
+                  <RefreshCw size={14} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
+                </button>
+              </div>
               <TreePanel
                 workspaceId={workspaceId}
                 folders={tree.data.folders}

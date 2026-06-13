@@ -147,6 +147,48 @@ const tools = [
     },
   },
   {
+    name: "pageden_upsert_document_by_path",
+    description: "Create or update a single Markdown document by workspace path, optionally creating missing folders.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        path: { type: "string", description: "Markdown path such as pageden-dev/docs/foo.md." },
+        title: { type: "string" },
+        content: { type: "string" },
+        createFolders: { type: "boolean", description: "Create missing folders along the path." },
+        baseVersion: { type: "string", description: "Optional conflict guard when updating an existing document." },
+      },
+      required: ["path", "title", "content"],
+    },
+  },
+  {
+    name: "pageden_import_markdown_tree",
+    description: "Import a Markdown file tree from agent-provided file content. Supports dry_run, create_only, and upsert modes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        rootPath: { type: "string", description: "Optional root folder path to prepend to every file path." },
+        mode: { type: "string", enum: ["create_only", "upsert", "dry_run"] },
+        files: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              title: { type: "string" },
+              content: { type: "string" },
+              checksum: { type: "string", description: "Optional sha256 checksum for the canonical Markdown content." },
+            },
+            required: ["path", "content"],
+          },
+        },
+      },
+      required: ["files"],
+    },
+  },
+  {
     name: "pageden_update_document",
     description: "Replace a document's Markdown content using baseVersion conflict protection.",
     inputSchema: {
@@ -460,6 +502,8 @@ async function callTool(
   else if (name === "pageden_workspace_summary") data = await workspaceSummary(auth, args, request);
   else if (name === "pageden_create_document") data = await createDocument(auth, args, request);
   else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
+  else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
+  else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
@@ -854,6 +898,421 @@ async function siblingFolderSlugTaken(
   return existing !== null;
 }
 
+type UpsertMode = "create_only" | "upsert" | "dry_run";
+
+type ParsedMarkdownPath = {
+  folderSegments: Array<{ name: string; slug: string }>;
+  documentTitle: string;
+  documentSlug: string;
+  documentPath: string;
+};
+
+async function upsertDocumentByPath(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const parsed = parseMarkdownPath(stringParam(args, "path"), maybeString(args.title));
+  const content = stringParamAllowEmpty(args, "content");
+  const createFolders = args.createFolders === true;
+  const baseVersion = maybeString(args.baseVersion);
+  return upsertDocumentAtPath({
+    auth,
+    workspaceId,
+    parsed,
+    content,
+    createFolders,
+    mode: "upsert",
+    baseVersion,
+    request,
+  });
+}
+
+async function importMarkdownTree(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const mode = parseImportMode(maybeString(args.mode));
+  const rootPath = maybeString(args.rootPath);
+  const files = parseImportFiles(args.files);
+  const report = {
+    workspaceId,
+    mode,
+    createdFolders: [] as string[],
+    createdDocuments: [] as string[],
+    updatedDocuments: [] as string[],
+    skippedDocuments: [] as string[],
+    failedItems: [] as Array<{ path: string; message: string }>,
+    warnings: [] as string[],
+  };
+  const createdFolderPaths = new Set<string>();
+
+  for (const file of files) {
+    const targetPath = rootPath ? `${rootPath.replace(/\/+$/, "")}/${file.path}` : file.path;
+    try {
+      const computedChecksum = computeChecksum(file.content);
+      if (file.checksum && file.checksum !== computedChecksum) throw new Error("checksum does not match content.");
+      const parsed = parseMarkdownPath(targetPath, file.title);
+      for (const folderPath of predictedFolderPaths(parsed)) {
+        const existing = await prisma.folder.findFirst({ where: { workspaceId, path: folderPath, deletedAt: null }, select: { id: true } });
+        if (!existing && !createdFolderPaths.has(folderPath)) {
+          report.createdFolders.push(folderPath);
+          createdFolderPaths.add(folderPath);
+        }
+      }
+      const result = await upsertDocumentAtPath({
+        auth,
+        workspaceId,
+        parsed,
+        content: file.content,
+        createFolders: true,
+        mode,
+        request,
+      });
+      if (result.action === "created") report.createdDocuments.push(result.path);
+      else if (result.action === "updated") report.updatedDocuments.push(result.path);
+      else report.skippedDocuments.push(result.path);
+      for (const folder of result.createdFolders) {
+        if (!createdFolderPaths.has(folder.path)) {
+          report.createdFolders.push(folder.path);
+          createdFolderPaths.add(folder.path);
+        }
+      }
+    } catch (error) {
+      report.failedItems.push({ path: file.path, message: error instanceof Error ? error.message : "Import failed." });
+    }
+  }
+
+  return {
+    ...report,
+    totals: {
+      files: files.length,
+      createdFolders: report.createdFolders.length,
+      createdDocuments: report.createdDocuments.length,
+      updatedDocuments: report.updatedDocuments.length,
+      skippedDocuments: report.skippedDocuments.length,
+      failedItems: report.failedItems.length,
+      warnings: report.warnings.length,
+    },
+  };
+}
+
+async function upsertDocumentAtPath({
+  auth,
+  workspaceId,
+  parsed,
+  content,
+  createFolders,
+  mode,
+  baseVersion,
+  request,
+}: {
+  auth: AuthContext;
+  workspaceId: string;
+  parsed: ParsedMarkdownPath;
+  content: string;
+  createFolders: boolean;
+  mode: UpsertMode;
+  baseVersion?: string;
+  request: FastifyRequest;
+}) {
+  const existing = await prisma.document.findFirst({
+    where: { workspaceId, path: parsed.documentPath, deletedAt: null },
+    select: { id: true, title: true, path: true, currentVersionId: true, currentChecksum: true },
+  });
+  const sum = computeChecksum(content);
+
+  if (existing) {
+    if (mode === "create_only") {
+      requireTokenScope(auth, "create");
+      return documentUpsertResult("skipped", workspaceId, existing.id, existing.title, existing.path, existing.currentVersionId, existing.currentChecksum, [], "Document already exists.");
+    }
+    requireTokenScope(auth, "update");
+    await assertTokenOwnsDocument(auth, existing.id);
+    const role = await resolveDocumentRole(auth.userId, existing.id);
+    if (role === null) throw new Error("Document not found.");
+    if (!atLeast(role, "editor")) throw new Error("Forbidden.");
+    if (mode === "dry_run") {
+      const action = existing.currentChecksum === sum && existing.title === parsed.documentTitle ? "skipped" : "updated";
+      return documentUpsertResult(action, workspaceId, existing.id, parsed.documentTitle, existing.path, existing.currentVersionId, existing.currentChecksum, [], action === "skipped" ? "Document is unchanged." : "Document would be updated.");
+    }
+    if (existing.currentChecksum === sum && existing.title === parsed.documentTitle) {
+      return documentUpsertResult("skipped", workspaceId, existing.id, existing.title, existing.path, existing.currentVersionId, existing.currentChecksum, [], "Document is unchanged.");
+    }
+    const guardVersion = baseVersion ?? existing.currentVersionId ?? "";
+    const outcome = await applyDocumentWrite({
+      documentId: existing.id,
+      userId: auth.userId,
+      baseVersion: guardVersion,
+      content,
+      title: parsed.documentTitle,
+      changeSource: "agent",
+    });
+    if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
+    await writeAuditEvent({
+      workspaceId,
+      userId: auth.userId,
+      action: "document_upserted_by_agent",
+      targetType: "document",
+      targetId: existing.id,
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"],
+      metadata: { path: parsed.documentPath, tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version },
+    });
+    return {
+      action: "updated",
+      workspaceId,
+      id: existing.id,
+      title: parsed.documentTitle,
+      path: existing.path,
+      version: outcome.version,
+      checksum: outcome.checksum,
+      updatedAt: outcome.updatedAt?.toISOString(),
+      createdFolders: [],
+    };
+  }
+
+  requireTokenScope(auth, "create");
+  if (mode === "dry_run") {
+    const missingFolders = await missingFolderPaths(workspaceId, parsed);
+    return {
+      action: "created",
+      workspaceId,
+      id: null,
+      title: parsed.documentTitle,
+      path: parsed.documentPath,
+      version: null,
+      checksum: sum,
+      updatedAt: null,
+      createdFolders: missingFolders.map((path) => ({ path })),
+      message: "Document would be created.",
+    };
+  }
+
+  if (!createFolders) {
+    const folderPath = parsed.folderSegments.map((segment) => segment.slug).join("/");
+    const folder = await prisma.folder.findFirst({ where: { workspaceId, path: folderPath, deletedAt: null }, select: { id: true } });
+    if (!folder) throw new Error("Folder not found. Pass createFolders=true to create missing folders.");
+  }
+
+  const { storageKey } = await writeContent(content, workspaceId);
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await lockFolderTree(tx, workspaceId);
+      const { folder, createdFolders } = await ensureFolderPath(tx, auth.userId, workspaceId, parsed.folderSegments, createFolders);
+      const role = await resolveFolderRole(auth.userId, folder.id, tx);
+      if (role === null) throw new Error("Folder not found.");
+      if (!atLeast(role, "editor")) throw new Error("Forbidden.");
+      const duplicate = await tx.document.findFirst({
+        where: { workspaceId, folderId: folder.id, slug: parsed.documentSlug, deletedAt: null },
+        select: { id: true },
+      });
+      if (duplicate) throw new Error("A document with this path already exists.");
+      const doc = await tx.document.create({
+        data: {
+          workspaceId,
+          folderId: folder.id,
+          title: stripNul(parsed.documentTitle),
+          slug: parsed.documentSlug,
+          path: parsed.documentPath,
+          createdById: auth.userId,
+          updatedById: auth.userId,
+        },
+      });
+      const revision = await tx.documentRevision.create({
+        data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent" },
+      });
+      const updated = await tx.document.update({
+        where: { id: doc.id },
+        data: { currentVersionId: revision.id, currentChecksum: sum, searchText: searchTextFor(content) },
+      });
+      await writeAuditEvent(
+        {
+          workspaceId,
+          userId: auth.userId,
+          action: "document_created_by_agent",
+          targetType: "document",
+          targetId: doc.id,
+          ipAddress: request.ip,
+          userAgent: request.headers["user-agent"],
+          metadata: { path: parsed.documentPath, tokenId: auth.tokenId, tokenName: auth.tokenName, version: revision.id, via: "path_upsert" },
+        },
+        tx,
+      );
+      return {
+        action: "created",
+        workspaceId,
+        id: doc.id,
+        title: doc.title,
+        path: updated.path,
+        version: revision.id,
+        checksum: sum,
+        updatedAt: updated.updatedAt.toISOString(),
+        createdFolders,
+      };
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new Error("A document or folder with this path already exists.", { cause: error });
+    throw error;
+  }
+}
+
+async function ensureFolderPath(
+  tx: Tx,
+  userId: string,
+  workspaceId: string,
+  segments: ParsedMarkdownPath["folderSegments"],
+  createFolders: boolean,
+) {
+  if (segments.length === 0) throw new Error("Documents must be inside a folder path.");
+  let parent: { id: string; path: string } | null = null;
+  const createdFolders: Array<{ id: string; path: string }> = [];
+
+  for (const segment of segments) {
+    const parentId: string | null = parent ? parent.id : null;
+    const parentPath: string | null = parent ? parent.path : null;
+    const existing: { id: string; path: string } | null = await tx.folder.findFirst({
+      where: { workspaceId, parentFolderId: parentId, slug: segment.slug, deletedAt: null },
+      select: { id: true, path: true },
+    });
+    if (existing) {
+      parent = existing;
+      continue;
+    }
+    if (!createFolders) throw new Error("Folder not found. Pass createFolders=true to create missing folders.");
+    if (parent) {
+      const az = await authorizeFolderRole(userId, parent.id, "editor", tx);
+      if (!az.ok) throw new Error(az.status === "not_found" ? "Parent folder not found." : "Forbidden.");
+    } else if (!(await canManageWorkspace(userId, workspaceId, tx))) {
+      throw new Error("Only workspace admins can create root folders.");
+    }
+    if (await siblingFolderSlugTaken(tx, workspaceId, parent?.id ?? null, segment.slug)) {
+      throw new Error("A folder with this slug already exists here.");
+    }
+    const path = buildFolderPath(parentPath, segment.slug);
+    const folder: { id: string; path: string } = await tx.folder.create({
+      data: {
+        workspaceId,
+        parentFolderId: parentId,
+        name: stripNul(segment.name),
+        slug: segment.slug,
+        path,
+        createdById: userId,
+        updatedById: userId,
+      },
+      select: { id: true, path: true },
+    });
+    await writeAuditEvent(
+      { workspaceId, userId, action: "folder_created_by_agent", targetType: "folder", targetId: folder.id, metadata: { path, via: "path_upsert" } },
+      tx,
+    );
+    createdFolders.push(folder);
+    parent = folder;
+  }
+
+  if (!parent) throw new Error("Documents must be inside a folder path.");
+  return { folder: parent, createdFolders };
+}
+
+async function missingFolderPaths(workspaceId: string, parsed: ParsedMarkdownPath): Promise<string[]> {
+  const paths = predictedFolderPaths(parsed);
+  if (!paths.length) return [];
+  const existing = await prisma.folder.findMany({ where: { workspaceId, path: { in: paths }, deletedAt: null }, select: { path: true } });
+  const existingPaths = new Set(existing.map((folder) => folder.path));
+  return paths.filter((path) => !existingPaths.has(path));
+}
+
+function predictedFolderPaths(parsed: ParsedMarkdownPath): string[] {
+  const paths: string[] = [];
+  let current = "";
+  for (const segment of parsed.folderSegments) {
+    current = current ? `${current}/${segment.slug}` : segment.slug;
+    paths.push(current);
+  }
+  return paths;
+}
+
+function documentUpsertResult(
+  action: "created" | "updated" | "skipped",
+  workspaceId: string,
+  id: string,
+  title: string,
+  path: string,
+  version: string | null,
+  checksum: string | null,
+  createdFolders: Array<{ id?: string; path: string }>,
+  message: string,
+) {
+  return { action, workspaceId, id, title, path, version, checksum, createdFolders, message };
+}
+
+function parseMarkdownPath(path: string, title?: string): ParsedMarkdownPath {
+  const originalPath = normalizeImportPath(path.trim()).replace(/^\/+/, "");
+  if (!originalPath || isUnsafeRelativePath(originalPath)) throw new Error("path must be a safe relative Markdown path.");
+  const parts = originalPath.split("/").filter(Boolean);
+  if (parts.length < 2) throw new Error("path must include at least one folder and a Markdown filename.");
+  const filename = parts.at(-1)!;
+  if (!filename.toLowerCase().endsWith(".md")) throw new Error("path must end with .md.");
+  const folderSegments = parts.slice(0, -1).map((name) => ({ name, slug: slugifyImportPath(name) }));
+  const documentSlug = slugifyImportPath(filename);
+  if (!documentSlug || !isValidSlug(documentSlug)) throw new Error("path filename cannot produce a valid slug.");
+  const documentTitle = stripNul((title ?? filename.replace(/\.md$/i, "")).trim() || "Untitled");
+  const folderPath = folderSegments.map((segment) => segment.slug).join("/");
+  return {
+    folderSegments,
+    documentTitle,
+    documentSlug,
+    documentPath: buildDocumentPath(folderPath, documentSlug),
+  };
+}
+
+function parseImportMode(value: string | undefined): UpsertMode {
+  if (!value) return "upsert";
+  if (value === "create_only" || value === "upsert" || value === "dry_run") return value;
+  throw new Error("mode must be create_only, upsert, or dry_run.");
+}
+
+function parseImportFiles(value: unknown): Array<{ path: string; title?: string; content: string; checksum?: string }> {
+  if (!Array.isArray(value)) throw new Error("files is required.");
+  if (value.length > 200) throw new Error("files is limited to 200 items per MCP call.");
+  return value.map((item, index) => {
+    const record = asRecord(item);
+    const path = maybeString(record.path);
+    const content = typeof record.content === "string" ? record.content : undefined;
+    if (!path) throw new Error(`files[${index}].path is required.`);
+    if (content === undefined) throw new Error(`files[${index}].content is required.`);
+    return { path, title: maybeString(record.title), content, checksum: maybeString(record.checksum) };
+  });
+}
+
+function normalizeImportPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\//, "");
+}
+
+function isUnsafeRelativePath(path: string): boolean {
+  const normalized = normalizeImportPath(path);
+  if (normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)) return true;
+  const parts = normalized.split("/");
+  let depth = 0;
+  for (const part of parts) {
+    if (part === "..") depth -= 1;
+    else if (part && part !== ".") depth += 1;
+    if (depth < 0) return true;
+  }
+  return false;
+}
+
+function slugifyImportPath(value: string): string {
+  const slug = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\.md$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "untitled";
+}
+
+function stripNul(value: string): string {
+  // eslint-disable-next-line no-control-regex -- Postgres text/jsonb reject NUL bytes.
+  return value.replace(/\u0000/g, "");
+}
+
 async function updateDocument(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "update");
   const documentId = stringParam(args, "documentId");
@@ -935,6 +1394,12 @@ function maybeString(value: unknown): string | undefined {
 function stringParam(params: Record<string, unknown>, key: string): string {
   const value = maybeString(params[key]);
   if (!value) throw new Error(`${key} is required.`);
+  return value;
+}
+
+function stringParamAllowEmpty(params: Record<string, unknown>, key: string): string {
+  const value = params[key];
+  if (typeof value !== "string") throw new Error(`${key} is required.`);
   return value;
 }
 

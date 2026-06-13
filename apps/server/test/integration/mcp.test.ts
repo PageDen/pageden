@@ -86,7 +86,10 @@ describe("MCP agent access", () => {
     expect(init.json().result.serverInfo.name).toBe("pageden");
 
     const listed = await rpc(s.token, "tools/list");
-    expect(listed.json().result.tools.map((t: { name: string }) => t.name)).toContain("pageden_search");
+    const toolNames = listed.json().result.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain("pageden_search");
+    expect(toolNames).toContain("pageden_upsert_document_by_path");
+    expect(toolNames).toContain("pageden_import_markdown_tree");
 
     const search = await tool(s.token, "pageden_search", { workspaceId: s.ws.id, query: "Runbook" });
     expect(search.statusCode).toBe(200);
@@ -440,6 +443,85 @@ describe("MCP agent access", () => {
 
     const revision = await prisma.documentRevision.findUniqueOrThrow({ where: { id: updatedData.version } });
     expect(revision.changeSource).toBe("agent");
+  });
+
+  it("upserts documents by path and imports markdown trees with reports", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+
+    const created = await tool(s.token, "pageden_upsert_document_by_path", {
+      workspaceId: s.ws.id,
+      path: "pageden-dev/docs/mcp-import-improvements-plan.md",
+      title: "MCP Import Improvements Plan",
+      content: "# MCP Import Improvements Plan\n\nInitial plan.\n",
+      createFolders: true,
+    });
+    const createdData = toolJson(created);
+    expect(createdData.action).toBe("created");
+    expect(createdData.path).toBe("pageden-dev/docs/mcp-import-improvements-plan.md");
+    expect(createdData.createdFolders.map((f: { path: string }) => f.path)).toEqual(["pageden-dev", "pageden-dev/docs"]);
+
+    const unchanged = await tool(s.token, "pageden_upsert_document_by_path", {
+      workspaceId: s.ws.id,
+      path: "pageden-dev/docs/mcp-import-improvements-plan.md",
+      title: "MCP Import Improvements Plan",
+      content: "# MCP Import Improvements Plan\n\nInitial plan.\n",
+      createFolders: true,
+    });
+    expect(toolJson(unchanged).action).toBe("skipped");
+
+    const updated = await tool(s.token, "pageden_upsert_document_by_path", {
+      workspaceId: s.ws.id,
+      path: "pageden-dev/docs/mcp-import-improvements-plan.md",
+      title: "MCP Import Improvements Plan",
+      content: "# MCP Import Improvements Plan\n\nUpdated plan.\n",
+      createFolders: true,
+    });
+    const updatedData = toolJson(updated);
+    expect(updatedData.action).toBe("updated");
+
+    const readUpdated = await tool(s.token, "pageden_read_document", {
+      workspaceId: s.ws.id,
+      path: "pageden-dev/docs/mcp-import-improvements-plan.md",
+    });
+    expect(toolJson(readUpdated).content).toContain("Updated plan.");
+
+    const dryRun = await tool(s.token, "pageden_import_markdown_tree", {
+      workspaceId: s.ws.id,
+      rootPath: "pageden-dev",
+      mode: "dry_run",
+      files: [
+        { path: "tasks/backend.md", content: "# Backend\n" },
+        { path: "tasks/web-app.md", content: "# Web App\n" },
+      ],
+    });
+    const dryRunData = toolJson(dryRun);
+    expect(dryRunData.totals.createdDocuments).toBe(2);
+    expect(dryRunData.createdDocuments).toContain("pageden-dev/tasks/backend.md");
+    expect(await prisma.document.findFirst({ where: { workspaceId: s.ws.id, path: "pageden-dev/tasks/backend.md", deletedAt: null } })).toBeNull();
+
+    const imported = await tool(s.token, "pageden_import_markdown_tree", {
+      workspaceId: s.ws.id,
+      rootPath: "pageden-dev",
+      mode: "upsert",
+      files: [
+        { path: "tasks/backend.md", title: "Backend", content: "# Backend\n" },
+        { path: "tasks/web-app.md", title: "Web App", content: "# Web App\n" },
+      ],
+    });
+    const importedData = toolJson(imported);
+    expect(importedData.totals.createdDocuments).toBe(2);
+    expect(importedData.createdDocuments).toEqual(["pageden-dev/tasks/backend.md", "pageden-dev/tasks/web-app.md"]);
+
+    const importedAgain = await tool(s.token, "pageden_import_markdown_tree", {
+      workspaceId: s.ws.id,
+      rootPath: "pageden-dev",
+      mode: "upsert",
+      files: [
+        { path: "tasks/backend.md", title: "Backend", content: "# Backend\n" },
+        { path: "tasks/web-app.md", title: "Web App", content: "# Web App\n" },
+      ],
+    });
+    expect(toolJson(importedAgain).totals.skippedDocuments).toBe(2);
   });
 
   it("reports JSON-RPC errors for unknown tools, bad resources, and wrong workspaces", async () => {
