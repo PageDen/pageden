@@ -1,4 +1,7 @@
 import { access, lstat, mkdir, open, readdir, readFile, rename, stat, unlink, utimes } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import type { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { dirname, join, relative } from "node:path";
 import { StorageNotFoundError, type StorageBackend, type StoredObject } from "./backend.js";
 
@@ -128,5 +131,28 @@ export class FsBackend implements StorageBackend {
     } catch {
       // already gone — ignore
     }
+  }
+
+  async putStream(key: string, data: Readable, _length: number): Promise<void> {
+    const destination = this.abs(key);
+    await mkdir(dirname(destination), { recursive: true });
+    const tempPath = `${destination}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      await pipeline(data, createWriteStream(tempPath));
+      await rename(tempPath, destination);
+    } catch (error) {
+      await unlink(tempPath).catch(() => {});
+      throw error;
+    }
+  }
+
+  async getStream(key: string): Promise<Readable> {
+    const path = this.abs(key);
+    try {
+      await access(path);
+    } catch {
+      throw new StorageNotFoundError(key);
+    }
+    return createReadStream(path);
   }
 }

@@ -26,6 +26,8 @@ import {
   okDeletedSchema,
   okSchema,
   authConfigSchema,
+  importJobSchema,
+  importJobStartSchema,
   publicCurrentWorkspaceSchema,
   revisionsSchema,
   treeSchema,
@@ -156,6 +158,39 @@ export const api = {
     if (!parsed.success) throw new ApiError(res.status, json);
     return parsed.data;
   },
+  // Server-side vault import: upload one zip, then poll the job.
+  uploadVaultZip: (
+    workspaceId: string,
+    file: File,
+    options: { targetRootName?: string; targetFolderId?: string; conflictPolicy: "skip" | "rename" },
+    onProgress?: (percent: number) => void,
+  ): Promise<{ jobId: string }> => {
+    const query = new URLSearchParams({ workspaceId, conflictPolicy: options.conflictPolicy });
+    if (options.targetFolderId) query.set("targetFolderId", options.targetFolderId);
+    else query.set("targetRootName", options.targetRootName ?? "Imported");
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.withCredentials = true;
+      xhr.open("POST", `${BASE}/import/vault?${query.toString()}`);
+      xhr.setRequestHeader("content-type", "application/zip");
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+      xhr.addEventListener("load", () => {
+        const json = safeJson(xhr.responseText);
+        if (xhr.status === 401 && onUnauthorized) onUnauthorized();
+        if (xhr.status < 200 || xhr.status >= 300) return reject(new ApiError(xhr.status, json));
+        const parsed = importJobStartSchema.safeParse(json);
+        if (!parsed.success) return reject(new ApiError(xhr.status, json));
+        resolve(parsed.data);
+      });
+      xhr.addEventListener("error", () => reject(new ApiError(0, null)));
+      xhr.send(file);
+    });
+  },
+  importJob: (id: string) => request("GET", `/import/jobs/${encodeURIComponent(id)}`, { schema: importJobSchema }),
+  retryImportJob: (id: string) =>
+    request("POST", `/import/jobs/${encodeURIComponent(id)}/retry`, { schema: importJobStartSchema }),
   // Upload with XHR so we can report byte-level progress (fetch has no progress events).
   uploadAttachmentWithProgress: (
     documentId: string,

@@ -17,6 +17,7 @@ import { registerAdminRoutes } from "./admin/routes.js";
 import { registerDeviceRoutes } from "./device/routes.js";
 import { registerAttachmentRoutes } from "./attachments/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
+import { registerImportRoutes } from "./import/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 
@@ -126,6 +127,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerDocumentRoutes(app);
   await registerAttachmentRoutes(app);
   await registerMcpRoutes(app);
+  await registerImportRoutes(app);
   await registerPermissionRoutes(app);
 
   app.get<{ Querystring: { subdomain?: string } }>("/api/workspaces/availability", async (request) => {

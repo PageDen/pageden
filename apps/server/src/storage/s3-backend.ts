@@ -6,6 +6,7 @@ import {
   PutObjectCommand,
   type ListObjectsCommandOutput,
 } from "@aws-sdk/client-s3";
+import type { Readable } from "node:stream";
 import { StorageNotFoundError, type StorageBackend, type StoredObject } from "./backend.js";
 
 // Minimal shape we need from an S3 client — lets tests inject a fake `send`.
@@ -94,5 +95,19 @@ export class S3Backend implements StorageBackend {
 
   async remove(key: string): Promise<void> {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
+  async putStream(key: string, data: Readable, length: number): Promise<void> {
+    // PutObject accepts a stream body when ContentLength is known (the import upload path
+    // always knows it from the HTTP Content-Length header), so nothing is buffered here.
+    await this.client.send(
+      new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data, ContentLength: length }),
+    );
+  }
+
+  async getStream(key: string): Promise<Readable> {
+    const out = (await this.get(key)) as { Body?: unknown };
+    if (!out.Body) throw new StorageNotFoundError(key);
+    return out.Body as Readable;
   }
 }

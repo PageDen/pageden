@@ -4,7 +4,7 @@ import { useParams } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Loader2, UploadCloud } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { crudErrorMessage } from "../../lib/api";
+import { api, crudErrorMessage } from "../../lib/api";
 import { treeQuery } from "../../lib/queries";
 import { buildImportReportMarkdown, buildWebImportPreview, filesFromFileList, importFilesToWorkspace, type BrowserImportFile, type ImportConflictPolicy, type ImportProgress, type WebImportPreview, type WebImportReport } from "./vault-import";
 
@@ -23,6 +23,7 @@ export function ImportPage() {
   const [isReadingFolder, setIsReadingFolder] = useState(false);
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
 
   const fileSummary = useMemo(() => {
     const totalBytes = files.reduce((sum, item) => sum + item.file.size, 0);
@@ -47,7 +48,36 @@ export function ImportPage() {
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
     },
   });
-  const canImport = Boolean(workspaceId && tree.data && files.length && preview && !importMutation.isPending && !isReadingFolder);
+  // Server-side zip import: upload once, then poll the job. The import keeps running on
+  // the server even if this tab closes; large vaults never hit per-request rate limits.
+  const serverImportMutation = useMutation({
+    mutationFn: async (file: File) => {
+      setReport(null);
+      setProgress({ phase: "documents", current: 0, total: 100, label: "Uploading zip…" });
+      const { jobId } = await api.uploadVaultZip(
+        workspaceId,
+        file,
+        { targetRootName: targetRootName || "Imported from Web", conflictPolicy },
+        (pct) => setProgress({ phase: "documents", current: pct, total: 100, label: `Uploading zip (${pct}%)` }),
+      );
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const job = await api.importJob(jobId);
+        if (job.progress) setProgress(job.progress as ImportProgress);
+        if (job.status === "done") return job;
+        if (job.status === "failed") throw new Error(job.error ?? "Import failed.");
+      }
+    },
+    onSuccess: (job) => {
+      setProgress(null);
+      setReport(serverReportToWebReport(job.report, targetRootName || "Imported from Web"));
+      void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+    },
+  });
+
+  const isBusy = importMutation.isPending || serverImportMutation.isPending;
+  const largeVault = fileSummary.count > 200 || fileSummary.totalBytes > 25 * 1024 * 1024;
+  const canImport = Boolean(workspaceId && tree.data && files.length && preview && !isBusy && !isReadingFolder);
 
   async function updatePreview(nextFiles = files, nextRoot = targetRootName) {
     if (!tree.data || nextFiles.length === 0) {
@@ -149,13 +179,58 @@ export function ImportPage() {
               type="file"
               multiple
               className="sr-only"
-              disabled={importMutation.isPending}
+              disabled={isBusy}
               onChange={(event) => {
                 void onFilesSelected(event.currentTarget.files);
                 event.currentTarget.value = "";
               }}
               {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
             />
+
+            <button
+              type="button"
+              className="mt-3 flex w-full cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center transition hover:border-orange-300 hover:bg-orange-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 dark:border-slate-700 dark:bg-slate-950/40 dark:hover:border-orange-400/60 dark:hover:bg-orange-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isBusy || isReadingFolder}
+              onClick={() => zipInputRef.current?.click()}
+            >
+              <UploadCloud className="h-6 w-6 text-orange-600 dark:text-orange-300" aria-hidden="true" />
+              <span className="mt-2 text-sm font-medium text-slate-900 dark:text-slate-100">
+                {serverImportMutation.isPending ? "Importing on the server…" : "Upload zip (recommended for large vaults)"}
+              </span>
+              <span className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                Processed on the server — you can close this tab while it runs.
+              </span>
+            </button>
+            <input
+              ref={zipInputRef}
+              type="file"
+              accept=".zip,application/zip"
+              className="sr-only"
+              disabled={isBusy}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                if (file) serverImportMutation.mutate(file);
+                event.currentTarget.value = "";
+              }}
+            />
+            {largeVault && !serverImportMutation.isPending ? (
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                <span className="font-medium">Large vault detected.</span> For a faster, more reliable import, zip your
+                vault folder and use “Upload zip” instead — the server processes it in one job.
+              </div>
+            ) : null}
+            {serverImportMutation.isPending && progress ? (
+              <div className="mt-3">
+                <ImportProgressBar progress={progress} />
+              </div>
+            ) : null}
+            {serverImportMutation.isError ? (
+              <p className="mt-3 text-sm text-red-600 dark:text-red-300">
+                {serverImportMutation.error instanceof Error
+                  ? serverImportMutation.error.message
+                  : crudErrorMessage(serverImportMutation.error)}
+              </p>
+            ) : null}
 
             {fileSummary.count ? (
               <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
@@ -327,6 +402,27 @@ export function ImportPage() {
       </div>
     </div>
   );
+}
+
+/** Shape a server-side job report into the WebImportReport the report UI renders. */
+function serverReportToWebReport(raw: unknown, targetRootName: string): WebImportReport {
+  const r = (raw ?? {}) as Partial<WebImportReport> & { processedPaths?: string[] };
+  return {
+    targetRootName,
+    targetRootSlug: "",
+    notes: (r.documentsCreated ?? 0) + (r.documentsSkipped ?? 0),
+    attachments: r.attachmentsUploaded ?? 0,
+    skipped: 0,
+    frontmatter: 0,
+    conflicts: [],
+    samplePaths: [],
+    foldersCreated: r.foldersCreated ?? 0,
+    documentsCreated: r.documentsCreated ?? 0,
+    documentsSkipped: r.documentsSkipped ?? 0,
+    attachmentsUploaded: r.attachmentsUploaded ?? 0,
+    attachmentWarnings: r.attachmentWarnings ?? [],
+    rows: r.rows ?? [],
+  };
 }
 
 function ImportProgressBar({ progress }: { progress: ImportProgress }) {

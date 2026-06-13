@@ -55,6 +55,24 @@ export const authConfigSchema = z
   .strict();
 export const okDeletedSchema = z.object({ ok: z.literal(true), deletedAt: iso }).strict();
 
+// Server-side vault import jobs
+export const importJobStartSchema = z.object({ jobId: z.string() }).strict();
+export const importJobSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    status: z.enum(["queued", "running", "done", "failed"]),
+    progress: z
+      .object({ phase: z.string(), current: z.number(), total: z.number(), label: z.string() })
+      .strict()
+      .nullable(),
+    report: z.unknown().nullable(),
+    error: z.string().nullable(),
+    createdAt: iso,
+    finishedAt: iso.nullable(),
+  })
+  .strict();
+
 // Tokens
 export const tokenCreateSchema = z
   .object({

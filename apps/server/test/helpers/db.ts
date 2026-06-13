@@ -2,6 +2,7 @@ import { prisma } from "../../src/prisma.js";
 
 const TABLES = [
   "AuditEvent",
+  "ImportJob",
   "McpOAuthCode",
   "DeviceAuthRequest",
   "DocumentRevision",
