@@ -341,6 +341,13 @@ describe("MCP agent access", () => {
       slug: "blocked",
     });
     expect(create.json().error.message).toMatch(/forbidden/i);
+
+    const createFolder = await tool(s.token, "pageden_create_folder", {
+      workspaceId: s.ws.id,
+      name: "Blocked Folder",
+      slug: "blocked-folder",
+    });
+    expect(createFolder.json().error.message).toMatch(/forbidden/i);
   });
 
   it("writes append revisions as agent source when the token has append scope", async () => {
@@ -361,8 +368,33 @@ describe("MCP agent access", () => {
     expect(read.json().content).toContain("Agent note");
   });
 
-  it("creates and updates documents for editor-scoped agent tokens", async () => {
+  it("creates folders and updates documents for editor-scoped agent tokens", async () => {
     const s = await agentToken(["search", "read", "create", "update", "append"]);
+
+    const rootFolder = await tool(s.token, "pageden_create_folder", {
+      workspaceId: s.ws.id,
+      name: "Development",
+      slug: "development",
+    });
+    const rootFolderData = toolJson(rootFolder);
+    expect(rootFolderData.path).toBe("development");
+
+    const childFolder = await tool(s.token, "pageden_create_folder", {
+      workspaceId: s.ws.id,
+      parentFolderId: rootFolderData.id,
+      name: "Plans",
+      slug: "plans",
+    });
+    const childFolderData = toolJson(childFolder);
+    expect(childFolderData.path).toBe("development/plans");
+
+    const duplicateFolder = await tool(s.token, "pageden_create_folder", {
+      workspaceId: s.ws.id,
+      parentFolderId: rootFolderData.id,
+      name: "Plans",
+      slug: "plans",
+    });
+    expect(duplicateFolder.json().error.message).toMatch(/already exists/i);
 
     const invalid = await tool(s.token, "pageden_create_document", {
       workspaceId: s.ws.id,
@@ -374,17 +406,17 @@ describe("MCP agent access", () => {
 
     const created = await tool(s.token, "pageden_create_document", {
       workspaceId: s.ws.id,
-      folderId: s.folderId,
+      folderId: childFolderData.id,
       title: "Agent Draft",
       slug: "agent-draft",
       content: "# Agent Draft\n",
     });
     const createdData = toolJson(created);
-    expect(createdData.path).toBe("engineering/agent-draft.md");
+    expect(createdData.path).toBe("development/plans/agent-draft.md");
 
     const duplicate = await tool(s.token, "pageden_create_document", {
       workspaceId: s.ws.id,
-      folderId: s.folderId,
+      folderId: childFolderData.id,
       title: "Agent Draft",
       slug: "agent-draft",
     });

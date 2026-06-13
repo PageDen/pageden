@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeAuditEvent } from "../audit.js";
 import { isTokenScope, requireAuth, requireTokenScope, TOKEN_SCOPES, type AuthContext } from "../auth.js";
@@ -6,9 +7,9 @@ import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
 import { isUniqueViolation } from "../errors.js";
-import { atLeast, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
+import { atLeast, authorizeFolderRole, canManageWorkspace, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
-import { buildDocumentPath, isValidSlug } from "../paths.js";
+import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, searchTextFor } from "../documents/routes.js";
@@ -24,6 +25,7 @@ type JsonRpcRequest = {
 };
 
 type McpContent = { type: "text"; text: string };
+type Tx = Prisma.TransactionClient;
 
 const MAX_QUERY = SEARCH_QUERY_MAX;
 const DEFAULT_LIMIT = 10;
@@ -127,6 +129,21 @@ const tools = [
         content: { type: "string" },
       },
       required: ["folderId", "title", "slug"],
+    },
+  },
+  {
+    name: "pageden_create_folder",
+    description:
+      "Create a folder. Root folders require workspace admin; child folders require editor access on the parent folder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        parentFolderId: { type: ["string", "null"], description: "Omit or pass null to create a root folder." },
+        name: { type: "string" },
+        slug: { type: "string" },
+      },
+      required: ["name", "slug"],
     },
   },
   {
@@ -442,6 +459,7 @@ async function callTool(
   else if (name === "pageden_find_related_docs") data = await findRelatedDocs(auth, args, request);
   else if (name === "pageden_workspace_summary") data = await workspaceSummary(auth, args, request);
   else if (name === "pageden_create_document") data = await createDocument(auth, args, request);
+  else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
@@ -738,6 +756,102 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
     if (isUniqueViolation(error)) throw new Error("A document with this slug or path already exists.", { cause: error });
     throw error;
   }
+}
+
+async function createFolder(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "create");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const parentFolderId = maybeString(args.parentFolderId) ?? null;
+  const name = stringParam(args, "name").trim();
+  const slug = stringParam(args, "slug").trim().toLowerCase();
+  if (!name) throw new Error("name is required.");
+  if (!slug || !isValidSlug(slug)) throw new Error("slug must be lowercase letters, numbers, and hyphens.");
+
+  if (parentFolderId) {
+    const parent = await prisma.folder.findFirst({
+      where: { id: parentFolderId, workspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!parent) throw new Error("Parent folder not found.");
+    const parentRole = await resolveFolderRole(auth.userId, parent.id);
+    if (parentRole === null) throw new Error("Parent folder not found.");
+    if (!atLeast(parentRole, "editor")) throw new Error("Forbidden.");
+  } else if (!(await canManageWorkspace(auth.userId, workspaceId))) {
+    throw new Error("Only workspace admins can create root folders.");
+  }
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await lockFolderTree(tx, workspaceId);
+      let parentPath: string | null = null;
+      if (parentFolderId) {
+        const parent = await tx.folder.findFirst({
+          where: { id: parentFolderId, workspaceId, deletedAt: null },
+          select: { path: true },
+        });
+        if (!parent) throw new Error("Parent folder not found.");
+        const az = await authorizeFolderRole(auth.userId, parentFolderId, "editor", tx);
+        if (!az.ok) throw new Error(az.status === "not_found" ? "Parent folder not found." : "Forbidden.");
+        parentPath = parent.path;
+      } else if (!(await canManageWorkspace(auth.userId, workspaceId, tx))) {
+        throw new Error("Only workspace admins can create root folders.");
+      }
+
+      if (await siblingFolderSlugTaken(tx, workspaceId, parentFolderId, slug)) {
+        throw new Error("A folder with this slug already exists here.");
+      }
+      const path = buildFolderPath(parentPath, slug);
+      const folder = await tx.folder.create({
+        data: {
+          workspaceId,
+          parentFolderId,
+          name,
+          slug,
+          path,
+          createdById: auth.userId,
+          updatedById: auth.userId,
+        },
+      });
+      await writeAuditEvent(
+        {
+          workspaceId,
+          userId: auth.userId,
+          action: "folder_created_by_agent",
+          targetType: "folder",
+          targetId: folder.id,
+          ipAddress: request.ip,
+          userAgent: request.headers["user-agent"],
+          metadata: { path, tokenId: auth.tokenId, tokenName: auth.tokenName },
+        },
+        tx,
+      );
+      return {
+        workspaceId,
+        id: folder.id,
+        parentFolderId: folder.parentFolderId,
+        name: folder.name,
+        slug: folder.slug,
+        path: folder.path,
+        updatedAt: folder.updatedAt.toISOString(),
+      };
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new Error("A folder with this slug or path already exists.", { cause: error });
+    throw error;
+  }
+}
+
+async function siblingFolderSlugTaken(
+  tx: Tx,
+  workspaceId: string,
+  parentFolderId: string | null,
+  slug: string,
+): Promise<boolean> {
+  const existing = await tx.folder.findFirst({
+    where: { workspaceId, parentFolderId, slug, deletedAt: null },
+    select: { id: true },
+  });
+  return existing !== null;
 }
 
 async function updateDocument(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
