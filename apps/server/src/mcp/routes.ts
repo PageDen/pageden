@@ -943,7 +943,7 @@ async function importMarkdownTree(auth: AuthContext, args: Record<string, unknow
   const createdFolderPaths = new Set<string>();
 
   for (const file of files) {
-    const targetPath = rootPath ? `${rootPath.replace(/\/+$/, "")}/${file.path}` : file.path;
+    const targetPath = rootPath ? `${trimTrailingSlashes(rootPath)}/${file.path}` : file.path;
     try {
       const computedChecksum = computeChecksum(file.content);
       if (file.checksum && file.checksum !== computedChecksum) throw new Error("checksum does not match content.");
@@ -1281,7 +1281,16 @@ function parseImportFiles(value: unknown): Array<{ path: string; title?: string;
 }
 
 function normalizeImportPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\//, "");
+  const normalized = path.split("\\").join("/");
+  const parts = normalized.split("/").filter((part) => part.length > 0);
+  if (parts[0] === ".") parts.shift();
+  return parts.join("/");
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
 }
 
 function isUnsafeRelativePath(path: string): boolean {
