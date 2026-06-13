@@ -108,6 +108,7 @@ export function WorkspaceShell() {
   const workspace = me.data?.workspaces.find((w) => w.id === workspaceId);
   const workspaceInitial = getWorkspaceInitial(workspace?.name);
   const currentDocument = tree.data?.documents.find((doc) => doc.id === params.documentId);
+  const isMobileShell = useMediaQuery("(max-width: 1023px)");
   const toggleSidebar = () => {
     setIsSidebarCollapsed((current) => {
       const next = !current;
@@ -134,6 +135,10 @@ export function WorkspaceShell() {
     setIsMobileFilesOpen(false);
   }, [workspaceId]);
 
+  useEffect(() => {
+    if (!isMobileShell) setIsMobileFilesOpen(false);
+  }, [isMobileShell]);
+
   function openMobileSearch() {
     setIsMobileFilesOpen(true);
     window.setTimeout(() => {
@@ -144,22 +149,24 @@ export function WorkspaceShell() {
   return (
     <div className="flex min-h-screen bg-white">
       <CommandPalette workspaceId={workspaceId} />
-      <MobileFilesDrawer
-        open={isMobileFilesOpen}
-        workspaceId={workspaceId}
-        workspaceName={workspace?.name ?? "Workspace"}
-        workspaceInitial={workspaceInitial}
-        workspaceRole={workspace?.role}
-        searchText={searchText}
-        setSearchText={setSearchText}
-        trimmedSearch={trimmedSearch}
-        debouncedSearch={debouncedSearch}
-        search={search}
-        tree={tree}
-        isRefreshingTree={isRefreshingTree}
-        onRefresh={() => void tree.refetch()}
-        onClose={() => setIsMobileFilesOpen(false)}
-      />
+      {isMobileShell ? (
+        <MobileFilesDrawer
+          open={isMobileFilesOpen}
+          workspaceId={workspaceId}
+          workspaceName={workspace?.name ?? "Workspace"}
+          workspaceInitial={workspaceInitial}
+          workspaceRole={workspace?.role}
+          searchText={searchText}
+          setSearchText={setSearchText}
+          trimmedSearch={trimmedSearch}
+          debouncedSearch={debouncedSearch}
+          search={search}
+          tree={tree}
+          isRefreshingTree={isRefreshingTree}
+          onRefresh={() => void tree.refetch()}
+          onClose={() => setIsMobileFilesOpen(false)}
+        />
+      ) : null}
       <aside
         ref={sidebarRef}
         className={`${isSidebarCollapsed ? "w-14" : ""} hidden shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 transition-[width] duration-200 lg:flex`}
@@ -457,6 +464,7 @@ export function WorkspaceShell() {
         </div>
       )}
       <main className="flex min-w-0 flex-1 flex-col overflow-auto">
+        {isMobileShell ? (
         <div className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-slate-200 bg-white/95 px-3 backdrop-blur lg:hidden">
           <button
             type="button"
@@ -491,6 +499,7 @@ export function WorkspaceShell() {
             <RefreshCw size={18} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
           </button>
         </div>
+        ) : null}
         {me.data && !me.data.emailVerified ? (
           <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
             <span>Please verify your email address to secure your account.</span>
@@ -510,6 +519,20 @@ export function WorkspaceShell() {
       </main>
     </div>
   );
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
 }
 
 function ThemeChoice({
@@ -577,14 +600,15 @@ function MobileFilesDrawer({
   onRefresh: () => void;
   onClose: () => void;
 }) {
+  if (!open) return null;
+
   return (
     <div
-      className={`fixed inset-0 z-50 lg:hidden ${open ? "pointer-events-auto" : "pointer-events-none"}`}
-      aria-hidden={!open}
+      className="fixed inset-0 z-50 lg:hidden"
     >
       <button
         type="button"
-        className={`absolute inset-0 bg-slate-950/50 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
+        className="absolute inset-0 bg-slate-950/50 transition-opacity"
         onClick={onClose}
         aria-label="Close files"
       />
@@ -592,9 +616,7 @@ function MobileFilesDrawer({
         role="dialog"
         aria-modal="true"
         aria-label="Files"
-        className={`relative flex h-full w-[min(92vw,390px)] flex-col border-r border-slate-200 bg-slate-50 shadow-2xl transition-transform duration-200 ${
-          open ? "translate-x-0" : "-translate-x-full"
-        }`}
+        className="relative flex h-full w-[min(92vw,390px)] flex-col border-r border-slate-200 bg-slate-50 shadow-2xl transition-transform duration-200"
       >
         <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 px-4">
           <Link
