@@ -49,6 +49,22 @@ function safeJson(text: string): unknown {
   }
 }
 
+// Pull the filename out of a Content-Disposition header, preferring the RFC 5987 `filename*`
+// (UTF-8) form over the plain `filename="..."` token. Returns null if neither is present.
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const extended = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (extended?.[1]) {
+    try {
+      return decodeURIComponent(extended[1]);
+    } catch {
+      // fall through to the plain filename
+    }
+  }
+  const plain = header.match(/filename="?([^";]+)"?/i);
+  return plain?.[1]?.trim() || null;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -129,6 +145,16 @@ export const api = {
     }),
   document: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}`, { schema: documentWithContentSchema }),
+  // Download a document as a Markdown file (server reconstructs frontmatter + Content-Disposition).
+  // Returns the raw bytes + the server-provided filename; the caller triggers the browser save.
+  downloadDocument: async (id: string): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`${BASE}/documents/${encodeURIComponent(id)}/download`, { credentials: "include" });
+    if (res.status === 401 && onUnauthorized) onUnauthorized();
+    if (!res.ok) throw new ApiError(res.status, safeJson(await res.text()));
+    const blob = await res.blob();
+    const filename = filenameFromContentDisposition(res.headers.get("content-disposition")) ?? `${id}.md`;
+    return { blob, filename };
+  },
   attachments: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/attachments`, { schema: attachmentListSchema }),
   attachmentUrl: (id: string) => `${BASE}/attachments/${encodeURIComponent(id)}`,

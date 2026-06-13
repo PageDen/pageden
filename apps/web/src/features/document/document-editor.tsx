@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, Check, CheckCircle2, Clipboard, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Clipboard, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -32,6 +32,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   const [liveStatus, setLiveStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
   const [conflict, setConflict] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const tree = useQuery({ ...treeQuery(workspaceId), enabled: preview || !canEdit });
   const attachments = useQuery({
     queryKey: ["attachments", doc.id],
@@ -138,6 +139,22 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     a.click();
     URL.revokeObjectURL(url);
   }
+  // Download the saved document (with server-reconstructed frontmatter) as a .md file.
+  // Available to every role, including read-only viewers.
+  async function downloadDocument() {
+    setDownloading(true);
+    try {
+      const { blob, filename } = await api.downloadDocument(doc.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   // Rescue controls offered on ANY failed save so the buffer is never a dead end.
   const rescue = (
@@ -180,6 +197,16 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                 {live ? `Live ${liveStatus === "connected" ? "on" : "connecting"}` : "Live"}
               </Button>
             ) : null}
+            <Button
+              variant="ghost"
+              className="h-9 gap-1.5 px-2.5"
+              onClick={() => void downloadDocument()}
+              disabled={downloading}
+              title="Download as Markdown"
+            >
+              <Download size={15} />
+              {downloading ? "Downloading…" : "Download"}
+            </Button>
             <Link
               to="/w/$workspaceId/d/$documentId/history"
               params={{ workspaceId, documentId: doc.id }}

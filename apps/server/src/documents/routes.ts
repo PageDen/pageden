@@ -19,6 +19,7 @@ export function searchTextFor(content: string): string {
 }
 
 import { readContent, writeContent } from "../storage.js";
+import { buildDownloadMarkdown, contentDisposition, downloadFilename } from "./download.js";
 import { buildDocumentPath, isValidSlug } from "../paths.js";
 import { conflict, forbidden, isUniqueViolation, notFound, validationError } from "../errors.js";
 import { atLeast, authorizeDocumentRole, authorizeFolderRole, canManageWorkspace, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
@@ -347,6 +348,44 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       aiReadiness,
       updatedAt: doc.updatedAt.toISOString(),
     };
+  });
+
+  // Download a document as a Markdown file with reconstructed frontmatter (read scope).
+  // Not a write: no audit event, no revision. Hidden documents 404 like GET /documents/:id.
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/download",
+    { config: { rateLimit: { max: Number(process.env.DOWNLOAD_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "read");
+    const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null } });
+    if (!doc) return notFound(reply, "Document not found.");
+    const role = await resolveDocumentRole(auth.userId, doc.id);
+    if (!role) return notFound(reply, "Document not found.");
+
+    let content = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) content = await readContent(revision.storageKey);
+    }
+
+    const markdown = buildDownloadMarkdown(
+      {
+        title: doc.title,
+        path: doc.path,
+        version: doc.currentVersionId,
+        updatedAt: doc.updatedAt.toISOString(),
+        checksum: doc.currentChecksum,
+      },
+      content,
+    );
+    return reply
+      .header("content-type", "text/markdown; charset=utf-8")
+      .header("content-disposition", contentDisposition(downloadFilename(doc.path)))
+      .send(markdown);
   });
 
   // Create a document (requires editor on the target folder).
