@@ -50,7 +50,11 @@ export function CommandPalette({ workspaceId }: { workspaceId: string }) {
 
   function go(documentId: string) {
     setOpen(false);
-    void navigate({ to: "/w/$workspaceId/d/$documentId", params: { workspaceId, documentId } });
+    void navigate({
+      to: "/w/$workspaceId/d/$documentId",
+      params: { workspaceId, documentId },
+      search: debounced ? { q: debounced } : undefined,
+    });
   }
 
   function onInputKey(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -110,9 +114,9 @@ export function CommandPalette({ workspaceId }: { workspaceId: string }) {
                   type="button"
                   onMouseEnter={() => setSelected(i)}
                   onClick={() => go(result.id)}
-                  className={`block w-full px-4 py-2 text-left ${i === selected ? "bg-slate-100" : "hover:bg-slate-50"}`}
+                  className={`block w-full cursor-pointer px-4 py-2.5 text-left transition ${i === selected ? "bg-orange-50 ring-1 ring-inset ring-orange-100" : "hover:bg-slate-50"}`}
                 >
-                  <span className="block truncate text-sm text-slate-700">📄 {result.title}</span>
+                  <span className="block truncate text-sm font-medium text-slate-800">📄 {result.title}</span>
                   <span className="block truncate text-xs text-slate-400">{result.path}</span>
                   {result.snippet ? (
                     <span className="mt-0.5 block text-xs leading-snug text-slate-500 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">

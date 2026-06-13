@@ -58,6 +58,19 @@ describe("full-text search", () => {
     expect(hit!.snippet).toContain(HL_START + "Laptop" + HL_STOP); // original casing preserved in the snippet
   });
 
+  it("keeps one- and two-character queries title-only to avoid body scans", async () => {
+    const s = await baseScenario();
+    await createDoc(s.ws.id, s.folderId, s.adminCookie, "title-ai", "AI handbook", "nothing relevant in body");
+    await createDoc(s.ws.id, s.folderId, s.adminCookie, "body-ai", "Body only", "AI appears only in this document body");
+
+    const res = await req({ method: "GET", url: `/api/search?workspaceId=${s.ws.id}&q=AI`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const hits = res.json().results as Array<{ title: string; snippet: string | null }>;
+    expect(hits.map((r) => r.title)).toContain("AI handbook");
+    expect(hits.map((r) => r.title)).not.toContain("Body only");
+    expect(hits.find((r) => r.title === "AI handbook")!.snippet).toBeNull();
+  });
+
   it("excludes documents the user cannot read", async () => {
     const s = await baseScenario();
     await createDoc(s.ws.id, s.folderId, s.adminCookie, "secret", "Secret", "classified zorptastic material");

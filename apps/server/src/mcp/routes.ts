@@ -12,6 +12,7 @@ import { buildDocumentPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, searchTextFor } from "../documents/routes.js";
+import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 
@@ -24,7 +25,7 @@ type JsonRpcRequest = {
 
 type McpContent = { type: "text"; text: string };
 
-const MAX_QUERY = 256;
+const MAX_QUERY = SEARCH_QUERY_MAX;
 const DEFAULT_LIMIT = 10;
 const OAUTH_CODE_TTL_MS = 5 * 60 * 1000;
 
@@ -507,33 +508,7 @@ async function searchDocuments(auth: AuthContext, args: Record<string, unknown>,
   const query = stringParam(args, "query").trim().slice(0, MAX_QUERY);
   const limit = clampLimit(args.limit);
   if (!query) return { workspaceId, results: [] };
-
-  const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
-  const rows = await prisma.$queryRaw<Array<{ id: string; folderId: string; title: string; path: string; searchText: string | null; updatedAt: Date }>>`
-    SELECT "id", "folderId", "title", "path", "searchText", "updatedAt"
-    FROM "Document"
-    WHERE "workspaceId" = ${workspaceId}
-      AND "deletedAt" IS NULL
-      AND strpos(lower(coalesce("title", '') || ' ' || coalesce("searchText", '')), lower(${query})) > 0
-    ORDER BY
-      (CASE WHEN strpos(lower(coalesce("title", '')), lower(${query})) > 0 THEN 0 ELSE 1 END) ASC,
-      "updatedAt" DESC,
-      "id" ASC
-    LIMIT ${Math.min(limit * 4, 100)}`;
-  const results = [];
-  for (const row of rows) {
-    const role = resolver.documentRole({ id: row.id, folderId: row.folderId });
-    if (!role) continue;
-    results.push({
-      id: row.id,
-      title: row.title,
-      path: row.path,
-      permission: role,
-      updatedAt: row.updatedAt.toISOString(),
-      snippet: makeSnippet(row.searchText, query),
-    });
-    if (results.length >= limit) break;
-  }
+  const results = await runSearchDocuments({ userId: auth.userId, workspaceId, query, limit });
   return { workspaceId, results };
 }
 
@@ -852,15 +827,6 @@ function stringParam(params: Record<string, unknown>, key: string): string {
 function clampLimit(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value ?? DEFAULT_LIMIT);
   return Number.isFinite(n) ? Math.min(Math.max(Math.floor(n), 1), 50) : DEFAULT_LIMIT;
-}
-
-function makeSnippet(searchText: string | null, query: string): string | null {
-  if (!searchText) return null;
-  const idx = searchText.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return null;
-  const start = Math.max(0, idx - 70);
-  const end = Math.min(searchText.length, idx + query.length + 70);
-  return `${start > 0 ? "... " : ""}${searchText.slice(start, end).replace(/\s+/g, " ").trim()}${end < searchText.length ? " ..." : ""}`;
 }
 
 function excerpt(content: string, query: string): string {
