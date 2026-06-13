@@ -1,3 +1,5 @@
+import type { Readable } from "node:stream";
+
 // Pluggable object storage. Content is content-addressed (the key is derived from the
 // sha256 of canonical content), so writes are idempotent and dedupe across the store.
 // Two backends implement this interface: a local filesystem store (default; used by dev,
@@ -20,6 +22,13 @@ export interface StorageBackend {
   list(prefix: string): Promise<StoredObject[]>;
   /** Delete a key; a no-op if it is already gone. */
   remove(key: string): Promise<void>;
+  /**
+   * Store a stream at `key` without buffering it in memory (used by import zip uploads).
+   * `length` is the exact byte count (from Content-Length) — required by S3 PutObject.
+   */
+  putStream(key: string, data: Readable, length: number): Promise<void>;
+  /** Read a key as a stream (throws StorageNotFoundError when missing). */
+  getStream(key: string): Promise<Readable>;
 }
 
 /** Thrown by getText/getBytes when the key does not exist. */

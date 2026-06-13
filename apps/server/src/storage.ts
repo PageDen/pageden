@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Readable } from "node:stream";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { S3Client } from "@aws-sdk/client-s3";
 import { canonicalize } from "./checksum.js";
@@ -88,6 +89,40 @@ export async function writeBlob(data: Buffer, workspaceId: string): Promise<{ st
 export async function readBlob(storageKey: string): Promise<Buffer> {
   assertReadableKey(storageKey);
   return backend().getBytes(storageKey);
+}
+
+// ---------------------------------------------------------------------------
+// Import zips. These deliberately live under a dedicated top-level `import/` prefix:
+// the orphan sweep only scans objects/, attachments/, and workspaces/, so a job's zip can
+// never be swept as an orphan. Cleanup is explicit (24h after the job finishes).
+// ---------------------------------------------------------------------------
+const IMPORT_ZIP_KEY_RE = /^import\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.zip$/;
+
+export function importZipKey(workspaceId: string, jobId: string): string {
+  if (!WORKSPACE_ID_RE.test(workspaceId) || !WORKSPACE_ID_RE.test(jobId)) {
+    throw new Error("Refusing to build an import key from malformed ids.");
+  }
+  return `import/${workspaceId}/${jobId}.zip`;
+}
+
+function assertImportZipKey(key: string): void {
+  if (!IMPORT_ZIP_KEY_RE.test(key)) throw new Error(`Refusing to touch malformed import key: ${key}`);
+}
+
+/** Stream an uploaded import zip into storage (no in-memory buffering). */
+export async function writeImportZip(key: string, data: Readable, length: number): Promise<void> {
+  assertImportZipKey(key);
+  await backend().putStream(key, data, length);
+}
+
+export async function readImportZipStream(key: string): Promise<Readable> {
+  assertImportZipKey(key);
+  return backend().getStream(key);
+}
+
+export async function removeImportZip(key: string): Promise<void> {
+  assertImportZipKey(key);
+  await backend().remove(key);
 }
 
 // ---------------------------------------------------------------------------

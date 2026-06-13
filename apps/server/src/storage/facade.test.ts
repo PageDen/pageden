@@ -20,6 +20,15 @@ class MemBackend implements StorageBackend {
     return keys.map((key) => ({ key, mtimeMs: this.mtimes.get(key) ?? 0 }));
   }
   async remove(k: string) { this.removed.push(k); this.texts.delete(k); this.bytes.delete(k); }
+  async putStream(k: string, data: import("node:stream").Readable, _length: number) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of data) chunks.push(Buffer.from(chunk as Buffer));
+    await this.putBytes(k, Buffer.concat(chunks));
+  }
+  async getStream(k: string): Promise<import("node:stream").Readable> {
+    const { Readable } = await import("node:stream");
+    return Readable.from(this.bytes.get(k) ?? Buffer.alloc(0));
+  }
 }
 
 beforeAll(async () => {
