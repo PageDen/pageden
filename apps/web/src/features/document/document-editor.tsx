@@ -224,7 +224,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                 {save.isPending ? "Saving…" : "Save"}
               </Button>
             ) : null}
-            {isMobileActions ? <MobileDocumentMenu doc={doc} workspaceId={workspaceId} /> : null}
+            {isMobileActions ? <MobileDocumentMenu doc={doc} workspaceId={workspaceId} onDownload={() => void downloadDocument()} downloading={downloading} /> : null}
           </div>
         </div>
       </header>
@@ -399,7 +399,7 @@ function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
   );
 }
 
-function MobileDocumentMenu({ doc, workspaceId }: { doc: Doc; workspaceId: string }) {
+function MobileDocumentMenu({ doc, workspaceId, onDownload, downloading }: { doc: Doc; workspaceId: string; onDownload: () => void; downloading: boolean }) {
   return (
     <details className="relative sm:hidden">
       <summary
@@ -423,6 +423,15 @@ function MobileDocumentMenu({ doc, workspaceId }: { doc: Doc; workspaceId: strin
           <History size={15} aria-hidden="true" />
           History
         </Link>
+        <button
+          type="button"
+          className="mt-1 flex h-9 w-full items-center gap-2 rounded-md px-2 text-slate-600 hover:bg-slate-100 hover:text-slate-950 disabled:opacity-50"
+          onClick={() => { (document.querySelector("details[open]") as HTMLDetailsElement | null)?.removeAttribute("open"); onDownload(); }}
+          disabled={downloading}
+        >
+          <Download size={15} aria-hidden="true" />
+          {downloading ? "Downloading…" : "Download"}
+        </button>
       </div>
     </details>
   );
