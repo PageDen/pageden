@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowRight, Bot, Building2, ChevronDown, FileText, Home, KeyRound, LogOut, Monitor, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, ShieldCheck, Sun, UploadCloud, UserRound, X } from "lucide-react";
 import type { z } from "zod";
@@ -29,6 +29,7 @@ export function WorkspaceShell() {
     return stored > 0 ? stored : SIDEBAR_DEFAULT;
   });
   const [isResizing, setIsResizing] = useState(false);
+  const [isMobileFilesOpen, setIsMobileFilesOpen] = useState(false);
   const [showQuickAccess, setShowQuickAccess] = useState(() => window.localStorage.getItem("pageden.quickAccess.dismissed") !== "true");
   const sidebarRef = useRef<HTMLElement>(null);
   const accountMenuRef = useDismissableMenu();
@@ -106,6 +107,7 @@ export function WorkspaceShell() {
 
   const workspace = me.data?.workspaces.find((w) => w.id === workspaceId);
   const workspaceInitial = getWorkspaceInitial(workspace?.name);
+  const currentDocument = tree.data?.documents.find((doc) => doc.id === params.documentId);
   const toggleSidebar = () => {
     setIsSidebarCollapsed((current) => {
       const next = !current;
@@ -114,12 +116,53 @@ export function WorkspaceShell() {
     });
   };
 
+  useEffect(() => {
+    if (!isMobileFilesOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsMobileFilesOpen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isMobileFilesOpen]);
+
+  useEffect(() => {
+    setIsMobileFilesOpen(false);
+  }, [workspaceId]);
+
+  function openMobileSearch() {
+    setIsMobileFilesOpen(true);
+    window.setTimeout(() => {
+      document.querySelector<HTMLInputElement>("[data-mobile-document-search]")?.focus();
+    }, 0);
+  }
+
   return (
     <div className="flex min-h-screen bg-white">
       <CommandPalette workspaceId={workspaceId} />
+      <MobileFilesDrawer
+        open={isMobileFilesOpen}
+        workspaceId={workspaceId}
+        workspaceName={workspace?.name ?? "Workspace"}
+        workspaceInitial={workspaceInitial}
+        workspaceRole={workspace?.role}
+        searchText={searchText}
+        setSearchText={setSearchText}
+        trimmedSearch={trimmedSearch}
+        debouncedSearch={debouncedSearch}
+        search={search}
+        tree={tree}
+        isRefreshingTree={isRefreshingTree}
+        onRefresh={() => void tree.refetch()}
+        onClose={() => setIsMobileFilesOpen(false)}
+      />
       <aside
         ref={sidebarRef}
-        className={`${isSidebarCollapsed ? "w-14" : ""} flex shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 transition-[width] duration-200`}
+        className={`${isSidebarCollapsed ? "w-14" : ""} hidden shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 transition-[width] duration-200 lg:flex`}
         style={isSidebarCollapsed ? undefined : { width: sidebarWidth }}
       >
         {isSidebarCollapsed ? (
@@ -405,7 +448,7 @@ export function WorkspaceShell() {
       </aside>
       {!isSidebarCollapsed && (
         <div
-          className="group relative z-10 w-2 shrink-0 cursor-col-resize"
+          className="group relative z-10 hidden w-2 shrink-0 cursor-col-resize lg:block"
           onMouseDown={handleResizeStart}
           onDoubleClick={handleResizeReset}
           title="Drag to resize · Double-click to reset"
@@ -413,7 +456,41 @@ export function WorkspaceShell() {
           <div className={`absolute inset-y-0 left-1/2 w-px -translate-x-px transition-colors duration-150 delay-300 ${isResizing ? "bg-orange-500" : "bg-transparent group-hover:bg-slate-300"}`} />
         </div>
       )}
-      <main className="flex-1 overflow-auto flex flex-col">
+      <main className="flex min-w-0 flex-1 flex-col overflow-auto">
+        <div className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-slate-200 bg-white/95 px-3 backdrop-blur lg:hidden">
+          <button
+            type="button"
+            onClick={() => setIsMobileFilesOpen(true)}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200"
+            aria-label="Open files"
+            title="Files"
+          >
+            <PanelLeftOpen size={20} aria-hidden="true" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-slate-950">{currentDocument?.title ?? workspace?.name ?? "Pageden"}</p>
+            <p className="truncate text-[11px] text-slate-400">{currentDocument?.path ?? "PageDen workspace"}</p>
+          </div>
+          <button
+            type="button"
+            onClick={openMobileSearch}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200"
+            aria-label="Search documents"
+            title="Search"
+          >
+            <Search size={19} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => void tree.refetch()}
+            disabled={isRefreshingTree}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 disabled:cursor-wait disabled:opacity-60"
+            aria-label={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+            title={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+          >
+            <RefreshCw size={18} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
+          </button>
+        </div>
         {me.data && !me.data.emailVerified ? (
           <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
             <span>Please verify your email address to secure your account.</span>
@@ -465,7 +542,192 @@ function ThemeChoice({
 }
 
 type SearchResult = z.infer<typeof searchSchema>["results"][number];
+type SearchData = z.infer<typeof searchSchema>;
 type TreeDoc = z.infer<typeof treeSchema>["documents"][number];
+type TreeData = z.infer<typeof treeSchema>;
+
+function MobileFilesDrawer({
+  open,
+  workspaceId,
+  workspaceName,
+  workspaceInitial,
+  workspaceRole,
+  searchText,
+  setSearchText,
+  trimmedSearch,
+  debouncedSearch,
+  search,
+  tree,
+  isRefreshingTree,
+  onRefresh,
+  onClose,
+}: {
+  open: boolean;
+  workspaceId: string;
+  workspaceName: string;
+  workspaceInitial: string;
+  workspaceRole?: string;
+  searchText: string;
+  setSearchText: (value: string) => void;
+  trimmedSearch: string;
+  debouncedSearch: string;
+  search: UseQueryResult<SearchData>;
+  tree: UseQueryResult<TreeData>;
+  isRefreshingTree: boolean;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className={`fixed inset-0 z-50 lg:hidden ${open ? "pointer-events-auto" : "pointer-events-none"}`}
+      aria-hidden={!open}
+    >
+      <button
+        type="button"
+        className={`absolute inset-0 bg-slate-950/50 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
+        onClick={onClose}
+        aria-label="Close files"
+      />
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="Files"
+        className={`relative flex h-full w-[min(92vw,390px)] flex-col border-r border-slate-200 bg-slate-50 shadow-2xl transition-transform duration-200 ${
+          open ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 px-4">
+          <Link
+            to="/"
+            onClick={onClose}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-600 text-base font-semibold text-white shadow-sm"
+            title="Switch workspace"
+          >
+            {workspaceInitial}
+          </Link>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-base font-semibold text-slate-950">{workspaceName}</p>
+            <p className="truncate text-xs text-slate-500">PageDen workspace</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-white hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200"
+            aria-label="Close files"
+            title="Close"
+          >
+            <X size={20} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="shrink-0 border-b border-slate-200 px-4 py-3">
+          <label className="relative block">
+            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <Input
+              value={searchText}
+              data-mobile-document-search
+              aria-label="Search documents"
+              placeholder="Search documents"
+              onChange={(e) => setSearchText(e.target.value)}
+              className="h-10 bg-white pl-9 pr-10"
+            />
+            {searchText ? (
+              <button
+                type="button"
+                onClick={() => setSearchText("")}
+                className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Clear search"
+                title="Clear search"
+              >
+                <X size={15} aria-hidden="true" />
+              </button>
+            ) : null}
+          </label>
+        </div>
+
+        <nav className="min-h-0 flex-1 overflow-auto px-3 py-3 text-[15px]">
+          {trimmedSearch ? (
+            <SearchResults
+              workspaceId={workspaceId}
+              query={debouncedSearch || trimmedSearch}
+              isLoading={search.isLoading || debouncedSearch !== trimmedSearch}
+              isError={search.isError}
+              results={debouncedSearch ? search.data?.results ?? [] : []}
+              onNavigate={onClose}
+            />
+          ) : tree.isLoading ? (
+            <p className="px-2 py-2 text-slate-400">Loading…</p>
+          ) : tree.isError ? (
+            <p className="px-2 py-2 text-red-600">Could not load documents.</p>
+          ) : tree.data ? (
+            <>
+              <Link
+                to="/w/$workspaceId"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="mb-3 flex items-center gap-2 rounded-lg px-2.5 py-2.5 font-medium text-slate-600 transition hover:bg-white hover:text-slate-950 [&.active]:bg-white [&.active]:text-slate-950 [&.active]:shadow-sm"
+                activeOptions={{ exact: true }}
+              >
+                <Home size={18} aria-hidden="true" className="text-slate-400 [.active_&]:text-orange-600" />
+                Home
+              </Link>
+              <div className="mb-1 flex items-center justify-between gap-2 px-2 py-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workspace</span>
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  disabled={isRefreshingTree}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 disabled:cursor-wait disabled:opacity-60"
+                  aria-label={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+                  title={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+                >
+                  <RefreshCw size={15} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
+                </button>
+              </div>
+              <TreePanel
+                workspaceId={workspaceId}
+                folders={tree.data.folders}
+                documents={tree.data.documents}
+                canCreateRoot={workspaceRole === "admin"}
+                onNavigate={onClose}
+              />
+            </>
+          ) : null}
+        </nav>
+
+        <div className="grid shrink-0 grid-cols-3 gap-2 border-t border-slate-200 bg-white/80 px-3 py-3">
+          <Link
+            to="/w/$workspaceId/import"
+            params={{ workspaceId }}
+            onClick={onClose}
+            className="flex h-10 items-center justify-center gap-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+          >
+            <UploadCloud size={16} aria-hidden="true" />
+            Import
+          </Link>
+          <Link
+            to="/w/$workspaceId/agents"
+            params={{ workspaceId }}
+            onClick={onClose}
+            className="flex h-10 items-center justify-center gap-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+          >
+            <Bot size={16} aria-hidden="true" />
+            Agents
+          </Link>
+          <Link
+            to="/w/$workspaceId/account"
+            params={{ workspaceId }}
+            onClick={onClose}
+            className="flex h-10 items-center justify-center gap-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+          >
+            <UserRound size={16} aria-hidden="true" />
+            Account
+          </Link>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function SearchResults({
   workspaceId,
@@ -473,12 +735,14 @@ function SearchResults({
   isLoading,
   isError,
   results,
+  onNavigate,
 }: {
   workspaceId: string;
   query: string;
   isLoading: boolean;
   isError: boolean;
   results: SearchResult[];
+  onNavigate?: () => void;
 }) {
   if (isLoading) return <p className="px-2 py-1 text-slate-400">Searching…</p>;
   if (isError) return <p className="px-2 py-1 text-red-600">Could not search documents.</p>;
@@ -492,6 +756,7 @@ function SearchResults({
           <Link
             to="/w/$workspaceId/d/$documentId"
             params={{ workspaceId, documentId: result.id }}
+            onClick={onNavigate}
             className="block rounded px-2 py-1.5 hover:bg-slate-100 [&.active]:bg-slate-200"
           >
             <span className="block truncate text-slate-700">📄 {result.title}</span>

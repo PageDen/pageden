@@ -28,11 +28,13 @@ export function TreePanel({
   folders,
   documents,
   canCreateRoot,
+  onNavigate,
 }: {
   workspaceId: string;
   folders: Folder[];
   documents: Doc[];
   canCreateRoot: boolean;
+  onNavigate?: () => void;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -102,7 +104,7 @@ export function TreePanel({
           </Button>
         </div>
       ) : null}
-      <DocumentTree workspaceId={workspaceId} folders={folders} documents={documents} actions={actions} />
+      <DocumentTree workspaceId={workspaceId} folders={folders} documents={documents} actions={actions} onNavigate={onNavigate} />
 
       {dialog?.kind === "newDoc" ? (
         <NameDialog

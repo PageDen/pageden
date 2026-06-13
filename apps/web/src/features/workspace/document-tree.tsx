@@ -49,7 +49,7 @@ function ActionMenu({ items }: { items: MenuItem[] }) {
   return (
     <details
       ref={menuRef}
-      className="relative shrink-0 opacity-0 transition focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+      className="relative shrink-0 opacity-100 transition focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 sm:opacity-0"
       onClick={(event) => {
         event.stopPropagation();
       }}
@@ -105,9 +105,10 @@ interface FolderNodeProps {
   docsByFolder: Map<string, Doc[]>;
   workspaceId: string;
   actions: TreeActions;
+  onNavigate?: () => void;
 }
 
-function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions }: FolderNodeProps) {
+function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, onNavigate }: FolderNodeProps) {
   const [isOpen, setIsOpen] = useState(true);
 
   const subFolders = childFolders.get(folder.id) ?? [];
@@ -165,10 +166,11 @@ function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions }
               docsByFolder={docsByFolder}
               workspaceId={workspaceId}
               actions={actions}
+              onNavigate={onNavigate}
             />
           ))}
           {docs.map((d) => (
-            <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} />
+            <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} />
           ))}
         </ul>
       )}
@@ -182,10 +184,12 @@ function DocRow({
   doc,
   workspaceId,
   actions,
+  onNavigate,
 }: {
   doc: Doc;
   workspaceId: string;
   actions: TreeActions;
+  onNavigate?: () => void;
 }) {
   const menuItems: MenuItem[] = canManage(doc.permission)
     ? [
@@ -201,6 +205,7 @@ function DocRow({
       <Link
         to="/w/$workspaceId/d/$documentId"
         params={{ workspaceId, documentId: doc.id }}
+        onClick={onNavigate}
         className="relative flex min-w-0 flex-1 items-center gap-2 truncate rounded-md border border-transparent py-1.5 pl-2 pr-2 text-slate-600 transition hover:bg-white hover:text-slate-900 [&.active]:border-slate-200 [&.active]:bg-white [&.active]:font-medium [&.active]:text-slate-950 [&.active]:shadow-sm"
       >
         <span className="absolute left-0 top-1 bottom-1 w-0.5 rounded-r bg-transparent [.active_&]:bg-orange-600" />
@@ -219,11 +224,13 @@ export function DocumentTree({
   folders,
   documents,
   actions,
+  onNavigate,
 }: {
   workspaceId: string;
   folders: Folder[];
   documents: Doc[];
   actions: TreeActions;
+  onNavigate?: () => void;
 }) {
   const childFolders = new Map<string | null, Folder[]>();
   for (const f of folders) {
@@ -258,10 +265,11 @@ export function DocumentTree({
           docsByFolder={docsByFolder}
           workspaceId={workspaceId}
           actions={actions}
+          onNavigate={onNavigate}
         />
       ))}
       {orphanDocs.map((d) => (
-        <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} />
+        <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} />
       ))}
     </ul>
   );
