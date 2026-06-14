@@ -73,7 +73,7 @@ export class PagedenApiClient {
     return this.request("GET", `/documents/tree?workspaceId=${encodeURIComponent(workspaceId)}`);
   }
 
-  document(id: string): Promise<RemoteDocumentWithContent> {
+  getDocument(id: string): Promise<RemoteDocumentWithContent> {
     return this.request("GET", `/documents/${encodeURIComponent(id)}`);
   }
 

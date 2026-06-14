@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildVaultImportPreview, extractAttachmentRefs, importVaultToPageden, slugify, type VaultImportFile } from "./import-vault";
 import type { RemoteDocumentWithContent, RemoteTree, ServerMetaEntry } from "./types";
 
-Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+Object.defineProperty(globalThis, "activeWindow", { value: { crypto: webcrypto }, configurable: true });
 
 const files: VaultImportFile[] = [
   { path: "Projects/Launch.md", name: "Launch.md", extension: "md" },
@@ -16,20 +16,25 @@ const emptyTree: RemoteTree = { folders: [], documents: [] };
 
 describe("vault import", () => {
   it("previews notes, attachments, skipped internal files, and remote path conflicts", () => {
-    const preview = buildVaultImportPreview(files, {
-      folders: [],
-      documents: [
-        {
-          id: "doc-existing",
-          folderId: "folder-existing",
-          title: "Launch",
-          path: "imported-from-obsidian/projects/launch.md",
-          permission: "editor",
-          version: "rev1",
-          checksum: "sha256:x",
-        },
-      ],
-    });
+    const preview = buildVaultImportPreview(
+      files,
+      {
+        folders: [],
+        documents: [
+          {
+            id: "doc-existing",
+            folderId: "folder-existing",
+            title: "Launch",
+            path: "imported-from-obsidian/projects/launch.md",
+            permission: "editor",
+            version: "rev1",
+            checksum: "sha256:x",
+          },
+        ],
+      },
+      undefined,
+      [".obsidian"],
+    );
 
     expect(preview).toMatchObject({
       targetRootSlug: "imported-from-obsidian",
@@ -81,7 +86,7 @@ describe("vault import", () => {
         .mockResolvedValueOnce({ id: "folder-root", path: "imported-from-obsidian" })
         .mockResolvedValueOnce({ id: "folder-projects", path: "imported-from-obsidian/projects" }),
       createDocument: vi.fn(async () => ({ id: "doc1", version: "rev1", checksum: "sha256:server", path: "imported-from-obsidian/projects/launch.md" })),
-      document: vi.fn(async () => remoteDoc),
+      getDocument: vi.fn(async () => remoteDoc),
       uploadAttachment: vi.fn(async () => ({ id: "att1", filename: "diagram.png", contentType: "image/png", size: 3, sha256: "sha256:a", createdAt: "now" })),
     };
 
@@ -92,6 +97,7 @@ describe("vault import", () => {
       workspaceId: "ws1",
       files,
       targetRootName: "Imported from Obsidian",
+      ignoredRootDirs: [".obsidian"],
       remoteTree: emptyTree,
     });
 

@@ -46,10 +46,10 @@ describe("server metadata store", () => {
 
 describe("Obsidian community metadata", () => {
   it("keeps the root manifest in sync with the plugin manifest", () => {
-    const root = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
-    const pluginManifest = JSON.parse(readFileSync(resolve(root, "apps/obsidian-plugin/manifest.json"), "utf8"));
+    const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
+    const pluginManifest = JSON.parse(readFileSync(resolve(root, "manifest.json"), "utf8"));
     const rootManifest = JSON.parse(readFileSync(resolve(root, "manifest.json"), "utf8"));
-    const pluginVersions = JSON.parse(readFileSync(resolve(root, "apps/obsidian-plugin/versions.json"), "utf8"));
+    const pluginVersions = JSON.parse(readFileSync(resolve(root, "versions.json"), "utf8"));
     const rootVersions = JSON.parse(readFileSync(resolve(root, "versions.json"), "utf8"));
 
     expect(rootManifest).toEqual(pluginManifest);

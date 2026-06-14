@@ -7,7 +7,8 @@ await esbuild.build({
   format: "cjs",
   platform: "browser",
   target: "es2022",
-  sourcemap: "inline",
+  sourcemap: false,
+  minify: true,
   external: ["obsidian"],
   logLevel: "info",
 });

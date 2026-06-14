@@ -37,11 +37,11 @@ export function createDebouncer(ms: number): {
   cancel: (key: string) => void;
   cancelAll: () => void;
 } {
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const timers = new Map<string, number>();
   function cancel(key: string): void {
     const existing = timers.get(key);
     if (existing !== undefined) {
-      clearTimeout(existing);
+      window.clearTimeout(existing);
       timers.delete(key);
     }
   }
@@ -50,7 +50,7 @@ export function createDebouncer(ms: number): {
       cancel(key);
       timers.set(
         key,
-        setTimeout(() => {
+        window.setTimeout(() => {
           timers.delete(key);
           fn();
         }, ms),
@@ -58,7 +58,7 @@ export function createDebouncer(ms: number): {
     },
     cancel,
     cancelAll(): void {
-      for (const timer of timers.values()) clearTimeout(timer);
+      for (const timer of timers.values()) window.clearTimeout(timer);
       timers.clear();
     },
   };

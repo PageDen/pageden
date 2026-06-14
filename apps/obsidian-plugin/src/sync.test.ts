@@ -16,7 +16,7 @@ import {
 import { checksum } from "./checksum";
 import type { Attachment, RemoteDocumentWithContent, ServerMetaAttachmentEntry, ServerMetaEntry } from "./types";
 
-Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+Object.defineProperty(globalThis, "activeWindow", { value: { crypto: webcrypto }, configurable: true });
 
 class MemoryVault implements VaultLike {
   files = new Map<string, string>();
@@ -118,7 +118,7 @@ describe("plugin sync", () => {
     await vault.write("Remote Docs/e2e/doc.md", "![local](local.png)\n");
     await vault.writeBinary("Remote Docs/e2e/local.png", new Uint8Array([1, 2, 3, 4, 5]).buffer);
     const api = {
-      document: vi.fn(),
+      getDocument: vi.fn(),
       push: vi.fn(),
       attachments: vi.fn().mockResolvedValue({ attachments: [oldAttachment, remoteAttachment] }),
       downloadAttachment: vi.fn().mockResolvedValue(new Uint8Array([9, 9, 9, 9]).buffer),
@@ -143,7 +143,7 @@ describe("plugin sync", () => {
   it("downloads a document, creates folders, canonicalizes content, and updates metadata", async () => {
     const vault = new MemoryVault();
     const meta = new MemoryMeta();
-    const api = { document: vi.fn().mockResolvedValue(remote), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockResolvedValue(remote), push: vi.fn() };
 
     const result = await downloadDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, remote);
 
@@ -160,7 +160,7 @@ describe("plugin sync", () => {
     await meta.upsert({ documentId: "doc1", localPath: "Remote Docs/runbook.md", remotePath: "/runbook", title: "Runbook", baseVersion: "rev1", checksum: "sha256:old", permission: "editor", updatedAt: "old" });
     await vault.write("Remote Docs/runbook.md", "# Local\r\n");
     const api = {
-      document: vi.fn(),
+      getDocument: vi.fn(),
       push: vi.fn().mockResolvedValue({ id: "doc1", version: "rev2", checksum: "sha256:new", updatedAt: "new" }),
     };
 
@@ -194,7 +194,7 @@ describe("plugin sync", () => {
         .mockResolvedValueOnce({ id: "folder-imported", path: "imported-from-web" })
         .mockResolvedValueOnce({ id: "folder-hermes", path: "imported-from-web/hermes-deployment" }),
       createDocument: vi.fn().mockResolvedValue({ id: "doc-new", version: "rev-new", checksum: "sha256:new", path: "imported-from-web/hermes-deployment/ooo.md" }),
-      document: vi.fn().mockResolvedValue(createdRemote),
+      getDocument: vi.fn().mockResolvedValue(createdRemote),
       push: vi.fn(),
     };
 
@@ -232,7 +232,7 @@ describe("plugin sync", () => {
       }),
       createFolder: vi.fn(),
       createDocument: vi.fn(),
-      document: vi.fn(),
+      getDocument: vi.fn(),
       push: vi.fn(),
     };
 
@@ -245,7 +245,7 @@ describe("plugin sync", () => {
   it("blocks viewer-only pushes before calling the API", async () => {
     const meta = new MemoryMeta();
     await meta.upsert({ documentId: "doc1", localPath: "Remote Docs/runbook.md", remotePath: "/runbook", title: "Runbook", baseVersion: "rev1", checksum: "sha256:old", permission: "viewer", updatedAt: "old" });
-    const api = { document: vi.fn(), push: vi.fn() };
+    const api = { getDocument: vi.fn(), push: vi.fn() };
 
     const result = await pushLocalDocument({ api, vault: new MemoryVault(), meta, remoteDocsFolder: "Remote Docs" }, "Remote Docs/runbook.md");
 
@@ -260,7 +260,7 @@ describe("plugin sync", () => {
     await vault.write("Remote Docs/runbook.md", "# Local\n");
     const api = {
       push: vi.fn().mockRejectedValue(new PagedenApiError(409, { error: "conflict", currentVersion: "rev2" })),
-      document: vi.fn().mockResolvedValue({ ...remote, content: "# Server\n", version: "rev2", checksum: "sha256:server" }),
+      getDocument: vi.fn().mockResolvedValue({ ...remote, content: "# Server\n", version: "rev2", checksum: "sha256:server" }),
     };
 
     const result = await pushLocalDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, "Remote Docs/runbook.md");
@@ -291,7 +291,7 @@ describe("background sync", () => {
     await vault.write("Remote Docs/runbook.md", "# Same\n");
     const e = entry({ checksum: await checksum("# Same\n") });
     await meta.upsert(e);
-    const api = { document: vi.fn().mockResolvedValue({ ...remote, version: "rev1", content: "# Same\n" }), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev1", content: "# Same\n" }), push: vi.fn() };
 
     const result = await syncLinkedDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, e);
 
@@ -307,7 +307,7 @@ describe("background sync", () => {
     const e = entry({ checksum: await checksum("# Same\n") });
     await meta.upsert(e);
     const api = {
-      document: vi.fn().mockResolvedValue({ ...remote, version: "rev2", checksum: "sha256:server2", content: "# Server v2\r\n" }),
+      getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev2", checksum: "sha256:server2", content: "# Server v2\r\n" }),
       push: vi.fn(),
     };
 
@@ -326,7 +326,7 @@ describe("background sync", () => {
     const e = entry({ checksum: "sha256:tracked" }); // tracked != checksum of local → diverged
     await meta.upsert(e);
     const api = {
-      document: vi.fn().mockResolvedValue({ ...remote, version: "rev1" }), // server unchanged
+      getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev1" }), // server unchanged
       push: vi.fn().mockResolvedValue({ id: "doc1", version: "rev2", checksum: "sha256:new", updatedAt: "new" }),
     };
 
@@ -343,7 +343,7 @@ describe("background sync", () => {
     const e = entry({ checksum: "sha256:tracked" });
     await meta.upsert(e);
     const api = {
-      document: vi.fn().mockResolvedValue({ ...remote, version: "rev2", checksum: "sha256:server", content: "# Server\n" }),
+      getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev2", checksum: "sha256:server", content: "# Server\n" }),
       push: vi.fn().mockRejectedValue(new PagedenApiError(409, { error: "conflict", currentVersion: "rev2" })),
     };
 
@@ -360,7 +360,7 @@ describe("background sync", () => {
     await vault.write("Remote Docs/runbook.md", "# Same\n");
     const e = entry({ checksum: await checksum("# Same\n") });
     await meta.upsert(e);
-    const api = { document: vi.fn().mockRejectedValue(new PagedenApiError(404, { error: "not_found" })), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockRejectedValue(new PagedenApiError(404, { error: "not_found" })), push: vi.fn() };
 
     const result = await syncLinkedDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, e);
 
@@ -376,7 +376,7 @@ describe("background sync", () => {
     await vault.write("Remote Docs/runbook.conflict.md", "# Server side\n"); // unresolved conflict
     const e = entry({ checksum: "sha256:tracked" }); // local diverged
     await meta.upsert(e);
-    const api = { document: vi.fn().mockResolvedValue({ ...remote, version: "rev2" }), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev2" }), push: vi.fn() };
 
     const result = await syncLinkedDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, e);
 
@@ -399,7 +399,7 @@ describe("background sync", () => {
     const meta = new MemoryMeta();
     const e = entry({ checksum: await checksum("# Same\n") });
     await meta.upsert(e);
-    const api = { document: vi.fn().mockResolvedValue({ ...remote, version: "rev2", checksum: "sha256:server2", content: "# Server v2\n" }), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev2", checksum: "sha256:server2", content: "# Server v2\n" }), push: vi.fn() };
 
     const result = await syncLinkedDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, e);
 
@@ -416,7 +416,7 @@ describe("background sync", () => {
     await vault.write("Remote Docs/runbook.md", "# Local edit\n");
     const e = entry({ checksum: "sha256:tracked", permission: "editor" }); // diverged, meta says editor
     await meta.upsert(e);
-    const api = { document: vi.fn().mockResolvedValue({ ...remote, version: "rev1", permission: "viewer" }), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev1", permission: "viewer" }), push: vi.fn() };
 
     const result = await syncLinkedDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, e);
 
@@ -430,7 +430,7 @@ describe("background sync", () => {
     const meta = new MemoryMeta();
     const e = entry({ checksum: "sha256:tracked" });
     await meta.upsert(e);
-    const api = { document: vi.fn().mockResolvedValue({ ...remote, version: "rev2", content: "# Server\n" }), push: vi.fn() };
+    const api = { getDocument: vi.fn().mockResolvedValue({ ...remote, version: "rev2", content: "# Server\n" }), push: vi.fn() };
 
     const result = await syncLinkedDocument({ api, vault, meta, remoteDocsFolder: "Remote Docs" }, e);
 
@@ -446,7 +446,7 @@ describe("background sync", () => {
     await meta.upsert(entry({ documentId: "docA", localPath: "Remote Docs/a.md", checksum: await checksum("# A\n") }));
     await meta.upsert(entry({ documentId: "docB", localPath: "Remote Docs/b.md", checksum: await checksum("# B\n") }));
     const api = {
-      document: vi.fn().mockImplementation((id: string) => {
+      getDocument: vi.fn().mockImplementation((id: string) => {
         if (id === "docA") return Promise.resolve({ ...remote, id: "docA", version: "rev1", content: "# A\n" });
         return Promise.reject(new PagedenApiError(500, { error: "server_error" }));
       }),
@@ -476,7 +476,7 @@ describe("background sync", () => {
       updatedAt: "2026-06-14T00:00:00.000Z",
     };
     const api = {
-      document: vi.fn().mockResolvedValue(createdRemote),
+      getDocument: vi.fn().mockResolvedValue(createdRemote),
       push: vi.fn(),
       tree: vi.fn().mockResolvedValue({
         folders: [{ id: "folder-team", parentFolderId: null, name: "Team", slug: "team", path: "team", permission: "manager" }],

@@ -10,6 +10,7 @@ import {
   WorkspaceLeaf,
   normalizePath,
 } from "obsidian";
+import type { SettingDefinitionItem } from "obsidian";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Collaboration from "@tiptap/extension-collaboration";
@@ -411,8 +412,9 @@ export default class PagedenPlugin extends Plugin {
       try {
         const me = await new PagedenApiClient(this.settings.serverUrl, result.token).me();
         this.settings.userName = me.user.name;
-        if (me.workspaces.length === 1) {
-          const ws = me.workspaces[0]!;
+        const [onlyWorkspace] = me.workspaces;
+        if (onlyWorkspace && me.workspaces.length === 1) {
+          const ws = onlyWorkspace;
           this.settings.workspaceId = ws.id;
           this.settings.workspaceName = ws.name;
           await this.saveSettings();
@@ -491,6 +493,7 @@ export default class PagedenPlugin extends Plugin {
       workspaceId: this.settings.workspaceId,
       files,
       targetRootName,
+      ignoredRootDirs: [this.app.vault.configDir],
       onProgress,
     });
   }
@@ -609,7 +612,7 @@ export default class PagedenPlugin extends Plugin {
   }
 
   private pluginDir(): string {
-    return this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
+    return this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
   }
 
   private requireConfigured(): void {
@@ -663,7 +666,7 @@ class LiveDocumentView extends ItemView {
     const toolbar = this.contentEl.createDiv({ cls: "pageden-live-toolbar" });
     const editorEl = this.contentEl.createDiv({ cls: "pageden-live-editor" });
 
-    const remote = await this.plugin.api().document(documentId);
+    const remote = await this.plugin.api().getDocument(documentId);
     if (remote.permission === "viewer") throw new Error("Live editing requires editor or manager permission.");
     this.baseVersion = remote.version ?? "";
     this.lastSavedMarkdown = remote.content;
@@ -807,10 +810,21 @@ class PagedenSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  display(): void {
-    const { containerEl } = this;
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        name: "Pageden",
+        render: (setting) => {
+          setting.settingEl.empty();
+          this.renderSettings(setting.settingEl);
+        },
+      },
+    ];
+  }
+
+  private renderSettings(containerEl: HTMLElement): void {
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Pageden" });
+    new Setting(containerEl).setName("Pageden").setHeading();
 
     const isConnected = this.plugin.isConfigured();
 
@@ -830,7 +844,7 @@ class PagedenSettingTab extends PluginSettingTab {
             .onClick(() => void this.plugin.startDeviceLogin()),
         );
 
-      containerEl.createEl("h3", { text: "Server" });
+      new Setting(containerEl).setName("Server").setHeading();
 
       new Setting(containerEl)
         .setName("Server URL")
@@ -862,11 +876,11 @@ class PagedenSettingTab extends PluginSettingTab {
             this.plugin.settings.workspaceName = "";
             await this.plugin.saveSettings();
             this.plugin.startAutoSync();
-            this.display();
+            this.update();
           }),
         );
 
-      containerEl.createEl("h3", { text: "Sync" });
+      new Setting(containerEl).setName("Sync").setHeading();
 
       new Setting(containerEl)
         .setName("Background sync")
@@ -942,7 +956,7 @@ class PagedenSettingTab extends PluginSettingTab {
         new Notice("No workspaces found on this account.");
         return;
       }
-      new WorkspacePickerModal(this.app, this.plugin, me.workspaces, () => this.display()).open();
+      new WorkspacePickerModal(this.app, this.plugin, me.workspaces, () => this.update()).open();
     } catch (error) {
       new Notice(errorMessage(error));
     }
@@ -1153,10 +1167,7 @@ class DeviceLoginModal extends Modal {
     });
     new Setting(contentEl)
       .addButton((button) =>
-        button.setButtonText("Open browser").onClick(() => window.open(this.request.verificationUri)),
-      )
-      .addButton((button) =>
-        button.setButtonText("Copy code").onClick(() => void navigator.clipboard?.writeText(this.request.userCode)),
+        button.setButtonText("Open browser").onClick(() => activeWindow.open(this.request.verificationUri)),
       )
       .addButton((button) =>
         button.setButtonText("Check now").onClick(() => void this.poll()),
@@ -1164,7 +1175,7 @@ class DeviceLoginModal extends Modal {
     this.statusEl = contentEl.createEl("p", { text: "Waiting for you to approve in the browser…" });
     const intervalMs = Math.max(1, this.request.interval) * 1000;
     this.intervalId = window.setInterval(() => void this.poll(), intervalMs);
-    window.open(this.request.verificationUri);
+    activeWindow.open(this.request.verificationUri);
   }
 
   onClose(): void {
@@ -1282,7 +1293,7 @@ function isUnderRemoteDocsFolder(remoteDocsFolder: string, path: string): boolea
 }
 
 function markdownToHtml(markdown: string): string {
-  return marked.parse(markdown, { async: false }) as string;
+  return marked.parse(markdown, { async: false });
 }
 
 function htmlToMarkdown(html: string): string {

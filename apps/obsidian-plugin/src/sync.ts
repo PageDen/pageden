@@ -17,13 +17,13 @@ export interface MetaStoreLike {
   list(): Promise<ServerMetaEntry[]>;
   getByLocalPath(path: string): Promise<ServerMetaEntry | null>;
   upsert(entry: ServerMetaEntry): Promise<void>;
-  listAttachmentsForDocument?(documentId: string): Promise<ServerMetaAttachmentEntry[]>;
-  upsertAttachment?(entry: ServerMetaAttachmentEntry): Promise<void>;
-  removeAttachment?(attachmentId: string): Promise<void>;
+  listAttachmentsForDocument?: (this: void, documentId: string) => Promise<ServerMetaAttachmentEntry[]>;
+  upsertAttachment?: (this: void, entry: ServerMetaAttachmentEntry) => Promise<void>;
+  removeAttachment?: (this: void, attachmentId: string) => Promise<void>;
 }
 
 export interface SyncDeps {
-  api: Pick<PagedenApiClient, "document" | "push"> &
+  api: Pick<PagedenApiClient, "getDocument" | "push"> &
     Partial<Pick<PagedenApiClient, "attachments" | "uploadAttachment" | "downloadAttachment" | "deleteAttachment">>;
   vault: VaultLike;
   meta: MetaStoreLike;
@@ -71,7 +71,7 @@ export async function ensureFolder(vault: VaultLike, folderPath: string): Promis
 }
 
 export async function downloadDocument(deps: SyncDeps, doc: Pick<RemoteDocument, "id">): Promise<DownloadResult> {
-  const remote = await deps.api.document(doc.id);
+  const remote = await deps.api.getDocument(doc.id);
   const localPath = localPathForRemote(deps.remoteDocsFolder, remote.path);
   const parent = localPath.split("/").slice(0, -1).join("/");
   if (parent) await ensureFolder(deps.vault, parent);
@@ -101,7 +101,7 @@ export async function pushLocalDocument(deps: SyncDeps, localPath: string): Prom
     return { status: "pushed", result };
   } catch (error) {
     if (error instanceof PagedenApiError && error.status === 409) {
-      const server = await deps.api.document(meta.documentId);
+      const server = await deps.api.getDocument(meta.documentId);
       const conflictPath = await writeConflictFile(deps.vault, localPath, server);
       await deps.meta.upsert({ ...meta, baseVersion: server.version ?? meta.baseVersion, checksum: server.checksum ?? meta.checksum, permission: server.permission, updatedAt: server.updatedAt });
       return { status: "conflict", conflictPath, serverPath: server.path };
@@ -133,7 +133,7 @@ export async function createRemoteDocumentFromLocal(deps: CreateRemoteDeps, loca
     slug: target.documentSlug,
     content,
   });
-  const remote = await deps.api.document(created.id);
+  const remote = await deps.api.getDocument(created.id);
   const meta = metaFromRemote(remote, localPath);
   await deps.meta.upsert(meta);
   if (hasAttachmentSupport(deps)) await syncDocumentAttachments(deps, meta, content);
@@ -317,7 +317,7 @@ export async function syncLinkedDocument(deps: SyncDeps, entry: ServerMetaEntry)
 
   let remote: RemoteDocumentWithContent;
   try {
-    remote = await deps.api.document(entry.documentId);
+    remote = await deps.api.getDocument(entry.documentId);
   } catch (error) {
     // Existence-hiding: a deleted document or a revoked grant returns 404. Report it as gone and
     // leave the local file untouched (the user keeps their copy); don't retry-loop.
@@ -542,9 +542,9 @@ function hasAttachmentSupport(deps: SyncDeps): boolean {
       deps.api.deleteAttachment &&
       deps.vault.readBinary &&
       deps.vault.writeBinary &&
-      deps.meta.listAttachmentsForDocument &&
-      deps.meta.upsertAttachment &&
-      deps.meta.removeAttachment,
+      typeof deps.meta.listAttachmentsForDocument === "function" &&
+      typeof deps.meta.upsertAttachment === "function" &&
+      typeof deps.meta.removeAttachment === "function",
   );
 }
 

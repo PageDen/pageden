@@ -35,12 +35,13 @@ export type ImportReportRow =
   | { path: string; status: "warning"; message: string };
 
 interface ImportDeps {
-  api: Pick<PagedenApiClient, "tree" | "createFolder" | "createDocument" | "document" | "uploadAttachment">;
+  api: Pick<PagedenApiClient, "tree" | "createFolder" | "createDocument" | "getDocument" | "uploadAttachment">;
   vault: Pick<VaultLike, "read" | "readBinary">;
   meta: Pick<MetaStoreLike, "upsert">;
   workspaceId: string;
   files: VaultImportFile[];
   targetRootName: string;
+  ignoredRootDirs?: string[];
   remoteTree?: RemoteTree;
   onProgress?: (current: number, total: number) => void;
 }
@@ -53,8 +54,13 @@ interface ImportableFiles {
 
 const DEFAULT_ROOT_NAME = "Imported from Obsidian";
 
-export function buildVaultImportPreview(files: VaultImportFile[], remoteTree: RemoteTree, targetRootName = DEFAULT_ROOT_NAME): VaultImportPreview {
-  const importable = splitImportableFiles(files);
+export function buildVaultImportPreview(
+  files: VaultImportFile[],
+  remoteTree: RemoteTree,
+  targetRootName = DEFAULT_ROOT_NAME,
+  ignoredRootDirs: string[] = [],
+): VaultImportPreview {
+  const importable = splitImportableFiles(files, ignoredRootDirs);
   const targetRootSlug = slugify(targetRootName);
   const remoteDocumentPaths = new Set(remoteTree.documents.map((doc) => trimSlashes(doc.path)));
   const conflicts = importable.notes
@@ -79,8 +85,8 @@ export function buildVaultImportPreview(files: VaultImportFile[], remoteTree: Re
 
 export async function importVaultToPageden(deps: ImportDeps): Promise<VaultImportReport> {
   const remoteTree = deps.remoteTree ?? (await deps.api.tree(deps.workspaceId));
-  const preview = buildVaultImportPreview(deps.files, remoteTree, deps.targetRootName);
-  const importable = splitImportableFiles(deps.files);
+  const preview = buildVaultImportPreview(deps.files, remoteTree, deps.targetRootName, deps.ignoredRootDirs);
+  const importable = splitImportableFiles(deps.files, deps.ignoredRootDirs);
   const attachmentIndex = buildAttachmentIndex(importable.attachments);
   const folderByPath = new Map(remoteTree.folders.map((folder) => [trimSlashes(folder.path), folder]));
   const documentPaths = new Set(remoteTree.documents.map((doc) => trimSlashes(doc.path)));
@@ -156,7 +162,7 @@ export async function importVaultToPageden(deps: ImportDeps): Promise<VaultImpor
       content,
     });
     documentPaths.add(trimSlashes(created.path));
-    const remote = await deps.api.document(created.id);
+    const remote = await deps.api.getDocument(created.id);
     await deps.meta.upsert(metaFromImportedRemote(remote, note.path));
     documentsCreated += 1;
     rows.push({ path: note.path, status: "created", message: `Created ${created.path}` });
@@ -221,13 +227,13 @@ export function slugify(value: string): string {
   return slug || "untitled";
 }
 
-function splitImportableFiles(files: VaultImportFile[]): ImportableFiles {
+function splitImportableFiles(files: VaultImportFile[], ignoredRootDirs: string[] = []): ImportableFiles {
   let skipped = 0;
   const notes: VaultImportFile[] = [];
   const attachments: VaultImportFile[] = [];
   for (const file of files) {
     const path = normalizePath(file.path);
-    if (isIgnoredPath(path)) {
+    if (isIgnoredPath(path, ignoredRootDirs)) {
       skipped += 1;
       continue;
     }
@@ -243,8 +249,10 @@ function splitImportableFiles(files: VaultImportFile[]): ImportableFiles {
   return { notes, attachments, skipped };
 }
 
-function isIgnoredPath(path: string): boolean {
-  return path.startsWith(".obsidian/") || path.startsWith(".trash/") || path.startsWith(".git/");
+function isIgnoredPath(path: string, ignoredRootDirs: string[]): boolean {
+  const ignoredRoots = new Set([...ignoredRootDirs, ".trash", ".git"].map((root) => trimSlashes(normalizePath(root))).filter(Boolean));
+  const firstSegment = path.split("/", 1)[0] ?? "";
+  return ignoredRoots.has(firstSegment);
 }
 
 function buildAttachmentIndex(files: VaultImportFile[]) {
