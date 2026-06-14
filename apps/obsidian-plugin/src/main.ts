@@ -810,7 +810,7 @@ class PagedenSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Pageden" });
+    new Setting(containerEl).setName("Pageden").setHeading();
 
     const isConnected = this.plugin.isConfigured();
 
@@ -830,7 +830,7 @@ class PagedenSettingTab extends PluginSettingTab {
             .onClick(() => void this.plugin.startDeviceLogin()),
         );
 
-      containerEl.createEl("h3", { text: "Server" });
+      new Setting(containerEl).setName("Server").setHeading();
 
       new Setting(containerEl)
         .setName("Server URL")
@@ -866,7 +866,7 @@ class PagedenSettingTab extends PluginSettingTab {
           }),
         );
 
-      containerEl.createEl("h3", { text: "Sync" });
+      new Setting(containerEl).setName("Sync").setHeading();
 
       new Setting(containerEl)
         .setName("Background sync")

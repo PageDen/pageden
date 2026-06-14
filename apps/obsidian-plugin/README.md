@@ -88,7 +88,6 @@ Obsidian community releases must publish these files as individual GitHub releas
 - `main.js`
 - `manifest.json`
 - `styles.css`
-- `versions.json`
 
 The GitHub release tag must exactly match the version in `manifest.json`. For example, version
 `0.1.0` should use the tag `0.1.0`, not `v0.1.0`.
