@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ServerMetaStore } from "./metadata";
 
 class MemoryAdapter {
@@ -38,5 +41,19 @@ describe("server metadata store", () => {
     expect(store.filePath).toBe(".obsidian/plugins/pageden/.server-meta.json");
     expect(await store.getByLocalPath("Remote Docs/runbook.md")).toMatchObject({ documentId: "doc1" });
     expect(JSON.parse(adapter.files.get(store.filePath) ?? "{}").documents.doc1.baseVersion).toBe("rev1");
+  });
+});
+
+describe("Obsidian community metadata", () => {
+  it("keeps the root manifest in sync with the plugin manifest", () => {
+    const root = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+    const pluginManifest = JSON.parse(readFileSync(resolve(root, "apps/obsidian-plugin/manifest.json"), "utf8"));
+    const rootManifest = JSON.parse(readFileSync(resolve(root, "manifest.json"), "utf8"));
+    const pluginVersions = JSON.parse(readFileSync(resolve(root, "apps/obsidian-plugin/versions.json"), "utf8"));
+    const rootVersions = JSON.parse(readFileSync(resolve(root, "versions.json"), "utf8"));
+
+    expect(rootManifest).toEqual(pluginManifest);
+    expect(rootVersions).toEqual(pluginVersions);
+    expect(rootVersions[rootManifest.version]).toBe(rootManifest.minAppVersion);
   });
 });
