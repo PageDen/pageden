@@ -163,7 +163,8 @@ export default class PagedenPlugin extends Plugin {
       callback: () => void this.syncRunner.run(),
     });
 
-    this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultModify(file)));
+    this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultFileChanged(file)));
+    this.registerEvent(this.app.vault.on("create", (file) => this.onVaultFileChanged(file)));
     this.app.workspace.onLayoutReady(() => this.startAutoSync());
   }
 
@@ -211,7 +212,7 @@ export default class PagedenPlugin extends Plugin {
     }
   }
 
-  private onVaultModify(file: unknown): void {
+  private onVaultFileChanged(file: unknown): void {
     if (!this.settings.autoSyncEnabled || !this.isConfigured()) return;
     if (!(file instanceof TFile) || file.extension !== "md") return;
     const path = file.path;
