@@ -61,7 +61,7 @@ export async function applyDocumentWrite(opts: {
   // write does not perform storage work. Avoids a storage/CPU abuse vector.
   const pre = await prisma.document.findFirst({
     where: { id: opts.documentId, deletedAt: null },
-    select: { currentVersionId: true, workspaceId: true },
+    select: { currentVersionId: true, currentChecksum: true, title: true, updatedAt: true, workspaceId: true },
   });
   if (!pre) return { ok: false, status: "not_found" };
   const preRole = await resolveDocumentRole(opts.userId, opts.documentId);
@@ -71,10 +71,28 @@ export async function applyDocumentWrite(opts: {
     return { ok: false, status: "conflict", currentVersion: pre.currentVersionId ?? "" };
   }
 
-  // Content is written before the transaction so the row lock is held only for the DB work.
-  // Orphan objects are harmless: storage is content-addressed and idempotent (review H4).
+  // Dedup (see pageden-dev/docs/document-history-improvements-plan.md): a write whose canonical
+  // content matches the current revision does not create a new revision. Title also unchanged → a
+  // full no-op; title-only change updates the title without a revision. The no-op path returns the
+  // normal write response shape so sync clients (Obsidian plugin, MCP) keep their baseVersion and
+  // checksum without a spurious conflict.
   const sum = computeChecksum(opts.content);
-  const { storageKey } = await writeContent(opts.content, pre.workspaceId);
+  const contentUnchanged = pre.currentChecksum !== null && pre.currentChecksum === sum;
+  const titleChanged = opts.title !== undefined && opts.title !== pre.title;
+
+  if (contentUnchanged && !titleChanged) {
+    return {
+      ok: true,
+      documentId: opts.documentId,
+      version: pre.currentVersionId ?? "",
+      checksum: pre.currentChecksum ?? sum,
+      updatedAt: pre.updatedAt,
+    };
+  }
+
+  // Only write a new content object when content actually changed. Orphan objects are harmless:
+  // storage is content-addressed and idempotent (review H4).
+  const storageKey = contentUnchanged ? null : (await writeContent(opts.content, pre.workspaceId)).storageKey;
 
   return prisma.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -90,6 +108,35 @@ export async function applyDocumentWrite(opts: {
       return { ok: false, status: "conflict", currentVersion: doc.currentVersionId ?? "" };
     }
 
+    // Title-only change (content identical under the lock): update the title and audit it without
+    // creating a content revision.
+    if (doc.currentChecksum !== null && doc.currentChecksum === sum) {
+      const updated = await tx.document.update({
+        where: { id: doc.id },
+        data: { title: opts.title ?? doc.title, updatedById: opts.userId },
+      });
+      await writeAuditEvent(
+        {
+          workspaceId: doc.workspaceId,
+          userId: opts.userId,
+          action: opts.changeSource === "obsidian_plugin" ? "document_pushed" : "document_updated",
+          targetType: "document",
+          targetId: doc.id,
+          metadata: { version: doc.currentVersionId, titleOnly: true },
+        },
+        tx,
+      );
+      return {
+        ok: true,
+        documentId: doc.id,
+        version: doc.currentVersionId ?? "",
+        checksum: doc.currentChecksum,
+        updatedAt: updated.updatedAt,
+      };
+    }
+
+    // Content changed (or raced past the preflight): ensure the object exists, then revision.
+    const key = storageKey ?? (await writeContent(opts.content, pre.workspaceId)).storageKey;
     const max = await tx.documentRevision.aggregate({
       where: { documentId: doc.id },
       _max: { versionNumber: true },
@@ -98,7 +145,7 @@ export async function applyDocumentWrite(opts: {
       data: {
         documentId: doc.id,
         versionNumber: (max._max.versionNumber ?? 0) + 1,
-        storageKey,
+        storageKey: key,
         checksum: sum,
         createdById: opts.userId,
         changeSource: opts.changeSource,

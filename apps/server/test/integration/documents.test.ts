@@ -91,6 +91,37 @@ describe("documents — endpoints & validation", () => {
     expect(read.json().content).toBe("# Runbook\n");
   });
 
+  it("dedups no-op writes and updates title-only without a revision", async () => {
+    const s = await baseScenario();
+
+    // identical content, no title supplied -> full no-op: same version, no new revision
+    const noop = await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: s.version, content: "# Runbook\n" } });
+    expect(noop.statusCode).toBe(200);
+    expect(noop.json().version).toBe(s.version);
+    let revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(1);
+
+    // identical content + new title -> title-only update: still same version, still no new revision
+    const titleOnly = await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: s.version, title: "Renamed Runbook", content: "# Runbook\n" } });
+    expect(titleOnly.statusCode).toBe(200);
+    expect(titleOnly.json().version).toBe(s.version);
+    revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(1);
+    const afterTitle = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: s.adminCookie });
+    expect(afterTitle.json().title).toBe("Renamed Runbook");
+
+    // real content change -> exactly one new revision
+    const changed = await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: s.version, content: "# Changed\n" } });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json().version).not.toBe(s.version);
+    revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(2);
+
+    // stale baseVersion still conflicts even when the submitted content matches current
+    const stale = await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: s.version, content: "# Changed\n" } });
+    expect(stale.statusCode).toBe(409);
+  });
+
   it("hides documents the user cannot see (404 on read, absent from list)", async () => {
     const s = await baseScenario();
     const { cookie } = await member(s.ws.id, "nobody@t.co", "member");
