@@ -88,6 +88,34 @@ export interface WriteResult {
   updatedAt: string;
 }
 
+export interface RevisionSummary {
+  id: string;
+  versionNumber: number;
+  checksum: string;
+  createdBy: string;
+  createdAt: string;
+  changeSource: ChangeSource;
+  message: string | null;
+}
+
+export interface RevisionDetail {
+  revision: {
+    id: string;
+    documentId: string;
+    versionNumber: number;
+    content: string;
+    checksum: string;
+    createdBy: UserDTO & { avatarUrl: string | null };
+    createdAt: string;
+    changeSource: ChangeSource;
+    message: string | null;
+  };
+  document: {
+    id: string;
+    currentTitle: string;
+  };
+}
+
 export interface ConflictError {
   error: "conflict";
   currentVersion: string;

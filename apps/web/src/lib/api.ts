@@ -27,6 +27,7 @@ import {
   okSchema,
   authConfigSchema,
   publicCurrentWorkspaceSchema,
+  revisionDetailSchema,
   revisionsSchema,
   treeSchema,
   writeResultSchema,
@@ -217,6 +218,10 @@ export const api = {
   },
   revisions: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/revisions`, { schema: revisionsSchema }),
+  revisionDetail: (id: string, revisionId: string) =>
+    request("GET", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}`, {
+      schema: revisionDetailSchema,
+    }),
   updateDocument: (id: string, body: { baseVersion: string; content: string; title?: string }) =>
     request("PUT", `/documents/${encodeURIComponent(id)}`, { body, schema: writeResultSchema }),
   restoreRevision: (id: string, revisionId: string) =>
