@@ -91,7 +91,7 @@ Obsidian community releases must publish these files as individual GitHub releas
 - `versions.json`
 
 The GitHub release tag must exactly match the version in `manifest.json`. For example, version
-`0.0.1` should use the tag `0.0.1`, not `v0.0.1`.
+`0.1.0` should use the tag `0.1.0`, not `v0.1.0`.
 
 ## Manual E2E
 
