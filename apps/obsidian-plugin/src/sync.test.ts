@@ -2,10 +2,12 @@ import { webcrypto } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { PagedenApiError } from "./api-client";
 import {
+  createRemoteDocumentFromLocal,
   downloadDocument,
   extractAttachmentPaths,
   localPathForRemote,
   pushLocalDocument,
+  pushOrCreateLocalDocument,
   runBackgroundSyncPass,
   syncDocumentAttachments,
   syncLinkedDocument,
@@ -167,6 +169,77 @@ describe("plugin sync", () => {
     expect(result.status).toBe("pushed");
     expect(api.push).toHaveBeenCalledWith("doc1", expect.objectContaining({ baseVersion: "rev1", content: "# Local\n" }));
     expect(await meta.getByLocalPath("Remote Docs/runbook.md")).toMatchObject({ baseVersion: "rev2", checksum: "sha256:new" });
+  });
+
+  it("creates a remote document for an unlinked local note and stores sync metadata", async () => {
+    const vault = new MemoryVault();
+    const meta = new MemoryMeta();
+    await vault.write("Remote Docs/imported-from-web/hermes-deployment/ooo.md", "---\ntitle: OOO\n---\n\nTest\r\n");
+    const createdRemote: RemoteDocumentWithContent = {
+      id: "doc-new",
+      workspaceId: "ws1",
+      folderId: "folder-hermes",
+      title: "OOO",
+      path: "imported-from-web/hermes-deployment/ooo.md",
+      permission: "editor",
+      version: "rev-new",
+      checksum: "sha256:new",
+      content: "---\ntitle: OOO\n---\n\nTest\n",
+      updatedAt: "2026-06-14T00:00:00.000Z",
+    };
+    const api = {
+      tree: vi.fn().mockResolvedValue({ folders: [], documents: [] }),
+      createFolder: vi
+        .fn()
+        .mockResolvedValueOnce({ id: "folder-imported", path: "imported-from-web" })
+        .mockResolvedValueOnce({ id: "folder-hermes", path: "imported-from-web/hermes-deployment" }),
+      createDocument: vi.fn().mockResolvedValue({ id: "doc-new", version: "rev-new", checksum: "sha256:new", path: "imported-from-web/hermes-deployment/ooo.md" }),
+      document: vi.fn().mockResolvedValue(createdRemote),
+      push: vi.fn(),
+    };
+
+    const result = await pushOrCreateLocalDocument(
+      { api, vault, meta, remoteDocsFolder: "Remote Docs", workspaceId: "ws1" },
+      "Remote Docs/imported-from-web/hermes-deployment/ooo.md",
+    );
+
+    expect(result.status).toBe("created");
+    expect(api.createFolder).toHaveBeenNthCalledWith(1, expect.objectContaining({ parentFolderId: null, slug: "imported-from-web" }));
+    expect(api.createFolder).toHaveBeenNthCalledWith(2, expect.objectContaining({ parentFolderId: "folder-imported", slug: "hermes-deployment" }));
+    expect(api.createDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        folderId: "folder-hermes",
+        title: "OOO",
+        slug: "ooo",
+        content: "---\ntitle: OOO\n---\n\nTest\n",
+      }),
+    );
+    expect(await meta.getByLocalPath("Remote Docs/imported-from-web/hermes-deployment/ooo.md")).toMatchObject({
+      documentId: "doc-new",
+      remotePath: "imported-from-web/hermes-deployment/ooo.md",
+      baseVersion: "rev-new",
+    });
+  });
+
+  it("does not create over an existing remote path for an unlinked local note", async () => {
+    const vault = new MemoryVault();
+    const meta = new MemoryMeta();
+    await vault.write("Remote Docs/team/plan.md", "# Local\n");
+    const api = {
+      tree: vi.fn().mockResolvedValue({
+        folders: [{ id: "folder-team", parentFolderId: null, name: "Team", slug: "team", path: "team", permission: "manager" }],
+        documents: [{ id: "doc-existing", folderId: "folder-team", title: "Plan", path: "team/plan.md", permission: "editor", version: "rev1", checksum: "sha256:x" }],
+      }),
+      createFolder: vi.fn(),
+      createDocument: vi.fn(),
+      document: vi.fn(),
+      push: vi.fn(),
+    };
+
+    await expect(
+      createRemoteDocumentFromLocal({ api, vault, meta, remoteDocsFolder: "Remote Docs", workspaceId: "ws1" }, "Remote Docs/team/plan.md"),
+    ).rejects.toThrow(/already exists/);
+    expect(api.createDocument).not.toHaveBeenCalled();
   });
 
   it("blocks viewer-only pushes before calling the API", async () => {
@@ -384,5 +457,47 @@ describe("background sync", () => {
 
     expect(summary.unchanged).toBe(1);
     expect(summary.errors).toBe(1);
+  });
+
+  it("runBackgroundSyncPass creates unlinked local notes under the remote docs folder", async () => {
+    const vault = new MemoryVault();
+    const meta = new MemoryMeta();
+    await vault.write("Remote Docs/team/new-plan.md", "# New plan\n");
+    const createdRemote: RemoteDocumentWithContent = {
+      id: "doc-new",
+      workspaceId: "ws1",
+      folderId: "folder-team",
+      title: "New Plan",
+      path: "team/new-plan.md",
+      permission: "editor",
+      version: "rev-new",
+      checksum: "sha256:new",
+      content: "# New plan\n",
+      updatedAt: "2026-06-14T00:00:00.000Z",
+    };
+    const api = {
+      document: vi.fn().mockResolvedValue(createdRemote),
+      push: vi.fn(),
+      tree: vi.fn().mockResolvedValue({
+        folders: [{ id: "folder-team", parentFolderId: null, name: "Team", slug: "team", path: "team", permission: "manager" }],
+        documents: [],
+      }),
+      createFolder: vi.fn(),
+      createDocument: vi.fn().mockResolvedValue({ id: "doc-new", version: "rev-new", checksum: "sha256:new", path: "team/new-plan.md" }),
+    };
+
+    const summary = await runBackgroundSyncPass({
+      api,
+      vault,
+      meta,
+      remoteDocsFolder: "Remote Docs",
+      workspaceId: "ws1",
+      localMarkdownPaths: async () => ["Remote Docs/team/new-plan.md"],
+    });
+
+    expect(summary.created).toBe(1);
+    expect(summary.errors).toBe(0);
+    expect(api.createDocument).toHaveBeenCalledWith(expect.objectContaining({ folderId: "folder-team", slug: "new-plan" }));
+    expect(await meta.getByLocalPath("Remote Docs/team/new-plan.md")).toMatchObject({ documentId: "doc-new", baseVersion: "rev-new" });
   });
 });

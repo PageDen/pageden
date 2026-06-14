@@ -2,7 +2,7 @@ import { normalizePath } from "obsidian";
 import type { PagedenApiClient } from "./api-client";
 import { PagedenApiError } from "./api-client";
 import { canonicalize, checksum } from "./checksum";
-import type { Attachment, RemoteDocument, RemoteDocumentWithContent, ServerMetaAttachmentEntry, ServerMetaEntry, WriteResult } from "./types";
+import type { Attachment, RemoteDocument, RemoteDocumentWithContent, RemoteFolder, RemoteTree, ServerMetaAttachmentEntry, ServerMetaEntry, WriteResult } from "./types";
 
 export interface VaultLike {
   read(path: string): Promise<string>;
@@ -30,6 +30,17 @@ export interface SyncDeps {
   remoteDocsFolder: string;
 }
 
+export interface CreateRemoteDeps extends SyncDeps {
+  api: SyncDeps["api"] & Pick<PagedenApiClient, "tree" | "createFolder" | "createDocument">;
+  workspaceId: string;
+}
+
+export interface BackgroundSyncDeps extends SyncDeps {
+  api: SyncDeps["api"] & Partial<Pick<PagedenApiClient, "tree" | "createFolder" | "createDocument">>;
+  workspaceId?: string;
+  localMarkdownPaths?: () => Promise<string[]>;
+}
+
 export interface DownloadResult {
   localPath: string;
   meta: ServerMetaEntry;
@@ -37,10 +48,11 @@ export interface DownloadResult {
 }
 
 export interface PushResult {
-  status: "pushed" | "blocked_viewer" | "conflict";
+  status: "pushed" | "created" | "blocked_viewer" | "conflict";
   result?: WriteResult;
   conflictPath?: string;
   serverPath?: string;
+  meta?: ServerMetaEntry;
 }
 
 export function localPathForRemote(remoteDocsFolder: string, remotePath: string): string {
@@ -98,6 +110,40 @@ export async function pushLocalDocument(deps: SyncDeps, localPath: string): Prom
   }
 }
 
+export async function pushOrCreateLocalDocument(deps: CreateRemoteDeps, localPath: string): Promise<PushResult> {
+  const meta = await deps.meta.getByLocalPath(localPath);
+  if (meta) return pushLocalDocument(deps, localPath);
+  return createRemoteDocumentFromLocal(deps, localPath);
+}
+
+export async function createRemoteDocumentFromLocal(deps: CreateRemoteDeps, localPath: string): Promise<PushResult> {
+  const content = canonicalize(await deps.vault.read(localPath));
+  const tree = await deps.api.tree(deps.workspaceId);
+  const target = targetPathForLocal(deps.remoteDocsFolder, localPath);
+  const existingPath = target.documentPath;
+  if (tree.documents.some((doc) => trimSlashes(doc.path) === existingPath)) {
+    throw new Error(`A Pageden document already exists at "${existingPath}". Download it first to link this local note safely.`);
+  }
+
+  const folder = await ensureRemoteFolderPath(deps.api, deps.workspaceId, tree, target.folderSegments);
+  const created = await deps.api.createDocument({
+    workspaceId: deps.workspaceId,
+    folderId: folder.id,
+    title: frontmatterTitle(content) ?? target.title,
+    slug: target.documentSlug,
+    content,
+  });
+  const remote = await deps.api.document(created.id);
+  const meta = metaFromRemote(remote, localPath);
+  await deps.meta.upsert(meta);
+  if (hasAttachmentSupport(deps)) await syncDocumentAttachments(deps, meta, content);
+  return {
+    status: "created",
+    result: { id: remote.id, version: meta.baseVersion, checksum: meta.checksum, updatedAt: meta.updatedAt },
+    meta,
+  };
+}
+
 async function writeConflictFile(vault: VaultLike, localPath: string, server: RemoteDocumentWithContent): Promise<string> {
   const stem = localPath.replace(/\.md$/i, "");
   const conflictPath = normalizePath(`${stem}.conflict.md`);
@@ -121,6 +167,92 @@ function metaFromRemote(remote: RemoteDocumentWithContent, localPath: string): S
   };
 }
 
+async function ensureRemoteFolderPath(
+  api: Pick<PagedenApiClient, "createFolder">,
+  workspaceId: string,
+  tree: RemoteTree,
+  folderSegments: string[],
+): Promise<RemoteFolder> {
+  const folderByPath = new Map(tree.folders.map((folder) => [trimSlashes(folder.path), folder]));
+  let parent: RemoteFolder | null = null;
+  let currentPath = "";
+
+  for (const segment of folderSegments) {
+    const slug = slugify(segment);
+    currentPath = currentPath ? `${currentPath}/${slug}` : slug;
+    const existing = folderByPath.get(currentPath);
+    if (existing) {
+      parent = existing;
+      continue;
+    }
+    const created = await api.createFolder({
+      workspaceId,
+      parentFolderId: parent?.id ?? null,
+      name: segment,
+      slug,
+    });
+    parent = {
+      id: created.id,
+      parentFolderId: parent?.id ?? null,
+      name: segment,
+      slug,
+      path: trimSlashes(created.path),
+      permission: "manager",
+    };
+    folderByPath.set(currentPath, parent);
+  }
+
+  if (!parent) {
+    throw new Error("Create the note inside a folder so Pageden knows where to place it.");
+  }
+  return parent;
+}
+
+function targetPathForLocal(remoteDocsFolder: string, localPath: string) {
+  const normalizedLocal = normalizePath(localPath);
+  const normalizedRoot = normalizePath(remoteDocsFolder).replace(/\/+$/, "");
+  const relativePath = normalizedLocal === normalizedRoot
+    ? ""
+    : normalizedLocal.startsWith(`${normalizedRoot}/`)
+      ? normalizedLocal.slice(normalizedRoot.length + 1)
+      : normalizedLocal;
+  const parts = relativePath.split("/").filter(Boolean);
+  const filename = parts.pop() ?? "untitled.md";
+  const folderSegments = parts.map((part) => part.replace(/\.md$/i, ""));
+  const title = filename.replace(/\.md$/i, "") || "Untitled";
+  const documentSlug = slugify(filename);
+  const documentPath = [...folderSegments.map(slugify), `${documentSlug}.md`].filter(Boolean).join("/");
+  return { folderSegments, title, documentSlug, documentPath };
+}
+
+function frontmatterTitle(content: string): string | null {
+  if (!content.startsWith("---\n")) return null;
+  const end = content.indexOf("\n---", 4);
+  if (end === -1) return null;
+  const raw = content.slice(4, end);
+  for (const line of raw.split("\n")) {
+    const match = line.match(/^title:\s*(.+)$/i);
+    if (!match?.[1]) continue;
+    return match[1].trim().replace(/^['"]|['"]$/g, "") || null;
+  }
+  return null;
+}
+
+function slugify(value: string): string {
+  const slug = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\.md$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "untitled";
+}
+
+function trimSlashes(path: string): string {
+  return path.replace(/^\/+|\/+$/g, "");
+}
+
 
 // ---------------------------------------------------------------------------
 // Background sync (Milestone 6). Pure orchestration over the same primitives the manual
@@ -131,6 +263,7 @@ function metaFromRemote(remote: RemoteDocumentWithContent, localPath: string): S
 
 export type DocSyncStatus =
   | "unchanged"
+  | "created"
   | "pulled"
   | "pushed"
   | "conflict"
@@ -153,6 +286,7 @@ export interface DocSyncResult {
 
 export interface SyncPassSummary {
   unchanged: number;
+  created: number;
   pulled: number;
   pushed: number;
   conflicts: number;
@@ -266,11 +400,12 @@ async function applyRemotePull(deps: SyncDeps, localPath: string, remote: Remote
 // Run one pass over every linked document. Per-document errors are isolated so one failure
 // (or one offline document) does not abort the rest of the pass.
 export async function runBackgroundSyncPass(
-  deps: SyncDeps,
+  deps: BackgroundSyncDeps,
   onResult?: (result: DocSyncResult) => void,
 ): Promise<SyncPassSummary> {
   const summary: SyncPassSummary = {
     unchanged: 0,
+    created: 0,
     pulled: 0,
     pushed: 0,
     conflicts: 0,
@@ -284,12 +419,14 @@ export async function runBackgroundSyncPass(
     errors: 0,
   };
   const entries = await deps.meta.list();
+  const linkedLocalPaths = new Set(entries.map((entry) => normalizePath(entry.localPath)));
   for (const entry of entries) {
     try {
       const result = await syncLinkedDocument(deps, entry);
       onResult?.(result);
       switch (result.status) {
         case "unchanged": summary.unchanged += 1; break;
+        case "created": summary.created += 1; break;
         case "pulled": summary.pulled += 1; break;
         case "pushed": summary.pushed += 1; break;
         case "conflict": summary.conflicts += 1; break;
@@ -302,7 +439,26 @@ export async function runBackgroundSyncPass(
       summary.errors += 1;
     }
   }
+
+  if (canCreateUnlinkedLocalDocuments(deps)) {
+    for (const localPath of await deps.localMarkdownPaths()) {
+      const normalizedPath = normalizePath(localPath);
+      if (linkedLocalPaths.has(normalizedPath) || normalizedPath.endsWith(".conflict.md")) continue;
+      try {
+        const result = await createRemoteDocumentFromLocal(deps, normalizedPath);
+        if (result.meta) linkedLocalPaths.add(normalizePath(result.meta.localPath));
+        summary.created += 1;
+        onResult?.({ documentId: result.meta?.documentId ?? "", localPath: normalizedPath, status: "created" });
+      } catch {
+        summary.errors += 1;
+      }
+    }
+  }
   return summary;
+}
+
+function canCreateUnlinkedLocalDocuments(deps: BackgroundSyncDeps): deps is CreateRemoteDeps & { localMarkdownPaths: () => Promise<string[]> } {
+  return Boolean(deps.workspaceId && deps.localMarkdownPaths && deps.api.tree && deps.api.createFolder && deps.api.createDocument);
 }
 
 export async function syncDocumentAttachments(
