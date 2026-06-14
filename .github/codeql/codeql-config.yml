@@ -1,0 +1,4 @@
+name: PageDen CodeQL config
+
+paths-ignore:
+  - apps/obsidian-plugin/main.js
