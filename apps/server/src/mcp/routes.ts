@@ -14,7 +14,8 @@ import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
-import { extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { workspaceActivityFor } from "../workspaces/insights.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 
@@ -245,6 +246,33 @@ const tools = [
         workspaceId: { type: "string" },
         documentId: { type: "string" },
         path: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "pageden_list_decisions",
+    description: "List structured `:::decision id status owner ... :::` blocks parsed from a document so agents can act on the final calls without re-reading prose.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "pageden_activity_timeline",
+    description: "Recent document-related activity in a workspace (create/update/push/agent/restore). Each event has an `actor` field (user|agent|obsidian_plugin|system) so an agent can avoid duplicating work already done.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 100 },
+        before: {
+          type: "string",
+          description: "ISO timestamp; only events strictly older than this are returned. Use for paging.",
+        },
       },
     },
   },
@@ -542,6 +570,8 @@ async function callTool(
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else if (name === "pageden_read_section") data = await readSection(auth, args);
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
+  else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
+  else if (name === "pageden_activity_timeline") data = await activityTimeline(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
 
   await writeAuditEvent({
@@ -726,6 +756,33 @@ async function readSection(auth: AuthContext, args: Record<string, unknown>) {
     path: doc.path,
     section,
   };
+}
+
+async function listDecisions(auth: AuthContext, args: Record<string, unknown>) {
+  // Reuse the same read path so the prose source matches what an agent would see
+  // calling pageden_read_document; we only narrow to the structured decisions list.
+  const doc = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  const decisions = extractDecisions(doc.body ?? doc.content);
+  return {
+    workspaceId: doc.workspaceId,
+    id: doc.id,
+    title: doc.title,
+    path: doc.path,
+    decisions,
+  };
+}
+
+async function activityTimeline(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const limit = Math.min(clampLimit(args.limit), 100);
+  const before = typeof args.before === "string" && args.before ? new Date(args.before) : null;
+  if (before && Number.isNaN(before.getTime())) throw new Error("before must be an ISO timestamp.");
+  return workspaceActivityFor(auth.userId, workspaceId, { limit, before });
 }
 
 async function getTaskPacket(auth: AuthContext, args: Record<string, unknown>) {

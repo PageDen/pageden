@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowRight, Bot, Building2, ChevronDown, FileText, Home, KeyRound, LogOut, Monitor, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, ShieldCheck, Sun, UploadCloud, UserRound, X } from "lucide-react";
+import { Activity, ArrowRight, BarChart3, Bot, Building2, ChevronDown, FileText, Home, KeyRound, LogOut, Monitor, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, ShieldCheck, Sun, UploadCloud, UserRound, X } from "lucide-react";
 import type { z } from "zod";
 import { searchSchema, treeSchema } from "@pageden/api-types";
 import { api } from "../../lib/api";
@@ -370,6 +370,22 @@ export function WorkspaceShell() {
                 <MoreHorizontal size={17} aria-hidden="true" />
               </summary>
               <div className="absolute bottom-10 right-0 z-30 w-52 overflow-hidden rounded-lg border border-slate-200 bg-white py-1.5 text-sm shadow-xl">
+                <Link
+                  to="/w/$workspaceId/dashboard"
+                  params={{ workspaceId }}
+                  className="flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                >
+                  <BarChart3 size={15} aria-hidden="true" />
+                  Dashboard
+                </Link>
+                <Link
+                  to="/w/$workspaceId/activity"
+                  params={{ workspaceId }}
+                  className="flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-50 hover:text-slate-950"
+                >
+                  <Activity size={15} aria-hidden="true" />
+                  Activity
+                </Link>
                 <Link
                   to="/w/$workspaceId/account"
                   params={{ workspaceId }}

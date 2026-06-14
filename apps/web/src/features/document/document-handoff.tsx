@@ -7,7 +7,9 @@ import {
   CheckCircle2,
   CircleDashed,
   ClipboardList,
+  ExternalLink,
   FileText,
+  GitPullRequest,
   ListChecks,
   Network,
   ScrollText,
@@ -122,8 +124,28 @@ function HandoffView({ h, workspaceId }: { h: Handoff; workspaceId: string }) {
         <ListCard icon={<ListChecks className="h-4 w-4" aria-hidden="true" />} title="Tests" items={packet.tests} emptyHint="Add a 'Tests' or 'Test plan' section." />
         <ListCard icon={<XCircle className="h-4 w-4" aria-hidden="true" />} title="Non-goals" items={packet.nonGoals} emptyHint="State what is intentionally out of scope." />
         <ListCard icon={<AlertTriangle className="h-4 w-4" aria-hidden="true" />} title="Open questions" items={packet.openQuestions} emptyHint="No open questions detected." />
-        <ListCard icon={<Sparkles className="h-4 w-4" aria-hidden="true" />} title="Decisions" items={packet.decisions} emptyHint="No structured decisions detected." />
+        <DecisionsCard decisions={packet.decisions} />
       </div>
+
+      {packet.prLinks.length ? (
+        <Card icon={<GitPullRequest className="h-5 w-5" aria-hidden="true" />} title="Linked PRs / issues">
+          <ul className="grid gap-1.5 text-sm">
+            {packet.prLinks.map((link) => (
+              <li key={link} className="flex items-center gap-1.5">
+                <ExternalLink size={13} className="shrink-0 text-slate-400" aria-hidden="true" />
+                <a
+                  href={link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="truncate font-medium text-orange-700 hover:underline dark:text-orange-300"
+                >
+                  {link}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
 
       {packet.relatedFiles.length ? (
         <Card icon={<Network className="h-5 w-5" aria-hidden="true" />} title="Likely source files">
@@ -175,6 +197,44 @@ function ReadinessReasons({ readiness }: { readiness: Readiness }) {
           </li>
         ))}
       </ul>
+    </Card>
+  );
+}
+
+function DecisionsCard({ decisions }: { decisions: Handoff["packet"]["decisions"] }) {
+  return (
+    <Card icon={<Sparkles className="h-4 w-4" aria-hidden="true" />} title="Decisions">
+      {decisions.length === 0 ? (
+        <p className="text-sm italic text-slate-400 dark:text-slate-500">
+          No structured <code>:::decision</code> blocks were detected.
+        </p>
+      ) : (
+        <ul className="space-y-3 text-sm">
+          {decisions.map((decision) => (
+            <li key={decision.id} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                  {decision.id}
+                </code>
+                <span className="rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-800 dark:bg-orange-500/15 dark:text-orange-200">
+                  {decision.status}
+                </span>
+                {decision.owner ? <span>· {decision.owner}</span> : null}
+                {decision.date ? <span>· {decision.date}</span> : null}
+              </div>
+              {decision.decision ? (
+                <p className="mt-2 leading-6 text-slate-800 dark:text-slate-200">{decision.decision}</p>
+              ) : null}
+              {decision.reason ? (
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{decision.reason}</p>
+              ) : null}
+              {decision.replaces ? (
+                <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">replaces: {decision.replaces}</p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
     </Card>
   );
 }
