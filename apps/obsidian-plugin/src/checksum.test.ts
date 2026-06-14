@@ -2,7 +2,7 @@ import { createHash, webcrypto } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalize, checksum } from "./checksum";
 
-Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+Object.defineProperty(globalThis, "activeWindow", { value: { crypto: webcrypto }, configurable: true });
 
 describe("plugin checksum", () => {
   it("canonicalizes CRLF, bare CR, empty, and trailing-newline variants", async () => {

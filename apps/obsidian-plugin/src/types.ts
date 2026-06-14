@@ -1,4 +1,4 @@
-import type { Role } from "@pageden/api-types";
+export type Role = "owner" | "manager" | "editor" | "viewer";
 
 export interface PagedenSettings {
   serverUrl: string;
