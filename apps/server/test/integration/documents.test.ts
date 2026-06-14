@@ -91,6 +91,27 @@ describe("documents — endpoints & validation", () => {
     expect(read.json().content).toBe("# Runbook\n");
   });
 
+  it("returns a single revision with content + author, and hides it by permission", async () => {
+    const s = await baseScenario();
+    const list = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    const rev = (list.json().revisions as Array<{ id: string }>)[0]!;
+
+    const detail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${rev.id}`, cookies: s.adminCookie });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().revision.content).toBe("# Runbook\n");
+    expect(detail.json().revision.createdBy.name).toBeTruthy();
+    expect(detail.json().document.currentTitle).toBe("Runbook");
+
+    // missing revision -> 404
+    const missing = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/rev_does_not_exist`, cookies: s.adminCookie });
+    expect(missing.statusCode).toBe(404);
+
+    // a user without access cannot read the revision (existence-hidden 404)
+    const { cookie } = await member(s.ws.id, "nobody2@t.co", "member");
+    const hidden = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${rev.id}`, cookies: cookie });
+    expect(hidden.statusCode).toBe(404);
+  });
+
   it("hides documents the user cannot see (404 on read, absent from list)", async () => {
     const s = await baseScenario();
     const { cookie } = await member(s.ws.id, "nobody@t.co", "member");

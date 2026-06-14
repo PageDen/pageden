@@ -707,6 +707,50 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     };
   });
 
+  // Single revision with content, for preview (read). The list endpoint stays metadata-only;
+  // only this detail endpoint returns the snapshot body. Title is not snapshotted per revision,
+  // so the current document title is returned alongside the revision.
+  app.get<{ Params: { id: string; revisionId: string } }>(
+    "/api/documents/:id/revisions/:revisionId",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, title: true },
+      });
+      if (!doc) return notFound(reply, "Document not found.");
+      if (!(await resolveDocumentRole(auth.userId, doc.id))) return notFound(reply, "Document not found.");
+
+      const revision = await prisma.documentRevision.findFirst({
+        where: { id: request.params.revisionId, documentId: doc.id },
+        include: { createdBy: { select: { id: true, name: true, email: true } } },
+      });
+      if (!revision) return notFound(reply, "Revision not found.");
+
+      const content = await readContent(revision.storageKey);
+      return {
+        revision: {
+          id: revision.id,
+          documentId: doc.id,
+          versionNumber: revision.versionNumber,
+          content,
+          checksum: revision.checksum,
+          changeSource: revision.changeSource,
+          message: revision.message,
+          createdAt: revision.createdAt.toISOString(),
+          createdBy: {
+            id: revision.createdBy.id,
+            name: revision.createdBy.name,
+            email: revision.createdBy.email,
+            avatarUrl: null,
+          },
+        },
+        document: { id: doc.id, currentTitle: doc.title },
+      };
+    },
+  );
+
   // Restore an older revision as a new current revision (manager).
   app.post<{ Params: { id: string; revisionId: string } }>(
     "/api/documents/:id/revisions/:revisionId/restore",
