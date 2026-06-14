@@ -50,7 +50,7 @@ jobs:
             pnpm-lock.yaml \
             pnpm-workspace.yaml
           tar -czf "release/pageden-obsidian-plugin-${VERSION}.tar.gz" \
-            -C apps/obsidian-plugin main.js manifest.json styles.css README.md
+            -C apps/obsidian-plugin main.js manifest.json styles.css versions.json README.md
           tar -czf "release/pageden-mcp-${VERSION}.tar.gz" \
             packages/mcp/dist \
             packages/mcp/package.json
