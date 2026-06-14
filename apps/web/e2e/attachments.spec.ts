@@ -74,7 +74,12 @@ test("attachments: upload an image in the editor, save, reload, it persists and 
   expect(resizedHeight).toBeTruthy();
 
   // Save, reload — the image reference persists in the stored Markdown.
+  const saveResponse = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === "PUT" && response.url().includes("/api/documents/") && response.ok();
+  });
   await page.getByRole("button", { name: "Save" }).click();
+  await saveResponse;
   await page.reload();
   const reloaded = page.locator(".rich-markdown-editor img, .prose img").first();
   await expect(reloaded).toBeVisible({ timeout: 15000 });
