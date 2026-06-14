@@ -1,0 +1,77 @@
+name: Obsidian Plugin Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Plugin version to release, for example 0.0.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pageden/obsidian-plugin build
+
+      - name: Validate release version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION:-${GITHUB_REF_NAME}}"
+          MANIFEST_VERSION="$(node -p "require('./apps/obsidian-plugin/manifest.json').version")"
+          if [ "$VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "::error::Release version $VERSION must match manifest.json version $MANIFEST_VERSION"
+            exit 1
+          fi
+          if echo "$VERSION" | grep -q '^v'; then
+            echo "::error::Obsidian plugin release tags must match manifest.json exactly, without a v prefix"
+            exit 1
+          fi
+
+      - name: Stage plugin assets
+        run: |
+          set -euo pipefail
+          mkdir -p release/obsidian-plugin
+          cp apps/obsidian-plugin/main.js release/obsidian-plugin/main.js
+          cp apps/obsidian-plugin/manifest.json release/obsidian-plugin/manifest.json
+          cp apps/obsidian-plugin/styles.css release/obsidian-plugin/styles.css
+          cp apps/obsidian-plugin/versions.json release/obsidian-plugin/versions.json
+          cp apps/obsidian-plugin/README.md release/obsidian-plugin/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pageden-obsidian-plugin
+          path: release/obsidian-plugin/*
+          if-no-files-found: error
+
+      - name: Publish plugin release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Pageden Obsidian Plugin ${{ github.ref_name }}
+          files: |
+            release/obsidian-plugin/main.js
+            release/obsidian-plugin/manifest.json
+            release/obsidian-plugin/styles.css
+            release/obsidian-plugin/versions.json
+          generate_release_notes: true
