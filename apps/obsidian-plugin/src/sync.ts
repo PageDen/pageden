@@ -35,6 +35,12 @@ export interface CreateRemoteDeps extends SyncDeps {
   workspaceId: string;
 }
 
+export interface BackgroundSyncDeps extends SyncDeps {
+  api: SyncDeps["api"] & Partial<Pick<PagedenApiClient, "tree" | "createFolder" | "createDocument">>;
+  workspaceId?: string;
+  localMarkdownPaths?: () => Promise<string[]>;
+}
+
 export interface DownloadResult {
   localPath: string;
   meta: ServerMetaEntry;
@@ -257,6 +263,7 @@ function trimSlashes(path: string): string {
 
 export type DocSyncStatus =
   | "unchanged"
+  | "created"
   | "pulled"
   | "pushed"
   | "conflict"
@@ -279,6 +286,7 @@ export interface DocSyncResult {
 
 export interface SyncPassSummary {
   unchanged: number;
+  created: number;
   pulled: number;
   pushed: number;
   conflicts: number;
@@ -392,11 +400,12 @@ async function applyRemotePull(deps: SyncDeps, localPath: string, remote: Remote
 // Run one pass over every linked document. Per-document errors are isolated so one failure
 // (or one offline document) does not abort the rest of the pass.
 export async function runBackgroundSyncPass(
-  deps: SyncDeps,
+  deps: BackgroundSyncDeps,
   onResult?: (result: DocSyncResult) => void,
 ): Promise<SyncPassSummary> {
   const summary: SyncPassSummary = {
     unchanged: 0,
+    created: 0,
     pulled: 0,
     pushed: 0,
     conflicts: 0,
@@ -410,12 +419,14 @@ export async function runBackgroundSyncPass(
     errors: 0,
   };
   const entries = await deps.meta.list();
+  const linkedLocalPaths = new Set(entries.map((entry) => normalizePath(entry.localPath)));
   for (const entry of entries) {
     try {
       const result = await syncLinkedDocument(deps, entry);
       onResult?.(result);
       switch (result.status) {
         case "unchanged": summary.unchanged += 1; break;
+        case "created": summary.created += 1; break;
         case "pulled": summary.pulled += 1; break;
         case "pushed": summary.pushed += 1; break;
         case "conflict": summary.conflicts += 1; break;
@@ -428,7 +439,26 @@ export async function runBackgroundSyncPass(
       summary.errors += 1;
     }
   }
+
+  if (canCreateUnlinkedLocalDocuments(deps)) {
+    for (const localPath of await deps.localMarkdownPaths()) {
+      const normalizedPath = normalizePath(localPath);
+      if (linkedLocalPaths.has(normalizedPath) || normalizedPath.endsWith(".conflict.md")) continue;
+      try {
+        const result = await createRemoteDocumentFromLocal(deps, normalizedPath);
+        if (result.meta) linkedLocalPaths.add(normalizePath(result.meta.localPath));
+        summary.created += 1;
+        onResult?.({ documentId: result.meta?.documentId ?? "", localPath: normalizedPath, status: "created" });
+      } catch {
+        summary.errors += 1;
+      }
+    }
+  }
   return summary;
+}
+
+function canCreateUnlinkedLocalDocuments(deps: BackgroundSyncDeps): deps is CreateRemoteDeps & { localMarkdownPaths: () => Promise<string[]> } {
+  return Boolean(deps.workspaceId && deps.localMarkdownPaths && deps.api.tree && deps.api.createFolder && deps.api.createDocument);
 }
 
 export async function syncDocumentAttachments(

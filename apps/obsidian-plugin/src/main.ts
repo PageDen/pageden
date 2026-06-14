@@ -246,7 +246,16 @@ export default class PagedenPlugin extends Plugin {
 
   private backgroundSyncDeps() {
     const base = this.syncDeps();
-    return { ...base, vault: this.guardedVault(base.vault) };
+    return {
+      ...base,
+      vault: this.guardedVault(base.vault),
+      workspaceId: this.settings.workspaceId,
+      localMarkdownPaths: async () =>
+        this.app.vault
+          .getFiles()
+          .filter((file) => file.extension === "md" && isUnderRemoteDocsFolder(this.settings.remoteDocsFolder, file.path))
+          .map((file) => file.path),
+    };
   }
 
   // Wrap vault writes so a background pull marks the path as remote-applied; the modify handler
@@ -283,8 +292,8 @@ export default class PagedenPlugin extends Plugin {
     const s = this.lastSummary;
     if (s && s.conflicts) {
       this.setStatus(`Pageden: ${s.conflicts} conflict${s.conflicts === 1 ? "" : "s"} \u2014 run "Resolve conflict" to fix`);
-    } else if (s && (s.pulled || s.pushed)) {
-      this.setStatus(`Pageden: synced (${s.pushed} sent, ${s.pulled} received)`);
+    } else if (s && (s.created || s.pulled || s.pushed)) {
+      this.setStatus(`Pageden: synced (${s.created} created, ${s.pushed} sent, ${s.pulled} received)`);
     } else {
       this.setStatus("Pageden: up to date");
     }
@@ -293,7 +302,7 @@ export default class PagedenPlugin extends Plugin {
   private renderSummary(s: SyncPassSummary): void {
     if (s.errors) this.setStatus("Pageden: sync error \u2014 will retry");
     else if (s.conflicts) this.setStatus(`Pageden: ${s.conflicts} conflict${s.conflicts === 1 ? "" : "s"} \u2014 run "Resolve conflict" to fix`);
-    else this.setStatus(`Pageden: synced (${s.pushed} sent, ${s.pulled} received)`);
+    else this.setStatus(`Pageden: synced (${s.created} created, ${s.pushed} sent, ${s.pulled} received)`);
   }
 
   async loadSettings(): Promise<void> {

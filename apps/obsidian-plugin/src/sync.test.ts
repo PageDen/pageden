@@ -458,4 +458,46 @@ describe("background sync", () => {
     expect(summary.unchanged).toBe(1);
     expect(summary.errors).toBe(1);
   });
+
+  it("runBackgroundSyncPass creates unlinked local notes under the remote docs folder", async () => {
+    const vault = new MemoryVault();
+    const meta = new MemoryMeta();
+    await vault.write("Remote Docs/team/new-plan.md", "# New plan\n");
+    const createdRemote: RemoteDocumentWithContent = {
+      id: "doc-new",
+      workspaceId: "ws1",
+      folderId: "folder-team",
+      title: "New Plan",
+      path: "team/new-plan.md",
+      permission: "editor",
+      version: "rev-new",
+      checksum: "sha256:new",
+      content: "# New plan\n",
+      updatedAt: "2026-06-14T00:00:00.000Z",
+    };
+    const api = {
+      document: vi.fn().mockResolvedValue(createdRemote),
+      push: vi.fn(),
+      tree: vi.fn().mockResolvedValue({
+        folders: [{ id: "folder-team", parentFolderId: null, name: "Team", slug: "team", path: "team", permission: "manager" }],
+        documents: [],
+      }),
+      createFolder: vi.fn(),
+      createDocument: vi.fn().mockResolvedValue({ id: "doc-new", version: "rev-new", checksum: "sha256:new", path: "team/new-plan.md" }),
+    };
+
+    const summary = await runBackgroundSyncPass({
+      api,
+      vault,
+      meta,
+      remoteDocsFolder: "Remote Docs",
+      workspaceId: "ws1",
+      localMarkdownPaths: async () => ["Remote Docs/team/new-plan.md"],
+    });
+
+    expect(summary.created).toBe(1);
+    expect(summary.errors).toBe(0);
+    expect(api.createDocument).toHaveBeenCalledWith(expect.objectContaining({ folderId: "folder-team", slug: "new-plan" }));
+    expect(await meta.getByLocalPath("Remote Docs/team/new-plan.md")).toMatchObject({ documentId: "doc-new", baseVersion: "rev-new" });
+  });
 });
