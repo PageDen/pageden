@@ -31,7 +31,7 @@ import { ServerMetaStore } from "./metadata";
 import {
   conflictSiblingPath,
   downloadDocument,
-  pushLocalDocument,
+  pushOrCreateLocalDocument,
   runBackgroundSyncPass,
   type SyncPassSummary,
   type VaultLike,
@@ -228,16 +228,17 @@ export default class PagedenPlugin extends Plugin {
     }
     try {
       const meta = await this.metaStore.getByLocalPath(path);
-      if (!meta || meta.permission === "viewer") return;
+      if (meta?.permission === "viewer") return;
+      if (!meta && !isUnderRemoteDocsFolder(this.settings.remoteDocsFolder, path)) return;
       // Don't auto-push while an unresolved conflict copy exists — wait for the user to resolve it.
       if (await this.app.vault.adapter.exists(conflictSiblingPath(path))) return;
       const localCanonical = canonicalize(await this.app.vault.adapter.read(path));
       // Checksum gate: identical to the last-synced content means a remote write or a no-op save,
       // not a real edit — skip to avoid pull/push ping-pong (covers delayed modify events too).
-      if ((await checksum(localCanonical)) === meta.checksum) return;
-      const result = await pushLocalDocument(this.syncDeps(), path);
+      if (meta && (await checksum(localCanonical)) === meta.checksum) return;
+      const result = await pushOrCreateLocalDocument(this.createSyncDeps(), path);
       if (result.status === "conflict") this.setStatus("Pageden: conflict");
-      else if (result.status === "pushed") this.setStatusIdle();
+      else if (result.status === "pushed" || result.status === "created") this.setStatusIdle();
     } catch {
       this.setStatus("Pageden: error");
     }
@@ -455,7 +456,7 @@ export default class PagedenPlugin extends Plugin {
   async pushFile(file: TFile): Promise<void> {
     try {
       this.requireConfigured();
-      const result = await pushLocalDocument(this.syncDeps(), file.path);
+      const result = await pushOrCreateLocalDocument(this.createSyncDeps(), file.path);
       if (result.status === "blocked_viewer") {
         new Notice("This remote document is viewer-only, so it cannot be pushed.");
       } else if (result.status === "conflict") {
@@ -464,7 +465,7 @@ export default class PagedenPlugin extends Plugin {
           8000,
         );
       } else {
-        new Notice("Pushed to Pageden.");
+        new Notice(result.status === "created" ? "Created in Pageden." : "Pushed to Pageden.");
       }
     } catch (error) {
       new Notice(errorMessage(error));
@@ -567,6 +568,13 @@ export default class PagedenPlugin extends Plugin {
       vault: this.vaultAdapter(),
       meta: this.metaStore,
       remoteDocsFolder: this.settings.remoteDocsFolder,
+    };
+  }
+
+  private createSyncDeps() {
+    return {
+      ...this.syncDeps(),
+      workspaceId: this.settings.workspaceId,
     };
   }
 
@@ -1255,6 +1263,12 @@ class FolderDownloadModal extends Modal {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return "Pageden request failed.";
+}
+
+function isUnderRemoteDocsFolder(remoteDocsFolder: string, path: string): boolean {
+  const root = normalizePath(remoteDocsFolder).replace(/\/+$/, "");
+  const localPath = normalizePath(path);
+  return localPath === root || localPath.startsWith(`${root}/`);
 }
 
 function markdownToHtml(markdown: string): string {

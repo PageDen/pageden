@@ -24,6 +24,12 @@ Downloaded files are written under the local folder. Sync metadata is stored in
 Pushes send the recorded `baseVersion`, LF-canonicalized content, and checksum. On `409`
 the local file is left untouched and the server copy is written as `*.conflict.md`.
 
+New local Markdown notes can also be created in Pageden. Put the note inside the configured
+local folder, for example `Remote Docs/team/plan.md`, then run `Pageden: Push active document`.
+The plugin creates any missing remote folders, creates the document, and records sync metadata
+so later edits use normal push/pull conflict checks. Background sync also auto-creates new
+unlinked notes that are saved under the configured local folder.
+
 Remote search uses the server's permission-filtered `GET /search` endpoint and can download a
 matching document into the configured local folder.
 
@@ -46,4 +52,3 @@ Build and install into a disposable vault:
 pnpm --filter @pageden/obsidian-plugin build
 OBSIDIAN_VAULT=/tmp/pageden-e2e-vault pnpm --filter @pageden/obsidian-plugin install:vault
 ```
-
