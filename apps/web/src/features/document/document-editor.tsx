@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -210,6 +210,14 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
               <Download size={15} />
               {downloading ? "Downloading…" : "Download"}
             </Button>
+            <Link
+              to="/w/$workspaceId/d/$documentId/handoff"
+              params={{ workspaceId, documentId: doc.id }}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            >
+              <ClipboardList size={15} />
+              Handoff
+            </Link>
             <Link
               to="/w/$workspaceId/d/$documentId/history"
               params={{ workspaceId, documentId: doc.id }}

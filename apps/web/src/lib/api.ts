@@ -9,6 +9,7 @@ import {
   documentMoveSchema,
   documentRenameSchema,
   documentWithContentSchema,
+  handoffPacketSchema,
   groupCreateSchema,
   groupsListSchema,
   permissionsListSchema,
@@ -156,6 +157,8 @@ export const api = {
     const filename = filenameFromContentDisposition(res.headers.get("content-disposition")) ?? `${id}.md`;
     return { blob, filename };
   },
+  documentHandoff: (id: string) =>
+    request("GET", `/documents/${encodeURIComponent(id)}/handoff`, { schema: handoffPacketSchema }),
   attachments: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/attachments`, { schema: attachmentListSchema }),
   attachmentUrl: (id: string) => `${BASE}/attachments/${encodeURIComponent(id)}`,

@@ -6,6 +6,7 @@ import { requireAuth, requireTokenScope } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
+import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
 
 // searchText denormalizes current content for FTS. Cap the indexed text so a pathological
 // document cannot bloat the row or exceed Postgres's tsvector size limit (~1MB of lexemes).
@@ -425,6 +426,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       doc.supersededBy && !doc.supersededBy.deletedAt
         ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
         : null;
+    const implementationReadiness = implementationReadinessFor({ status: doc.status, context });
     return {
       id: doc.id,
       workspaceId: doc.workspaceId,
@@ -438,6 +440,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       supersededBy,
       content,
       aiReadiness,
+      implementationReadiness,
       updatedAt: doc.updatedAt.toISOString(),
     };
   });
@@ -448,36 +451,47 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     "/api/documents/:id/download",
     { config: { rateLimit: { max: Number(process.env.DOWNLOAD_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
     async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null } });
+      if (!doc) return notFound(reply, "Document not found.");
+      const role = await resolveDocumentRole(auth.userId, doc.id);
+      if (!role) return notFound(reply, "Document not found.");
+
+      let content = "";
+      if (doc.currentVersionId) {
+        const revision = await prisma.documentRevision.findUnique({
+          where: { id: doc.currentVersionId },
+          select: { storageKey: true },
+        });
+        if (revision) content = await readContent(revision.storageKey);
+      }
+
+      const markdown = buildDownloadMarkdown(
+        {
+          title: doc.title,
+          path: doc.path,
+          version: doc.currentVersionId,
+          updatedAt: doc.updatedAt.toISOString(),
+          checksum: doc.currentChecksum,
+        },
+        content,
+      );
+      return reply
+        .header("content-type", "text/markdown; charset=utf-8")
+        .header("content-disposition", contentDisposition(downloadFilename(doc.path)))
+        .send(markdown);
+    },
+  );
+
+  // Handoff packet: pre-digested view of a document for an agent or human reviewer
+  // about to start implementation. Returns the same shape as the MCP tool.
+  app.get<{ Params: { id: string } }>("/api/documents/:id/handoff", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
-    const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null } });
-    if (!doc) return notFound(reply, "Document not found.");
-    const role = await resolveDocumentRole(auth.userId, doc.id);
-    if (!role) return notFound(reply, "Document not found.");
-
-    let content = "";
-    if (doc.currentVersionId) {
-      const revision = await prisma.documentRevision.findUnique({
-        where: { id: doc.currentVersionId },
-        select: { storageKey: true },
-      });
-      if (revision) content = await readContent(revision.storageKey);
-    }
-
-    const markdown = buildDownloadMarkdown(
-      {
-        title: doc.title,
-        path: doc.path,
-        version: doc.currentVersionId,
-        updatedAt: doc.updatedAt.toISOString(),
-        checksum: doc.currentChecksum,
-      },
-      content,
-    );
-    return reply
-      .header("content-type", "text/markdown; charset=utf-8")
-      .header("content-disposition", contentDisposition(downloadFilename(doc.path)))
-      .send(markdown);
+    const packet = await buildHandoffPacket(auth.userId, request.params.id);
+    if (packet.status === "not_found") return notFound(reply, "Document not found.");
+    return packet.value;
   });
 
   // Create a document (requires editor on the target folder).
@@ -910,6 +924,48 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       return { id: doc.id, version: result.version, checksum: result.checksum, updatedAt: result.updatedAt.toISOString() };
     },
   );
+}
+
+// Shared by GET /api/documents/:id/handoff and the MCP pageden_get_task_packet tool
+// so the wire shape never drifts. Returns either the packet or a sentinel for the
+// caller to translate into the right error (HTTP 404 vs MCP "Document not found.").
+export async function buildHandoffPacket(
+  userId: string,
+  documentId: string,
+): Promise<{ status: "ok"; value: { workspaceId: string; documentId: string; title: string; path: string; updatedAt: string; packet: TaskPacket } } | { status: "not_found" }> {
+  const doc = await prisma.document.findFirst({
+    where: { id: documentId, deletedAt: null },
+    include: { supersededBy: { select: { id: true, title: true, path: true, deletedAt: true } } },
+  });
+  if (!doc) return { status: "not_found" };
+  const role = await resolveDocumentRole(userId, doc.id);
+  if (!role) return { status: "not_found" };
+
+  let content = "";
+  if (doc.currentVersionId) {
+    const revision = await prisma.documentRevision.findUnique({
+      where: { id: doc.currentVersionId },
+      select: { storageKey: true },
+    });
+    if (revision) content = await readContent(revision.storageKey);
+  }
+  const context = documentContext(content);
+  const supersededBy =
+    doc.supersededBy && !doc.supersededBy.deletedAt
+      ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
+      : null;
+  const packet = taskPacketFor({ status: doc.status, supersededBy, context });
+  return {
+    status: "ok",
+    value: {
+      workspaceId: doc.workspaceId,
+      documentId: doc.id,
+      title: doc.title,
+      path: doc.path,
+      updatedAt: doc.updatedAt.toISOString(),
+      packet,
+    },
+  };
 }
 
 function sendWriteOutcome(reply: import("fastify").FastifyReply, outcome: WriteOutcome) {

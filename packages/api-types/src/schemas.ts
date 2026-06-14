@@ -158,10 +158,63 @@ export const aiReadinessSchema = z
   })
   .strict();
 
+export const implementationReadinessStatusSchema = z.enum([
+  "ready_to_implement",
+  "needs_contract_update",
+  "has_blocking_questions",
+  "conflicting_guidance",
+  "draft_only",
+  "superseded",
+]);
+
+export const implementationReadinessReasonSchema = z
+  .object({
+    code: z.string(),
+    severity: z.enum(["blocking", "warning", "info"]),
+    message: z.string(),
+  })
+  .strict();
+
+export const implementationReadinessSchema = z
+  .object({
+    status: implementationReadinessStatusSchema,
+    reasons: z.array(implementationReadinessReasonSchema),
+  })
+  .strict();
+
+export const taskPacketSchema = z
+  .object({
+    summary: z.string(),
+    status: documentStatusSchema,
+    supersededBy: documentRefSchema.nullable(),
+    currentPhase: z.string().nullable(),
+    nextSteps: z.array(z.string()),
+    acceptanceCriteria: z.array(z.string()),
+    tests: z.array(z.string()),
+    nonGoals: z.array(z.string()),
+    openQuestions: z.array(z.string()),
+    relatedFiles: z.array(z.string()),
+    decisions: z.array(z.string()),
+    implementationReadiness: implementationReadinessSchema,
+  })
+  .strict();
+
+export const handoffPacketSchema = z
+  .object({
+    workspaceId: z.string(),
+    documentId: z.string(),
+    title: z.string(),
+    path: z.string(),
+    updatedAt: iso,
+    packet: taskPacketSchema,
+  })
+  .strict();
+
 export const documentWithContentSchema = documentMetaSchema
   .extend({
     content: z.string(),
     aiReadiness: aiReadinessSchema,
+    implementationReadiness: implementationReadinessSchema,
     supersededBy: documentRefSchema.nullable(),
   })
   .strict();
