@@ -13,7 +13,7 @@ Obsidian integration for Pageden.
 
 ## Settings
 
-- Server URL, for example `https://app.example.com`
+- Server URL, default `https://go.pageden.app`
 - Personal access token from the web app's Obsidian token screen, or a token from device-code login
 - Workspace ID
 - Local folder, default `Remote Docs`

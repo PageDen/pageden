@@ -53,7 +53,7 @@ const turndown = new TurndownService({
 turndown.use(gfm);
 
 const DEFAULT_SETTINGS: PagedenSettings = {
-  serverUrl: "http://localhost:4000",
+  serverUrl: "https://go.pageden.app",
   token: "",
   workspaceId: "",
   remoteDocsFolder: "Remote Docs",
