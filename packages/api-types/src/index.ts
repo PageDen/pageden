@@ -6,6 +6,7 @@ export type WorkspaceRole = "member" | "admin";
 export type WorkspaceRoutingMode = "cloud_subdomain" | "custom_domain" | "self_hosted" | "explicit";
 export type CustomDomainStatus = "pending" | "verified" | "active" | "failed";
 export type ChangeSource = "web_app" | "obsidian_plugin" | "agent" | "import" | "system";
+export type DocumentStatus = "canonical" | "draft" | "superseded" | "archived";
 
 export interface UserDTO {
   id: string;
@@ -55,7 +56,14 @@ export interface DocumentMeta {
   permission: Role;
   version: string | null; // DocumentRevision id
   checksum: string | null; // "sha256:..."
+  status: DocumentStatus;
   updatedAt: string;
+}
+
+export interface DocumentRef {
+  id: string;
+  title: string;
+  path: string;
 }
 
 export interface AiReadinessIssue {
@@ -73,6 +81,7 @@ export interface AiReadiness {
 export interface DocumentWithContent extends DocumentMeta {
   content: string;
   aiReadiness: AiReadiness;
+  supersededBy: DocumentRef | null;
 }
 
 export interface PushRequest {

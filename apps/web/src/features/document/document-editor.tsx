@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, Check, CheckCircle2, Clipboard, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -184,6 +184,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             <span className="inline-flex">
               <AiReadinessBadge readiness={doc.aiReadiness} />
             </span>
+            <DocumentStatusBadge status={doc.status} />
             <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
               {permissionLabel[doc.permission] ?? doc.permission}
             </span>
@@ -227,6 +228,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         </div>
       </header>
 
+      <DocumentStatusBanner status={doc.status} supersededBy={doc.supersededBy} workspaceId={workspaceId} />
       {conflict ? (
         <div className="mx-6 mb-3 mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
           <p className="font-medium text-amber-800">
@@ -376,6 +378,81 @@ async function copyTextToClipboard(text: string) {
   document.execCommand("copy");
   document.body.removeChild(textarea);
 }
+
+// Compact status pill shown next to the AI readiness badge. Canonical (the default)
+// renders nothing so the header stays clean — readers only see a pill when the doc
+// is intentionally off the live source-of-truth path.
+function DocumentStatusBadge({ status }: { status: Doc["status"] }) {
+  if (status === "canonical") return null;
+  const tone =
+    status === "superseded"
+      ? "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-400/30"
+      : status === "archived"
+        ? "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
+        : "bg-sky-50 text-sky-800 ring-sky-200 dark:bg-sky-500/15 dark:text-sky-200 dark:ring-sky-400/30";
+  const Icon = status === "archived" ? Archive : status === "superseded" ? AlertTriangle : CircleDashed;
+  const label = status === "superseded" ? "Superseded" : status === "draft" ? "Draft" : "Archived";
+  return (
+    <span className={`inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold ring-1 ${tone}`}>
+      <Icon size={14} aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
+// Full-width banner shown above the document body when status !== canonical. For
+// superseded docs we surface a link to the replacement so an agent or reader can
+// jump to the current source of truth in one click.
+function DocumentStatusBanner({
+  status,
+  supersededBy,
+  workspaceId,
+}: {
+  status: Doc["status"];
+  supersededBy: Doc["supersededBy"];
+  workspaceId: string;
+}) {
+  if (status === "canonical") return null;
+  if (status === "superseded") {
+    return (
+      <div className="mx-6 mb-3 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/10 dark:text-amber-100">
+        <AlertTriangle size={16} aria-hidden="true" />
+        <span className="font-medium">This document is superseded.</span>
+        {supersededBy ? (
+          <>
+            <span>Use</span>
+            <Link
+              to="/w/$workspaceId/d/$documentId"
+              params={{ workspaceId, documentId: supersededBy.id }}
+              className="inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
+            >
+              {supersededBy.title}
+              <ArrowRight size={13} aria-hidden="true" />
+            </Link>
+            <span className="text-amber-800/80 dark:text-amber-200/80">({supersededBy.path})</span>
+          </>
+        ) : (
+          <span>Search may rank this below canonical documents.</span>
+        )}
+      </div>
+    );
+  }
+  if (status === "archived") {
+    return (
+      <div className="mx-6 mb-3 mt-3 flex items-center gap-2 rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+        <Archive size={16} aria-hidden="true" />
+        <span>This document is archived and excluded from canonical-only search.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="mx-6 mb-3 mt-3 flex items-center gap-2 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-400/40 dark:bg-sky-500/10 dark:text-sky-100">
+      <CircleDashed size={16} aria-hidden="true" />
+      <span>This document is marked as a draft. Mark it canonical when it is ready to be the source of truth.</span>
+    </div>
+  );
+}
+
 
 function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
   const label = readiness.status === "needs_attention" ? "Needs work" : readiness.status === "usable" ? "Usable" : "Ready";

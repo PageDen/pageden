@@ -8,6 +8,7 @@ export const workspaceRoleSchema = z.enum(["member", "admin"]);
 export const workspaceRoutingModeSchema = z.enum(["cloud_subdomain", "custom_domain", "self_hosted", "explicit"]);
 export const customDomainStatusSchema = z.enum(["pending", "verified", "active", "failed"]);
 export const changeSourceSchema = z.enum(["web_app", "obsidian_plugin", "agent", "import", "system"]);
+export const documentStatusSchema = z.enum(["canonical", "draft", "superseded", "archived"]);
 const iso = z.string();
 
 export const userDtoSchema = z.object({ id: z.string(), email: z.string(), name: z.string() }).strict();
@@ -100,6 +101,7 @@ export const documentMetaSchema = z
     permission: roleSchema,
     version: z.string().nullable(),
     checksum: z.string().nullable(),
+    status: documentStatusSchema,
     updatedAt: iso,
   })
   .strict();
@@ -130,12 +132,15 @@ export const treeSchema = z
           permission: roleSchema,
           version: z.string().nullable(),
           checksum: z.string().nullable(),
+          status: documentStatusSchema,
           updatedAt: iso,
         })
         .strict(),
     ),
   })
   .strict();
+
+export const documentRefSchema = z.object({ id: z.string(), title: z.string(), path: z.string() }).strict();
 
 export const aiReadinessIssueSchema = z
   .object({
@@ -157,6 +162,7 @@ export const documentWithContentSchema = documentMetaSchema
   .extend({
     content: z.string(),
     aiReadiness: aiReadinessSchema,
+    supersededBy: documentRefSchema.nullable(),
   })
   .strict();
 
@@ -319,6 +325,7 @@ export const searchSchema = z
           title: z.string(),
           path: z.string(),
           permission: roleSchema,
+          status: documentStatusSchema,
           // Highlighted body excerpt; null when the match was on the title only. Highlight spans
           // are delimited by U+E000/U+E001 (private-use) so clients escape text then bold spans.
           snippet: z.string().nullable(),
