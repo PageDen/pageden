@@ -1,0 +1,9 @@
+{
+  "id": "pageden",
+  "name": "Pageden",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Edit your team's server-owned Markdown documents from Obsidian.",
+  "author": "ccfiel",
+  "isDesktopOnly": false
+}
