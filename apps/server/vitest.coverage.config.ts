@@ -12,6 +12,15 @@ export default defineConfig({
     fileParallelism: false,
     hookTimeout: 30000,
     testTimeout: 30000,
+    // @vitest/coverage-v8@2.1.9 intermittently crashes its tinypool worker on
+    // CI with "Worker exited unexpectedly" right after the last test file
+    // finishes, even though every test passed. Running the whole suite in a
+    // single forked child sidesteps the worker pool entirely; the throughput
+    // hit is small because fileParallelism is already disabled.
+    pool: "forks",
+    poolOptions: {
+      forks: { singleFork: true },
+    },
     coverage: {
       enabled: true,
       provider: "v8",
