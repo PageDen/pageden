@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { Check, ChevronDown, Clipboard, Download, RotateCcw } from "lucide-react";
+import { Check, ChevronDown, Clipboard, Download, FileClock, RotateCcw, Sparkles, Star, Tag } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { CollapsedRevisionSummary, RevisionSummary } from "@pageden/api-types";
-import { documentQuery, meQuery, revisionDetailQuery, revisionsQuery } from "../../lib/queries";
+import type { CollapsedRevisionSummary, DocumentHistoryItem, RevisionSummary } from "@pageden/api-types";
+import { documentHistoryQuery, documentQuery, meQuery, revisionDetailQuery } from "../../lib/queries";
 import { api } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/ui/dialog";
@@ -28,7 +28,7 @@ export function RevisionHistory() {
   const params = useParams({ strict: false });
   const documentId = params.documentId ?? "";
   const workspaceId = params.workspaceId ?? "";
-  const revs = useQuery({ ...revisionsQuery(documentId), enabled: documentId !== "" });
+  const history = useQuery({ ...documentHistoryQuery(documentId), enabled: documentId !== "" });
   const doc = useQuery({ ...documentQuery(documentId), enabled: documentId !== "" });
   const me = useQuery(meQuery);
   const queryClient = useQueryClient();
@@ -39,10 +39,12 @@ export function RevisionHistory() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<ViewMode>("preview");
   const [confirmRestore, setConfirmRestore] = useState(false);
+  const [labelTarget, setLabelTarget] = useState<HistoryEntry | null>(null);
+  const [labelDraft, setLabelDraft] = useState("");
   const [copied, setCopied] = useState(false);
   usePageTitle(pageTitle("History", doc.data?.title, workspaceName));
 
-  const entries = useMemo(() => flattenHistory(revs.data?.revisions ?? [], expandedGroups), [expandedGroups, revs.data?.revisions]);
+  const entries = useMemo(() => flattenHistory(history.data?.revisions ?? [], expandedGroups), [expandedGroups, history.data?.revisions]);
   const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0] ?? null;
   const selectedDetail = useQuery({
     ...revisionDetailQuery(documentId, selected?.id ?? ""),
@@ -67,8 +69,17 @@ export function RevisionHistory() {
     mutationFn: (revisionId: string) => api.restoreRevision(documentId, revisionId),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: documentQuery(documentId).queryKey });
-      queryClient.removeQueries({ queryKey: revisionsQuery(documentId).queryKey });
+      queryClient.removeQueries({ queryKey: documentHistoryQuery(documentId).queryKey });
       void navigate({ to: "/w/$workspaceId/d/$documentId", params: { workspaceId, documentId } });
+    },
+  });
+  const metadata = useMutation({
+    mutationFn: (vars: { revisionId: string; label?: string | null; isPinned?: boolean }) =>
+      api.updateRevisionMetadata(documentId, vars.revisionId, { label: vars.label, isPinned: vars.isPinned }),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: documentHistoryQuery(documentId).queryKey });
+      setLabelTarget(null);
+      setLabelDraft("");
     },
   });
 
@@ -126,11 +137,11 @@ export function RevisionHistory() {
         </div>
       </header>
 
-      {revs.isLoading || doc.isLoading ? (
+      {history.isLoading || doc.isLoading ? (
         <CenteredMessage>Loading history...</CenteredMessage>
-      ) : revs.isError || doc.isError ? (
+      ) : history.isError || doc.isError ? (
         <CenteredMessage>
-          {revs.error instanceof ApiError && revs.error.status === 404
+          {history.error instanceof ApiError && history.error.status === 404
             ? "This document was not found, or you don't have access to it."
             : "Could not load history."}
         </CenteredMessage>
@@ -140,33 +151,20 @@ export function RevisionHistory() {
         <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-auto border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 lg:border-b-0 lg:border-r">
             <div className="space-y-2 p-3">
-              {revs.data!.revisions.map((revision) => {
-                const expanded = expandedGroups.has(revision.groupId);
-                return (
-                  <div key={revision.id}>
-                    <HistoryRow
-                      revision={revision}
-                      selected={selected?.id === revision.id}
-                      onSelect={() => setSelectedId(revision.id)}
-                      onToggleGroup={revision.groupCount > 1 ? () => toggleGroup(revision.groupId) : undefined}
-                      expanded={expanded}
-                    />
-                    {expanded ? (
-                      <div className="ml-4 mt-1 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-800">
-                        {revision.collapsedRevisions.map((collapsed) => (
-                          <HistoryRow
-                            key={collapsed.id}
-                            revision={collapsed}
-                            selected={selected?.id === collapsed.id}
-                            onSelect={() => setSelectedId(collapsed.id)}
-                            compact
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
+              {history.data!.timeline.map((item) =>
+                item.type === "revision" ? (
+                  <RevisionTimelineBlock
+                    key={item.id}
+                    revision={item.revision}
+                    selectedId={selected?.id ?? null}
+                    expanded={expandedGroups.has(item.revision.groupId)}
+                    onSelect={setSelectedId}
+                    onToggleGroup={item.revision.groupCount > 1 ? () => toggleGroup(item.revision.groupId) : undefined}
+                  />
+                ) : (
+                  <TimelineEventRow key={item.id} item={item} />
+                ),
+              )}
             </div>
           </aside>
 
@@ -202,6 +200,27 @@ export function RevisionHistory() {
                   <IconButton label="Download Markdown" onClick={downloadSelected} disabled={!selectedDetail.data}>
                     <Download size={16} />
                   </IconButton>
+                  {canManage && selected ? (
+                    <>
+                      <IconButton
+                        label={selected.isPinned ? "Unpin" : "Pin"}
+                        onClick={() => metadata.mutate({ revisionId: selected.id, isPinned: !selected.isPinned })}
+                        disabled={metadata.isPending}
+                      >
+                        <Star size={16} className={selected.isPinned ? "fill-current" : ""} />
+                      </IconButton>
+                      <IconButton
+                        label={selected.label ? "Rename label" : "Name revision"}
+                        onClick={() => {
+                          setLabelTarget(selected);
+                          setLabelDraft(selected.label ?? "");
+                        }}
+                        disabled={metadata.isPending}
+                      >
+                        <Tag size={16} />
+                      </IconButton>
+                    </>
+                  ) : null}
                   {canManage && selected && selected.id !== doc.data?.version ? (
                     <Button variant="danger" onClick={() => setConfirmRestore(true)} disabled={restore.isPending}>
                       <RotateCcw size={16} />
@@ -245,6 +264,79 @@ export function RevisionHistory() {
           </div>
         </Dialog>
       ) : null}
+      {labelTarget ? (
+        <Dialog title={`Name version ${labelTarget.versionNumber}`} onClose={() => setLabelTarget(null)} size="lg">
+          <label className="block space-y-2 text-sm">
+            <span className="font-medium text-slate-700 dark:text-slate-200">Label</span>
+            <input
+              value={labelDraft}
+              onChange={(event) => setLabelDraft(event.target.value)}
+              maxLength={80}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-orange-400 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+              autoFocus
+            />
+          </label>
+          {metadata.isError ? <p className="mt-2 text-sm text-red-600">Could not save this label.</p> : null}
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setLabelTarget(null)}>Cancel</Button>
+            <Button
+              onClick={() => metadata.mutate({ revisionId: labelTarget.id, label: labelDraft.trim() || null })}
+              disabled={metadata.isPending}
+            >
+              {metadata.isPending ? "Saving..." : "Save label"}
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
+    </div>
+  );
+}
+
+function RevisionTimelineBlock({
+  revision,
+  selectedId,
+  expanded,
+  onSelect,
+  onToggleGroup,
+}: {
+  revision: RevisionSummary;
+  selectedId: string | null;
+  expanded: boolean;
+  onSelect: (id: string) => void;
+  onToggleGroup?: () => void;
+}) {
+  return (
+    <div>
+      <HistoryRow
+        revision={revision}
+        selected={selectedId === revision.id}
+        onSelect={() => onSelect(revision.id)}
+        onToggleGroup={onToggleGroup}
+        expanded={expanded}
+      />
+      {expanded ? (
+        <div className="ml-4 mt-1 space-y-1 border-l border-slate-200 pl-2 dark:border-slate-800">
+          {revision.collapsedRevisions.map((collapsed) => (
+            <HistoryRow
+              key={collapsed.id}
+              revision={collapsed}
+              selected={selectedId === collapsed.id}
+              onSelect={() => onSelect(collapsed.id)}
+              compact
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TimelineEventRow({ item }: { item: Extract<DocumentHistoryItem, { type: "event" }> }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+      <FileClock size={14} className="shrink-0" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">{eventLabel(item.event.action, item.event.actor)}</span>
+      <span className="shrink-0">{formatDateTime(item.createdAt)}</span>
     </div>
   );
 }
@@ -277,10 +369,20 @@ function HistoryRow({
     >
       <button type="button" className="min-w-0 flex-1 text-left" onClick={onSelect}>
         <span className="block font-semibold">Version {revision.versionNumber}</span>
+        {revision.label ? (
+          <span className="mt-0.5 inline-flex max-w-full items-center gap-1 truncate rounded-full bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            <Tag size={10} aria-hidden="true" />
+            {revision.label}
+          </span>
+        ) : null}
         <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
           {sourceLabel[revision.changeSource] ?? revision.changeSource} · {formatDateTime(revision.createdAt)}
         </span>
+        {revision.contributorIds.length > 1 ? (
+          <span className="block truncate text-[11px] text-slate-400">{revision.contributorIds.length} contributors</span>
+        ) : null}
       </button>
+      {revision.isPinned ? <Sparkles size={15} className="shrink-0 text-amber-500" aria-label="Pinned revision" /> : null}
       {groupCount > 1 && onToggleGroup ? (
         <button
           type="button"
@@ -294,6 +396,23 @@ function HistoryRow({
       ) : null}
     </div>
   );
+}
+
+function eventLabel(action: string, actor: string): string {
+  const who = actor === "obsidian_plugin" ? "Obsidian" : actor === "agent" ? "Agent" : actor === "system" ? "System" : "User";
+  const labels: Record<string, string> = {
+    document_created: `${who} created document`,
+    document_updated: `${who} edited document`,
+    document_pushed: "Obsidian pushed changes",
+    document_renamed: `${who} renamed document`,
+    document_moved: `${who} moved document`,
+    document_restored: `${who} restored a version`,
+    document_created_by_agent: "Agent created document",
+    document_updated_by_agent: "Agent edited document",
+    document_appended_by_agent: "Agent appended content",
+    document_revision_metadata_updated: `${who} updated version metadata`,
+  };
+  return labels[action] ?? action;
 }
 
 function DiffView({ loading, lines, previousVersion, selectedVersion }: { loading: boolean; lines: DiffLine[]; previousVersion: number; selectedVersion: number }) {

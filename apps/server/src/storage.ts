@@ -153,7 +153,7 @@ export async function sweepOrphanObjects(
   const listed = [...(await b.list("objects/")), ...(await b.list("attachments/")), ...(await b.list("workspaces/"))].filter(
     (o) => OBJECT_KEY_RE.test(o.key) || ATTACHMENT_KEY_RE.test(o.key),
   );
-  const revisions = await client.documentRevision.findMany({ select: { storageKey: true } });
+  const revisions = await client.documentRevision.findMany({ where: { prunedAt: null }, select: { storageKey: true } });
   const attachments = await client.attachment.findMany({ where: { deletedAt: null }, select: { storageKey: true } });
   const referenced = new Set([...revisions.map((r) => r.storageKey), ...attachments.map((a) => a.storageKey)]);
   const now = Date.now();

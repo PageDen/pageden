@@ -193,6 +193,9 @@ export interface RevisionSummary {
   createdAt: string;
   changeSource: ChangeSource;
   message: string | null;
+  contributorIds: string[];
+  isPinned: boolean;
+  label: string | null;
   groupId: string;
   groupCount: number;
   groupStartVersionNumber: number;
@@ -208,6 +211,30 @@ export interface CollapsedRevisionSummary {
   createdAt: string;
   changeSource: ChangeSource;
   message: string | null;
+  contributorIds: string[];
+  isPinned: boolean;
+  label: string | null;
+}
+
+export type DocumentHistoryItem =
+  | { type: "revision"; id: string; createdAt: string; revision: RevisionSummary }
+  | {
+      type: "event";
+      id: string;
+      createdAt: string;
+      event: {
+        action: string;
+        actor: ActivityActor;
+        userId: string | null;
+        targetType: string;
+        targetId: string | null;
+        metadata?: unknown;
+      };
+    };
+
+export interface DocumentHistory {
+  revisions: RevisionSummary[];
+  timeline: DocumentHistoryItem[];
 }
 
 export interface RevisionDetail {
@@ -221,6 +248,9 @@ export interface RevisionDetail {
     createdAt: string;
     changeSource: ChangeSource;
     message: string | null;
+    contributorIds: string[];
+    isPinned: boolean;
+    label: string | null;
   };
   document: {
     id: string;

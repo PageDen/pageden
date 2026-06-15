@@ -377,6 +377,9 @@ export const revisionsSchema = z
           createdAt: iso,
           changeSource: changeSourceSchema,
           message: z.string().nullable(),
+          contributorIds: z.array(z.string()),
+          isPinned: z.boolean(),
+          label: z.string().nullable(),
           groupId: z.string(),
           groupCount: z.number(),
           groupStartVersionNumber: z.number(),
@@ -391,11 +394,49 @@ export const revisionsSchema = z
                 createdAt: iso,
                 changeSource: changeSourceSchema,
                 message: z.string().nullable(),
+                contributorIds: z.array(z.string()),
+                isPinned: z.boolean(),
+                label: z.string().nullable(),
               })
               .strict(),
           ),
         })
         .strict(),
+    ),
+  })
+  .strict();
+
+export const documentHistorySchema = z
+  .object({
+    revisions: revisionsSchema.shape.revisions,
+    timeline: z.array(
+      z.discriminatedUnion("type", [
+        z
+          .object({
+            type: z.literal("revision"),
+            id: z.string(),
+            createdAt: iso,
+            revision: revisionsSchema.shape.revisions.element,
+          })
+          .strict(),
+        z
+          .object({
+            type: z.literal("event"),
+            id: z.string(),
+            createdAt: iso,
+            event: z
+              .object({
+                action: z.string(),
+                actor: z.enum(["user", "agent", "system", "obsidian_plugin", "unknown"]),
+                userId: z.string().nullable(),
+                targetType: z.string(),
+                targetId: z.string().nullable(),
+                metadata: z.unknown().nullable(),
+              })
+              .strict(),
+          })
+          .strict(),
+      ]),
     ),
   })
   .strict();
@@ -420,6 +461,9 @@ export const revisionDetailSchema = z
         createdAt: iso,
         changeSource: changeSourceSchema,
         message: z.string().nullable(),
+        contributorIds: z.array(z.string()),
+        isPinned: z.boolean(),
+        label: z.string().nullable(),
       })
       .strict(),
     document: z.object({ id: z.string(), currentTitle: z.string() }).strict(),
