@@ -12,8 +12,9 @@ import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
-import { applyDocumentWrite, metadataFromContent, searchTextFor } from "../documents/routes.js";
+import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
+import { extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 
@@ -216,6 +217,35 @@ const tools = [
         content: { type: "string" },
       },
       required: ["documentId", "content"],
+    },
+  },
+  {
+    name: "pageden_read_section",
+    description: "Read a single section of a document by heading anchor or heading text. Use this to fetch one section without loading the whole document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+        heading: {
+          type: "string",
+          description: "Heading anchor (e.g. \"acceptance-criteria\") or human-readable heading text.",
+        },
+      },
+      required: ["heading"],
+    },
+  },
+  {
+    name: "pageden_get_task_packet",
+    description: "Return a structured handoff packet (summary, acceptance criteria, next steps, open questions, implementation readiness) so an agent can start work without re-reading the whole document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+      },
     },
   },
 ];
@@ -510,6 +540,8 @@ async function callTool(
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
+  else if (name === "pageden_read_section") data = await readSection(auth, args);
+  else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else throw new Error(`Unknown tool: ${name}`);
 
   await writeAuditEvent({
@@ -629,6 +661,7 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
     headings: context.headings,
     wikilinks: context.wikilinks,
     aiReadiness: readiness,
+    implementationReadiness: implementationReadinessFor({ status: doc.status, context }),
   };
 }
 
@@ -662,6 +695,63 @@ async function readDocumentChunked(auth: AuthContext, args: Record<string, unkno
     nextOffset: offset + chunk.length < totalChars ? offset + chunk.length : null,
   };
 }
+
+async function readSection(auth: AuthContext, args: Record<string, unknown>) {
+  const heading = stringParam(args, "heading");
+  // Reuse the same auth/lookup logic as readDocument so permission checks and
+  // workspace-binding behave identically; we then narrow the response to the
+  // requested section so an agent loads one chunk instead of the whole doc.
+  const doc = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  const sections = extractSections(doc.body ?? doc.content);
+  const section = findSection(sections, heading);
+  if (!section) {
+    return {
+      workspaceId: doc.workspaceId,
+      id: doc.id,
+      title: doc.title,
+      path: doc.path,
+      requested: heading,
+      section: null,
+      availableHeadings: sections.map(({ heading: title, anchor, level }) => ({ heading: title, anchor, level })),
+    };
+  }
+  return {
+    workspaceId: doc.workspaceId,
+    id: doc.id,
+    title: doc.title,
+    path: doc.path,
+    section,
+  };
+}
+
+async function getTaskPacket(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "read");
+  const documentId = maybeString(args.documentId);
+  const path = maybeString(args.path);
+  if (!documentId && !path) throw new Error("documentId or path is required.");
+  let resolvedId = documentId;
+  if (!resolvedId) {
+    const workspaceId = maybeString(args.workspaceId) ?? auth.tokenWorkspaceId;
+    if (!workspaceId) throw new Error("workspaceId is required when looking up by path.");
+    const doc = await prisma.document.findFirst({
+      where: { workspaceId, path: path!, deletedAt: null },
+      select: { id: true, workspaceId: true },
+    });
+    if (!doc) throw new Error("Document not found.");
+    if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) {
+      throw new Error("This agent token is bound to another workspace.");
+    }
+    resolvedId = doc.id;
+  }
+  const result = await buildHandoffPacket(auth.userId, resolvedId);
+  if (result.status === "not_found") throw new Error("Document not found.");
+  return result.value;
+}
+
 
 async function recentChanges(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "read");

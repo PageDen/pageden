@@ -78,9 +78,53 @@ export interface AiReadiness {
   issues: AiReadinessIssue[];
 }
 
+export type ImplementationReadinessStatus =
+  | "ready_to_implement"
+  | "needs_contract_update"
+  | "has_blocking_questions"
+  | "conflicting_guidance"
+  | "draft_only"
+  | "superseded";
+
+export interface ImplementationReadinessReason {
+  code: string;
+  severity: "blocking" | "warning" | "info";
+  message: string;
+}
+
+export interface ImplementationReadiness {
+  status: ImplementationReadinessStatus;
+  reasons: ImplementationReadinessReason[];
+}
+
+export interface TaskPacket {
+  summary: string;
+  status: DocumentStatus;
+  supersededBy: DocumentRef | null;
+  currentPhase: string | null;
+  nextSteps: string[];
+  acceptanceCriteria: string[];
+  tests: string[];
+  nonGoals: string[];
+  openQuestions: string[];
+  relatedFiles: string[];
+  decisions: string[];
+  implementationReadiness: ImplementationReadiness;
+}
+
+export interface HandoffPacket {
+  workspaceId: string;
+  documentId: string;
+  title: string;
+  path: string;
+  updatedAt: string;
+  packet: TaskPacket;
+}
+
 export interface DocumentWithContent extends DocumentMeta {
   content: string;
   aiReadiness: AiReadiness;
+  implementationReadiness: ImplementationReadiness;
   supersededBy: DocumentRef | null;
 }
 

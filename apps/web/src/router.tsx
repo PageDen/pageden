@@ -15,6 +15,7 @@ import { WorkspaceShell, WorkspaceEmptyState, WorkspaceChooser } from "./feature
 // Code-split the Markdown-heavy read views out of the main bundle.
 const DocumentView = lazy(() => import("./features/document/document-view").then((m) => ({ default: m.DocumentView })));
 const RevisionHistory = lazy(() => import("./features/document/revision-history").then((m) => ({ default: m.RevisionHistory })));
+const DocumentHandoff = lazy(() => import("./features/document/document-handoff").then((m) => ({ default: m.DocumentHandoff })));
 const TokensPage = lazy(() => import("./features/admin/tokens-page").then((m) => ({ default: m.TokensPage })));
 const AgentsPage = lazy(() => import("./features/admin/agents-page").then((m) => ({ default: m.AgentsPage })));
 const AccountPage = lazy(() => import("./features/account/account-page").then((m) => ({ default: m.AccountPage })));
@@ -181,6 +182,16 @@ const documentHistoryRoute = createRoute({
   ),
 });
 
+const documentHandoffRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "d/$documentId/handoff",
+  component: () => (
+    <Lazy>
+      <DocumentHandoff />
+    </Lazy>
+  ),
+});
+
 const tokensRoute = createRoute({
   getParentRoute: () => workspaceRoute,
   path: "tokens",
@@ -292,6 +303,7 @@ const routeTree = rootRoute.addChildren([
       workspaceIndexRoute,
       documentRoute,
       documentHistoryRoute,
+      documentHandoffRoute,
       tokensRoute,
       agentsRoute,
       accountRoute,

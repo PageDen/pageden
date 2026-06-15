@@ -22,6 +22,9 @@ export const searchQuery = (workspaceId: string, q: string) =>
 export const documentQuery = (id: string) =>
   queryOptions({ queryKey: ["document", id], queryFn: () => api.document(id) });
 
+export const documentHandoffQuery = (id: string) =>
+  queryOptions({ queryKey: ["document", id, "handoff"], queryFn: () => api.documentHandoff(id) });
+
 export const revisionsQuery = (id: string) =>
   queryOptions({ queryKey: ["revisions", id], queryFn: () => api.revisions(id) });
 
