@@ -12,6 +12,9 @@ import {
   handoffPacketSchema,
   activityFeedSchema,
   dashboardStatsSchema,
+  documentCommentsListSchema,
+  documentCommentResponseSchema,
+  workspaceClaimsListSchema,
   groupCreateSchema,
   groupsListSchema,
   permissionsListSchema,
@@ -169,6 +172,23 @@ export const api = {
     ),
   workspaceDashboard: (workspaceId: string) =>
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/dashboard`, { schema: dashboardStatsSchema }),
+  workspaceClaims: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/claims`, { schema: workspaceClaimsListSchema }),
+  documentComments: (documentId: string, includeResolved = false) =>
+    request(
+      "GET",
+      `/documents/${encodeURIComponent(documentId)}/comments${includeResolved ? "?includeResolved=true" : ""}`,
+      { schema: documentCommentsListSchema },
+    ),
+  addDocumentComment: (documentId: string, payload: { body: string; sectionAnchor?: string | null }) =>
+    request(
+      "POST",
+      `/documents/${encodeURIComponent(documentId)}/comments`,
+      { body: payload, schema: documentCommentResponseSchema },
+    ),
+  resolveComment: (commentId: string) =>
+    request("POST", `/comments/${encodeURIComponent(commentId)}/resolve`, { schema: documentCommentResponseSchema }),
+  deleteComment: (commentId: string) => request("DELETE", `/comments/${encodeURIComponent(commentId)}`, { schema: okSchema }),
   attachments: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/attachments`, { schema: attachmentListSchema }),
   attachmentUrl: (id: string) => `${BASE}/attachments/${encodeURIComponent(id)}`,

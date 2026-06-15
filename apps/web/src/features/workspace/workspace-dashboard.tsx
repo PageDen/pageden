@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { Activity, AlertTriangle, ArrowRight, ClipboardList, FileText, FolderTree, Sparkles } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, ClipboardList, FileText, FolderTree, Hand, Sparkles } from "lucide-react";
 import type { z } from "zod";
 import type { documentStatusSchema } from "@pageden/api-types";
 import { ApiError } from "../../lib/api";
@@ -125,6 +125,28 @@ export function WorkspaceDashboard() {
                     <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone[doc.status]}`}>
                       {statusLabel[doc.status]}
                     </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <Card icon={<Hand className="h-5 w-5" aria-hidden="true" />} title={`Active claims (${d.activeClaims.length})`}>
+            {d.activeClaims.length === 0 ? (
+              <p className="text-sm italic text-slate-400">No documents are currently claimed.</p>
+            ) : (
+              <ul className="space-y-1.5 text-sm">
+                {d.activeClaims.map((claim) => (
+                  <li key={claim.id} className="flex flex-wrap items-center gap-2">
+                    <Link
+                      to="/w/$workspaceId/d/$documentId"
+                      params={{ workspaceId, documentId: claim.document.id }}
+                      className="truncate font-medium text-slate-700 hover:text-orange-700 dark:text-slate-200 dark:hover:text-orange-300"
+                    >
+                      {claim.document.title}
+                    </Link>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">by {claim.actorLabel ?? (claim.tokenId ? "an agent" : "a user")}</span>
+                    <span className="text-xs text-slate-400">expires {new Date(claim.expiresAt).toLocaleTimeString()}</span>
                   </li>
                 ))}
               </ul>
