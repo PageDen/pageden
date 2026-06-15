@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { Prisma, DocumentStatus } from "@prisma/client";
 import type { ChangeSource } from "@prisma/client";
 import { prisma } from "../prisma.js";
-import { requireAuth, requireTokenScope } from "../auth.js";
+import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
@@ -198,22 +198,22 @@ interface WriteOutcome {
 // check, version allocation, content storage — stale write returns conflict, never a 500.
 export async function applyDocumentWrite(opts: {
   documentId: string;
-  userId: string;
+  auth: AuthContext;
   baseVersion: string;
   content: string;
   title?: string;
   changeSource: ChangeSource;
 }): Promise<WriteOutcome> {
+  const userId = opts.auth.userId;
   // Cheap preflight (re-checked authoritatively under the lock below) so a forbidden or stale
   // write does not perform storage work. Avoids a storage/CPU abuse vector.
   const pre = await prisma.document.findFirst({
     where: { id: opts.documentId, deletedAt: null },
-    select: { currentVersionId: true, currentChecksum: true, title: true, workspaceId: true },
+    select: { currentVersionId: true, currentChecksum: true, title: true, workspaceId: true, folderId: true },
   });
   if (!pre) return { ok: false, status: "not_found" };
-  const preRole = await resolveDocumentRole(opts.userId, opts.documentId);
-  if (preRole === null) return { ok: false, status: "not_found" };
-  if (!atLeast(preRole, "editor")) return { ok: false, status: "forbidden" };
+  const preAz = await authorizeDocumentRole(opts.auth, opts.documentId, "editor");
+  if (!preAz.ok) return preAz;
   if ((pre.currentVersionId ?? "") !== opts.baseVersion) {
     return { ok: false, status: "conflict", currentVersion: pre.currentVersionId ?? "" };
   }
@@ -230,9 +230,8 @@ export async function applyDocumentWrite(opts: {
       SELECT "id" FROM "Document" WHERE "id" = ${opts.documentId} AND "deletedAt" IS NULL FOR UPDATE`;
     if (locked.length === 0) return { ok: false, status: "not_found" };
 
-    const role = await resolveDocumentRole(opts.userId, opts.documentId, tx);
-    if (role === null) return { ok: false, status: "not_found" };
-    if (!atLeast(role, "editor")) return { ok: false, status: "forbidden" };
+    const az = await authorizeDocumentRole(opts.auth, opts.documentId, "editor", tx);
+    if (!az.ok) return az;
 
     const doc = await tx.document.findUniqueOrThrow({ where: { id: opts.documentId } });
     if ((doc.currentVersionId ?? "") !== opts.baseVersion) {
@@ -253,12 +252,12 @@ export async function applyDocumentWrite(opts: {
 
       const updated = await tx.document.update({
         where: { id: doc.id },
-        data: { title: opts.title, updatedById: opts.userId },
+        data: { title: opts.title, updatedById: userId },
       });
       await writeAuditEvent(
         {
           workspaceId: doc.workspaceId,
-          userId: opts.userId,
+          userId,
           action: opts.changeSource === "obsidian_plugin" ? "document_pushed" : "document_updated",
           targetType: "document",
           targetId: doc.id,
@@ -280,17 +279,17 @@ export async function applyDocumentWrite(opts: {
       where: { documentId: doc.id },
       _max: { versionNumber: true },
     });
-    const revisionGroupId = await revisionGroupIdForWrite(tx, doc, { userId: opts.userId, changeSource: opts.changeSource });
+    const revisionGroupId = await revisionGroupIdForWrite(tx, doc, { userId, changeSource: opts.changeSource });
     const revision = await tx.documentRevision.create({
       data: {
         documentId: doc.id,
         versionNumber: (max._max.versionNumber ?? 0) + 1,
         storageKey: revisionStorageKey,
         checksum: sum,
-        createdById: opts.userId,
+        createdById: userId,
         changeSource: opts.changeSource,
         revisionGroupId,
-        contributorIds: [opts.userId],
+        contributorIds: [userId],
       },
     });
     const metadata = await metadataFromContent(tx, doc.workspaceId, opts.content, doc.id);
@@ -300,7 +299,7 @@ export async function applyDocumentWrite(opts: {
         currentVersionId: revision.id,
         currentChecksum: sum,
         searchText: searchTextFor(opts.content),
-        updatedById: opts.userId,
+        updatedById: userId,
         title: opts.title ?? doc.title,
         status: metadata.status,
         supersededById: metadata.supersededById,
@@ -309,7 +308,7 @@ export async function applyDocumentWrite(opts: {
     await writeAuditEvent(
       {
         workspaceId: doc.workspaceId,
-        userId: opts.userId,
+        userId,
         action: opts.changeSource === "obsidian_plugin" ? "document_pushed" : "document_updated",
         targetType: "document",
         targetId: doc.id,
@@ -319,7 +318,7 @@ export async function applyDocumentWrite(opts: {
     );
     await writeStatusTransitionAudit(tx, {
       workspaceId: doc.workspaceId,
-      userId: opts.userId,
+      userId,
       documentId: doc.id,
       previousStatus: doc.status,
       nextStatus: metadata.status,
@@ -711,7 +710,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
           select: { path: true },
         });
         if (!lockedFolder) return { status: "folder_missing" as const };
-        const az = await authorizeFolderRole(auth.userId, folder.id, "editor", tx);
+        const az = await authorizeFolderRole(auth, folder.id, "editor", tx);
         if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
         const path = buildDocumentPath(lockedFolder.path, slug!);
         if (await siblingSlugTaken(tx, folder.id, slug!)) {
@@ -790,7 +789,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
 
       const outcome = await applyDocumentWrite({
         documentId: request.params.id,
-        userId: auth.userId,
+        auth,
         baseVersion,
         content: request.body.content,
         title: request.body.title?.trim(),
@@ -815,7 +814,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
 
       const outcome = await applyDocumentWrite({
         documentId: request.params.id,
-        userId: auth.userId,
+        auth,
         baseVersion,
         content: request.body.content,
         changeSource: "obsidian_plugin",
@@ -848,7 +847,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
           const lockedDoc = await tx.$queryRaw<Array<{ folderId: string }>>`
             SELECT "folderId" FROM "Document" WHERE "id" = ${doc.id} AND "deletedAt" IS NULL FOR UPDATE`;
           if (lockedDoc.length === 0) return { status: "gone" as const };
-          const az = await authorizeDocumentRole(auth.userId, doc.id, "manager", tx);
+          const az = await authorizeDocumentRole(auth, doc.id, "manager", tx);
           if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
           const folderId = lockedDoc[0]!.folderId;
           const folder = await tx.folder.findFirst({ where: { id: folderId, deletedAt: null }, select: { path: true } });
@@ -907,14 +906,14 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
           const lockedDoc = await tx.$queryRaw<Array<{ slug: string }>>`
             SELECT "slug" FROM "Document" WHERE "id" = ${doc.id} AND "deletedAt" IS NULL FOR UPDATE`;
           if (lockedDoc.length === 0) return { status: "gone" as const };
-          const azDoc = await authorizeDocumentRole(auth.userId, doc.id, "manager", tx);
+          const azDoc = await authorizeDocumentRole(auth, doc.id, "manager", tx);
           if (!azDoc.ok) return azDoc.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
           const destFolder = await tx.folder.findFirst({
             where: { id: destFolderId, workspaceId: doc.workspaceId, deletedAt: null },
             select: { path: true },
           });
           if (!destFolder) return { status: "dest_missing" as const };
-          const azDest = await authorizeFolderRole(auth.userId, destFolderId, "editor", tx);
+          const azDest = await authorizeFolderRole(auth, destFolderId, "editor", tx);
           if (!azDest.ok) return azDest.status === "not_found" ? { status: "dest_missing" as const } : { status: "forbidden" as const };
           const slug = lockedDoc[0]!.slug;
           const path = buildDocumentPath(destFolder.path, slug);
@@ -957,7 +956,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "Document" WHERE "id" = ${doc.id} AND "deletedAt" IS NULL FOR UPDATE`;
       if (locked.length === 0) return { status: "gone" as const };
-      const az = await authorizeDocumentRole(auth.userId, doc.id, "manager", tx);
+      const az = await authorizeDocumentRole(auth, doc.id, "manager", tx);
       if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
       await tx.document.update({ where: { id: doc.id }, data: { deletedAt } });
       await tx.permission.deleteMany({ where: { workspaceId: doc.workspaceId, resourceType: "document", resourceId: doc.id } });
@@ -1136,7 +1135,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "Document" WHERE "id" = ${doc.id} AND "deletedAt" IS NULL FOR UPDATE`;
         if (locked.length === 0) return { status: "gone" as const };
-        const az = await authorizeDocumentRole(auth.userId, doc.id, "manager", tx);
+        const az = await authorizeDocumentRole(auth, doc.id, "manager", tx);
         if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
         const max = await tx.documentRevision.aggregate({ where: { documentId: doc.id }, _max: { versionNumber: true } });
         const revision = await tx.documentRevision.create({

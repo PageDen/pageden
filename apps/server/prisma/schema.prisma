@@ -92,6 +92,12 @@ model Workspace {
   customDomain           String?               @unique
   customDomainStatus     CustomDomainStatus    @default(pending)
   customDomainVerifiedAt DateTime?
+  // Phase C2: agent edit scope. When set, agent tokens may only WRITE inside this
+  // folder subtree (read-anywhere is unaffected). Null = agents write anywhere,
+  // which is the historical behavior. Cleared automatically by FK SetNull if the
+  // referenced folder is deleted.
+  agentEditScopeFolderId String?
+  agentEditScopeFolder   Folder?               @relation("WorkspaceAgentEditScope", fields: [agentEditScopeFolderId], references: [id], onDelete: SetNull)
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   members                WorkspaceMembership[]
@@ -172,6 +178,7 @@ model Folder {
   createdBy      User            @relation("FolderCreatedBy", fields: [createdById], references: [id])
   updatedBy      User            @relation("FolderUpdatedBy", fields: [updatedById], references: [id])
   documents      Document[]
+  agentScopeFor  Workspace[]     @relation("WorkspaceAgentEditScope")
 
   // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
   // in a raw migration, so soft-deleted rows do not block reuse.

@@ -124,7 +124,7 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
             select: { path: true },
           });
           if (!parent) return { status: "parent_missing" as const };
-          const az = await authorizeFolderRole(auth.userId, parentFolderId, "editor", tx);
+          const az = await authorizeFolderRole(auth, parentFolderId, "editor", tx);
           if (!az.ok) return az.status === "not_found" ? { status: "parent_missing" as const } : { status: "forbidden" as const };
           parentPath = parent.path;
         } else if (!(await canManageWorkspace(auth.userId, workspaceId!, tx))) {
@@ -186,7 +186,7 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
           const locked = await tx.$queryRaw<Array<{ path: string; parentFolderId: string | null }>>`
             SELECT "path", "parentFolderId" FROM "Folder" WHERE "id" = ${folder.id} AND "deletedAt" IS NULL FOR UPDATE`;
           if (locked.length === 0) return { status: "gone" as const };
-          const az = await authorizeFolderRole(auth.userId, folder.id, "manager", tx);
+          const az = await authorizeFolderRole(auth, folder.id, "manager", tx);
           if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
           const oldPath = locked[0]!.path;
           const parentFolderId = locked[0]!.parentFolderId;
@@ -258,7 +258,7 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
           const lockedSrc = await tx.$queryRaw<Array<{ path: string }>>`
             SELECT "path" FROM "Folder" WHERE "id" = ${folder.id} AND "deletedAt" IS NULL FOR UPDATE`;
           if (lockedSrc.length === 0) return { status: "gone" as const };
-          const azSrc = await authorizeFolderRole(auth.userId, folder.id, "manager", tx);
+          const azSrc = await authorizeFolderRole(auth, folder.id, "manager", tx);
           if (!azSrc.ok) return azSrc.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
           const oldPath = lockedSrc[0]!.path;
 
@@ -268,7 +268,7 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
               SELECT "path" FROM "Folder"
               WHERE "id" = ${destParentId} AND "workspaceId" = ${folder.workspaceId} AND "deletedAt" IS NULL FOR UPDATE`;
             if (lockedDest.length === 0) return { status: "dest_missing" as const };
-            const azDest = await authorizeFolderRole(auth.userId, destParentId, "editor", tx);
+            const azDest = await authorizeFolderRole(auth, destParentId, "editor", tx);
             if (!azDest.ok) return azDest.status === "not_found" ? { status: "dest_missing" as const } : { status: "forbidden" as const };
             parentPath = lockedDest[0]!.path;
             const descendants = await descendantFolders(tx, folder.workspaceId, folder.id);
@@ -321,7 +321,7 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "Folder" WHERE "id" = ${folder.id} AND "deletedAt" IS NULL FOR UPDATE`;
       if (locked.length === 0) return { status: "gone" as const };
-      const az = await authorizeFolderRole(auth.userId, folder.id, "manager", tx);
+      const az = await authorizeFolderRole(auth, folder.id, "manager", tx);
       if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
       const childFolder = await tx.folder.findFirst({ where: { parentFolderId: folder.id, deletedAt: null }, select: { id: true } });
       const childDoc = await tx.document.findFirst({ where: { folderId: folder.id, deletedAt: null }, select: { id: true } });

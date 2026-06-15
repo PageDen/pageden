@@ -135,6 +135,45 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // Phase C2: workspace admins can pin agent token writes to a single folder
+  // subtree. Pass `{ folderId: null }` to clear (agents write anywhere again).
+  // Read paths are never affected — agents can still search / read across the
+  // workspace; this only narrows write scope.
+  app.put<{ Params: { id: string }; Body: { folderId?: string | null } }>(
+    "/api/workspaces/:id/agent-edit-scope",
+    { config: { rateLimit: { max: Number(process.env.AGENT_EDIT_SCOPE_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const workspaceId = request.params.id;
+      if (!(await canManageWorkspace(auth.userId, workspaceId))) return notFound(reply, "Workspace not found.");
+
+      const folderId = request.body.folderId ?? null;
+      if (folderId !== null) {
+        const folder = await prisma.folder.findFirst({
+          where: { id: folderId, workspaceId, deletedAt: null },
+          select: { id: true },
+        });
+        if (!folder) return validationError(reply, { folderId: "Folder not found in this workspace." });
+      }
+
+      const updated = await prisma.workspace.update({
+        where: { id: workspaceId },
+        data: { agentEditScopeFolderId: folderId },
+        select: { id: true, agentEditScopeFolderId: true },
+      });
+      await writeAuditEvent({
+        workspaceId,
+        userId: auth.userId,
+        action: "workspace_agent_edit_scope_changed",
+        targetType: "workspace",
+        targetId: workspaceId,
+        metadata: { folderId },
+      });
+      return { workspaceId: updated.id, agentEditScopeFolderId: updated.agentEditScopeFolderId };
+    },
+  );
+
   // Current workspace resolved from cloud host, explicit workspace id, or the user's first membership.
   app.get<{ Querystring: { workspaceId?: string } }>("/api/workspaces/current", async (request, reply) => {
     const auth = await requireAuth(request);
