@@ -158,6 +158,21 @@ export const treeSchema = z
 
 export const folderDefaultRoleSchema = z.object({ id: z.string(), defaultRole: roleSchema.nullable() }).strict();
 
+export const agentEditScopeSchema = z
+  .object({
+    workspaceId: z.string(),
+    agentEditScopeFolderId: z.string().nullable(),
+    agentEditScopeFolder: z
+      .object({ id: z.string(), path: z.string(), name: z.string() })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const agentEditScopeUpdateSchema = z
+  .object({ workspaceId: z.string(), agentEditScopeFolderId: z.string().nullable() })
+  .strict();
+
 export const documentShareSchema = z
   .object({
     id: z.string(),

@@ -135,6 +135,33 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // Phase C2: read the current agent edit scope so the UI can render its picker
+  // without having to call the bigger workspace context endpoint.
+  app.get<{ Params: { id: string } }>(
+    "/api/workspaces/:id/agent-edit-scope",
+    { config: { rateLimit: { max: Number(process.env.AGENT_EDIT_SCOPE_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const workspaceId = request.params.id;
+      if (!(await canManageWorkspace(auth.userId, workspaceId))) return notFound(reply, "Workspace not found.");
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: {
+          id: true,
+          agentEditScopeFolderId: true,
+          agentEditScopeFolder: { select: { id: true, path: true, name: true } },
+        },
+      });
+      if (!workspace) return notFound(reply, "Workspace not found.");
+      return {
+        workspaceId: workspace.id,
+        agentEditScopeFolderId: workspace.agentEditScopeFolderId,
+        agentEditScopeFolder: workspace.agentEditScopeFolder,
+      };
+    },
+  );
+
   // Phase C2: workspace admins can pin agent token writes to a single folder
   // subtree. Pass `{ folderId: null }` to clear (agents write anywhere again).
   // Read paths are never affected — agents can still search / read across the
