@@ -37,9 +37,7 @@ describe("Folder.defaultRole floor (Phase A1)", () => {
     await prisma.permission.create({
       data: {
         workspaceId: s.ws.id,
-        subjectType: "user",
-        subjectId: other.user.id,
-        userId: other.user.id, // A3: write both sides for XOR check
+        userId: other.user.id,
         resourceType: "document",
         resourceId: s.docId,
         role: "manager",
@@ -73,8 +71,6 @@ describe("Folder.defaultRole floor (Phase A1)", () => {
     await prisma.permission.create({
       data: {
         workspaceId: s.ws.id,
-        subjectType: "user",
-        subjectId: other.user.id,
         userId: other.user.id,
         resourceType: "folder",
         resourceId: s.folderId,
@@ -126,7 +122,7 @@ describe("Folder.defaultRole floor (Phase A1)", () => {
   });
 });
 
-describe("Permission XOR check constraint (Phase A3 schema half)", () => {
+describe("Permission XOR check constraint (Phase A3)", () => {
   it("rejects a Permission row with both userId and groupId set", async () => {
     const s = await baseScenario();
     const group = await prisma.group.create({ data: { workspaceId: s.ws.id, name: "G", slug: "g" } });
@@ -134,8 +130,6 @@ describe("Permission XOR check constraint (Phase A3 schema half)", () => {
       prisma.permission.create({
         data: {
           workspaceId: s.ws.id,
-          subjectType: "user",
-          subjectId: s.admin.id,
           userId: s.admin.id,
           groupId: group.id,
           resourceType: "folder",
@@ -152,8 +146,6 @@ describe("Permission XOR check constraint (Phase A3 schema half)", () => {
       prisma.permission.create({
         data: {
           workspaceId: s.ws.id,
-          subjectType: "user",
-          subjectId: s.admin.id,
           resourceType: "folder",
           resourceId: s.folderId,
           role: "viewer",

@@ -40,7 +40,7 @@ describe("permission endpoints", () => {
       { subjectType: "user", subjectId: u.id, role: "manager" },
     ] } });
     expect(res.statusCode).toBe(200);
-    const rows = await prisma.permission.findMany({ where: { resourceType: "document", resourceId: s.docId, subjectId: u.id } });
+    const rows = await prisma.permission.findMany({ where: { resourceType: "document", resourceId: s.docId, userId: u.id } });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.role).toBe("manager");
   });

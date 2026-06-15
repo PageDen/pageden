@@ -113,17 +113,22 @@ export async function resolveDocumentRole(
   const inheritedFloors = await inheritedDefaultRoles(document.folderId, client);
 
   const roles: Role[] = [...inheritedFloors];
-  const collectSubjectFilters = [
-    { subjectType: "user" as const, subjectId: userId },
-    ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
-  ];
+  // A3 cutover: filter by userId / groupId XOR columns instead of the
+  // legacy (subjectType, subjectId) discriminator. groupId IN (...) lets one
+  // query match every group the user belongs to in this workspace.
+  const subjectFilter: Prisma.PermissionWhereInput = {
+    OR: [
+      { userId },
+      ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
+    ],
+  };
 
   const folderPermissions = await client.permission.findMany({
     where: {
       workspaceId: document.workspaceId,
       resourceType: "folder",
       resourceId: { in: folderIds },
-      OR: collectSubjectFilters,
+      ...subjectFilter,
     },
     select: { role: true },
   });
@@ -134,7 +139,7 @@ export async function resolveDocumentRole(
       workspaceId: document.workspaceId,
       resourceType: "document",
       resourceId: document.id,
-      OR: collectSubjectFilters,
+      ...subjectFilter,
     },
     select: { role: true },
   });
@@ -191,17 +196,19 @@ export async function resolveFolderRole(
   const groupIds = await groupIdsForUser(userId, folder.workspaceId, client);
   const folderIds = await inheritedFolderIds(folderId, client);
   const inheritedFloors = await inheritedDefaultRoles(folderId, client);
-  const subjectFilters = [
-    { subjectType: "user" as const, subjectId: userId },
-    ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
-  ];
+  const subjectFilter: Prisma.PermissionWhereInput = {
+    OR: [
+      { userId },
+      ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
+    ],
+  };
 
   const permissions = await client.permission.findMany({
     where: {
       workspaceId: folder.workspaceId,
       resourceType: "folder",
       resourceId: { in: folderIds },
-      OR: subjectFilters,
+      ...subjectFilter,
     },
     select: { role: true },
   });
