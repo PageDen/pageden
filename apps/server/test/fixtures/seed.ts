@@ -1,4 +1,6 @@
-import type { PermissionResourceType, PermissionRole, PermissionSubjectType, WorkspaceRole } from "@prisma/client";
+import type { PermissionResourceType, PermissionRole, WorkspaceRole } from "@prisma/client";
+
+type PermissionSubjectType = "user" | "group";
 import { prisma } from "../helpers/db.js";
 import { req, sessionFor } from "../helpers/app.js";
 import { hashPassword } from "../../src/passwords.js";
@@ -34,14 +36,11 @@ export async function grant(
   resourceId: string,
   role: PermissionRole,
 ) {
-  // Phase A3: every Permission row must satisfy the XOR check on (userId, groupId).
-  // The legacy (subjectType, subjectId) columns are still authoritative on the
-  // read path; populating both keeps tests working with the new constraint.
+  // Phase A3 cutover: subjectType / subjectId columns dropped. Map the legacy
+  // helper signature onto the new XOR columns so call sites are unchanged.
   return prisma.permission.create({
     data: {
       workspaceId,
-      subjectType,
-      subjectId,
       userId: subjectType === "user" ? subjectId : null,
       groupId: subjectType === "group" ? subjectId : null,
       resourceType,

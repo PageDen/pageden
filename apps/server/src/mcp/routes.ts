@@ -7,7 +7,7 @@ import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
 import { isUniqueViolation } from "../errors.js";
-import { atLeast, authorizeFolderRole, canManageWorkspace, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
+import { atLeast, authorizeFolderRole, canManageWorkspace, enforceAgentEditScope, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
@@ -19,6 +19,7 @@ import { workspaceActivityFor } from "../workspaces/insights.js";
 import { createComment, listComments, resolveCommentRecord } from "../documents/comments.js";
 import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
 import { claimDocument, listActiveClaims, releaseClaim } from "../documents/claims.js";
+import { createShare, listShares, revokeShare } from "../documents/shares.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 
@@ -373,6 +374,42 @@ const tools = [
       properties: { workspaceId: { type: "string" } },
     },
   },
+  {
+    name: "pageden_share_document",
+    description: "Create a public share link for a document. Returns { slug, publicUrl, expiresAt }. Manager-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves by path within the workspace." },
+        ttlDays: { type: "number", minimum: 1, maximum: 365, description: "Days until the share expires; omit for no expiry." },
+        password: { type: "string", description: "Optional share password; readers must pass ?password=… on the /s/:slug URL." },
+        allowIndexing: { type: "boolean", description: "When true the share is crawler-friendly (x-robots-tag: all). Default false." },
+      },
+    },
+  },
+  {
+    name: "pageden_revoke_share",
+    description: "Revoke a share by id. Idempotent; returns the share row with revokedAt set. Author or manager.",
+    inputSchema: {
+      type: "object",
+      properties: { shareId: { type: "string" } },
+      required: ["shareId"],
+    },
+  },
+  {
+    name: "pageden_list_shares",
+    description: "List active public shares in a workspace. Pass includeRevoked=true to see history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        includeRevoked: { type: "boolean" },
+      },
+    },
+  },
 ];
 
 export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
@@ -676,6 +713,9 @@ async function callTool(
   else if (name === "pageden_claim_document") data = await claimByMcp(auth, args, request);
   else if (name === "pageden_release_document") data = await releaseByMcp(auth, args, request);
   else if (name === "pageden_list_claims") data = await listClaimsByMcp(auth, args, request);
+  else if (name === "pageden_share_document") data = await shareByMcp(auth, args, request);
+  else if (name === "pageden_revoke_share") data = await revokeShareByMcp(auth, args);
+  else if (name === "pageden_list_shares") data = await listSharesByMcp(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
 
   await writeAuditEvent({
@@ -1086,6 +1126,38 @@ async function listClaimsByMcp(auth: AuthContext, args: Record<string, unknown>,
   return { workspaceId, claims };
 }
 
+async function shareByMcp(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const documentId = await resolveDocumentIdForArg(auth, args);
+  const ttlDays = typeof args.ttlDays === "number" ? args.ttlDays : undefined;
+  const password = maybeString(args.password) ?? null;
+  const allowIndexing = args.allowIndexing === true;
+  const result = await createShare(auth, documentId, { ttlDays, password, allowIndexing });
+  if (result.status === "not_found") throw new Error("Document not found.");
+  if (result.status === "forbidden") throw new Error("Only managers can create shares.");
+  if (result.status === "validation") throw new Error(result.message);
+  return result.share;
+}
+
+async function revokeShareByMcp(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "update");
+  const shareId = stringParam(args, "shareId");
+  const result = await revokeShare(auth, shareId);
+  if (result.status === "not_found") throw new Error("Share not found.");
+  if (result.status === "forbidden") throw new Error("You may not revoke this share.");
+  return result.share;
+}
+
+async function listSharesByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const documentId = maybeString(args.documentId);
+  const includeRevoked = args.includeRevoked === true || args.includeRevoked === "true";
+  const result = await listShares(auth, workspaceId, { documentId, includeRevoked });
+  if (result.status === "not_found") throw new Error("Workspace not found.");
+  return { workspaceId, shares: result.shares };
+}
+
 async function getTaskPacket(auth: AuthContext, args: Record<string, unknown>) {
   requireTokenScope(auth, "read");
   const documentId = maybeString(args.documentId);
@@ -1200,11 +1272,25 @@ async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>
     }))
     .sort((a, b) => b.documentCount - a.documentCount || a.path.localeCompare(b.path))
     .slice(0, limit);
+  // Phase C2: surface the workspace's agent edit scope so the calling agent
+  // can pre-flight write tools instead of probing per-folder. Both the folder
+  // id and its path are returned for human-readable affordance in logs.
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: {
+      agentEditScopeFolderId: true,
+      agentEditScopeFolder: { select: { path: true } },
+    },
+  });
+  const agentEditScope = workspace?.agentEditScopeFolderId
+    ? { folderId: workspace.agentEditScopeFolderId, folderPath: workspace.agentEditScopeFolder?.path ?? null }
+    : null;
   return {
     workspaceId,
     totals: { folders: listed.folders.length, documents: listed.documents.length },
     topFolders,
     recentDocuments: recent.documents,
+    agentEditScope,
   };
 }
 
@@ -1303,7 +1389,7 @@ async function createFolder(auth: AuthContext, args: Record<string, unknown>, re
           select: { path: true },
         });
         if (!parent) throw new Error("Parent folder not found.");
-        const az = await authorizeFolderRole(auth.userId, parentFolderId, "editor", tx);
+        const az = await authorizeFolderRole(auth, parentFolderId, "editor", tx);
         if (!az.ok) throw new Error(az.status === "not_found" ? "Parent folder not found." : "Forbidden.");
         parentPath = parent.path;
       } else if (!(await canManageWorkspace(auth.userId, workspaceId, tx))) {
@@ -1506,7 +1592,7 @@ async function upsertDocumentAtPath({
     const guardVersion = baseVersion ?? existing.currentVersionId ?? "";
     const outcome = await applyDocumentWrite({
       documentId: existing.id,
-      userId: auth.userId,
+      auth,
       baseVersion: guardVersion,
       content,
       title: parsed.documentTitle,
@@ -1563,10 +1649,12 @@ async function upsertDocumentAtPath({
   try {
     return await prisma.$transaction(async (tx) => {
       await lockFolderTree(tx, workspaceId);
-      const { folder, createdFolders } = await ensureFolderPath(tx, auth.userId, workspaceId, parsed.folderSegments, createFolders);
+      const { folder, createdFolders } = await ensureFolderPath(tx, auth, workspaceId, parsed.folderSegments, createFolders);
       const role = await resolveFolderRole(auth.userId, folder.id, tx);
       if (role === null) throw new Error("Folder not found.");
       if (!atLeast(role, "editor")) throw new Error("Forbidden.");
+      const scope = await enforceAgentEditScope(auth, workspaceId, folder.id, tx);
+      if (!scope.ok) throw new Error("Forbidden.");
       const duplicate = await tx.document.findFirst({
         where: { workspaceId, folderId: folder.id, slug: parsed.documentSlug, deletedAt: null },
         select: { id: true },
@@ -1623,11 +1711,12 @@ async function upsertDocumentAtPath({
 
 async function ensureFolderPath(
   tx: Tx,
-  userId: string,
+  auth: AuthContext,
   workspaceId: string,
   segments: ParsedMarkdownPath["folderSegments"],
   createFolders: boolean,
 ) {
+  const userId = auth.userId;
   if (segments.length === 0) throw new Error("Documents must be inside a folder path.");
   let parent: { id: string; path: string } | null = null;
   const createdFolders: Array<{ id: string; path: string }> = [];
@@ -1645,7 +1734,7 @@ async function ensureFolderPath(
     }
     if (!createFolders) throw new Error("Folder not found. Pass createFolders=true to create missing folders.");
     if (parent) {
-      const az = await authorizeFolderRole(userId, parent.id, "editor", tx);
+      const az = await authorizeFolderRole(auth, parent.id, "editor", tx);
       if (!az.ok) throw new Error(az.status === "not_found" ? "Parent folder not found." : "Forbidden.");
     } else if (!(await canManageWorkspace(userId, workspaceId, tx))) {
       throw new Error("Only workspace admins can create root folders.");
@@ -1798,7 +1887,7 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
   const content = stringParam(args, "content");
   const title = maybeString(args.title)?.trim();
   await assertTokenOwnsDocument(auth, documentId);
-  const outcome = await applyDocumentWrite({ documentId, userId: auth.userId, baseVersion, content, title, changeSource: "agent" });
+  const outcome = await applyDocumentWrite({ documentId, auth, baseVersion, content, title, changeSource: "agent" });
   if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
   await writeAuditEvent({
     workspaceId: await workspaceIdForDocument(documentId),
@@ -1821,7 +1910,7 @@ async function appendToDocument(auth: AuthContext, args: Record<string, unknown>
   await assertTokenOwnsDocument(auth, current.id);
   const outcome = await applyDocumentWrite({
     documentId: current.id,
-    userId: auth.userId,
+    auth,
     baseVersion: current.version ?? "",
     content: `${base}${addition}`,
     changeSource: "agent",

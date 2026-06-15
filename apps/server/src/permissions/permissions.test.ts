@@ -8,11 +8,12 @@ import {
   strongest,
 } from "./index.js";
 
+// Post-A3 shape: read path filters by userId XOR groupId in/array form.
 interface FakePermissionWhere {
   workspaceId: string;
   resourceType: "folder" | "document";
   resourceId: string | { in: string[] };
-  OR: Array<{ subjectType: "user" | "group"; subjectId: string }>;
+  OR: Array<{ userId?: string } | { groupId: { in: string[] } }>;
 }
 
 describe("permission ranking", () => {
@@ -31,8 +32,8 @@ describe("permission ranking", () => {
 
 interface FakePermission {
   workspaceId: string;
-  subjectType: "user" | "group";
-  subjectId: string;
+  userId: string | null;
+  groupId: string | null;
   resourceType: "folder" | "document";
   resourceId: string;
   role: "viewer" | "editor" | "manager";
@@ -70,10 +71,11 @@ function fakeClient(input: {
             permission.workspaceId === where.workspaceId &&
             permission.resourceType === where.resourceType &&
             resourceIds.includes(permission.resourceId) &&
-            subjects.some(
-              (subject) =>
-                subject.subjectType === permission.subjectType && subject.subjectId === permission.subjectId,
-            ),
+            subjects.some((subject) => {
+              if ("userId" in subject) return permission.userId === subject.userId;
+              if ("groupId" in subject) return permission.groupId != null && subject.groupId.in.includes(permission.groupId);
+              return false;
+            }),
         );
       },
     },
@@ -103,8 +105,8 @@ describe("permission resolution", () => {
       permissions: [
         {
           workspaceId: "workspace_1",
-          subjectType: "group",
-          subjectId: "group_1",
+          userId: null,
+          groupId: "group_1",
           resourceType: "folder",
           resourceId: "parent",
           role: "editor",
@@ -124,16 +126,16 @@ describe("permission resolution", () => {
       permissions: [
         {
           workspaceId: "workspace_1",
-          subjectType: "user",
-          subjectId: "user_1",
+          userId: "user_1",
+          groupId: null,
           resourceType: "folder",
           resourceId: "folder_1",
           role: "viewer",
         },
         {
           workspaceId: "workspace_1",
-          subjectType: "user",
-          subjectId: "user_1",
+          userId: "user_1",
+          groupId: null,
           resourceType: "document",
           resourceId: "doc_1",
           role: "manager",

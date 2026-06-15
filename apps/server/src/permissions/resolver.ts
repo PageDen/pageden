@@ -41,9 +41,10 @@ export async function buildWorkspaceResolver(
     })
   ).map((membership) => membership.groupId);
 
+  // A3 cutover: read by userId / groupId XOR columns.
   const subjectOR = [
-    { subjectType: "user" as const, subjectId: userId },
-    ...groupIds.map((id) => ({ subjectType: "group" as const, subjectId: id })),
+    { userId },
+    ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
   ];
 
   const permissions = await prisma.permission.findMany({

@@ -1,5 +1,6 @@
 import type { Role } from "@pageden/api-types";
 import type { PermissionRole, Prisma, PrismaClient } from "@prisma/client";
+import type { AuthContext } from "../auth.js";
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -123,17 +124,22 @@ export async function resolveDocumentRole(
   // Phase B: a workspace-wide "viewer" tier sees every doc as at least viewer.
   const viewerFloor: Role[] = membership.role === "viewer" ? ["viewer"] : [];
   const roles: Role[] = [...viewerFloor, ...inheritedFloors];
-  const collectSubjectFilters = [
-    { subjectType: "user" as const, subjectId: userId },
-    ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
-  ];
+  // A3 cutover: filter by userId / groupId XOR columns instead of the
+  // legacy (subjectType, subjectId) discriminator. groupId IN (...) lets one
+  // query match every group the user belongs to in this workspace.
+  const subjectFilter: Prisma.PermissionWhereInput = {
+    OR: [
+      { userId },
+      ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
+    ],
+  };
 
   const folderPermissions = await client.permission.findMany({
     where: {
       workspaceId: document.workspaceId,
       resourceType: "folder",
       resourceId: { in: folderIds },
-      OR: collectSubjectFilters,
+      ...subjectFilter,
     },
     select: { role: true },
   });
@@ -144,7 +150,7 @@ export async function resolveDocumentRole(
       workspaceId: document.workspaceId,
       resourceType: "document",
       resourceId: document.id,
-      OR: collectSubjectFilters,
+      ...subjectFilter,
     },
     select: { role: true },
   });
@@ -206,17 +212,19 @@ export async function resolveFolderRole(
   const inheritedFloors =
     membership.role === "guest" ? [] : await inheritedDefaultRoles(folderId, client);
   const viewerFloor: Role[] = membership.role === "viewer" ? ["viewer"] : [];
-  const subjectFilters = [
-    { subjectType: "user" as const, subjectId: userId },
-    ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
-  ];
+  const subjectFilter: Prisma.PermissionWhereInput = {
+    OR: [
+      { userId },
+      ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
+    ],
+  };
 
   const permissions = await client.permission.findMany({
     where: {
       workspaceId: folder.workspaceId,
       resourceType: "folder",
       resourceId: { in: folderIds },
-      OR: subjectFilters,
+      ...subjectFilter,
     },
     select: { role: true },
   });
@@ -277,6 +285,62 @@ export async function canManageFolder(
 }
 
 // ---------------------------------------------------------------------------
+// Phase C2: agent edit scope. When Workspace.agentEditScopeFolderId is set,
+// agent tokens may only WRITE inside that folder subtree (read paths are
+// unaffected). Sessions (humans) and personal tokens pass through unchanged.
+// The check is in-transaction so a concurrent scope change cannot slip a
+// write through after a pre-check.
+// ---------------------------------------------------------------------------
+
+function isAgentToken(auth: AuthContext): boolean {
+  return auth.authType === "token" && auth.tokenKind === "agent";
+}
+
+async function folderInScope(
+  scopeFolderId: string,
+  candidateFolderId: string,
+  client: DbClient,
+): Promise<boolean> {
+  if (scopeFolderId === candidateFolderId) return true;
+  let currentId: string | null = candidateFolderId;
+  const seen = new Set<string>();
+  while (currentId && !seen.has(currentId)) {
+    if (currentId === scopeFolderId) return true;
+    seen.add(currentId);
+    const folder: { parentFolderId: string | null } | null = await client.folder.findFirst({
+      where: { id: currentId, deletedAt: null },
+      select: { parentFolderId: true },
+    });
+    if (!folder) return false;
+    currentId = folder.parentFolderId;
+  }
+  return false;
+}
+
+/**
+ * Returns ok=true if the given write is permitted under the workspace's agent
+ * edit scope. Sessions and non-agent tokens always pass. When the workspace
+ * has no scope set (`agentEditScopeFolderId` IS NULL), all agent writes pass
+ * — historical behavior. When set, the target folder must equal or descend
+ * from the scope folder.
+ */
+export async function enforceAgentEditScope(
+  auth: AuthContext,
+  workspaceId: string,
+  targetFolderId: string,
+  client: DbClient = defaultPrisma,
+): Promise<Authz> {
+  if (!isAgentToken(auth)) return { ok: true };
+  const workspace = await client.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { agentEditScopeFolderId: true },
+  });
+  if (!workspace?.agentEditScopeFolderId) return { ok: true };
+  const inScope = await folderInScope(workspace.agentEditScopeFolderId, targetFolderId, client);
+  return inScope ? { ok: true } : { ok: false, status: "forbidden" };
+}
+
+// ---------------------------------------------------------------------------
 // Authorization outcomes for in-transaction rechecks (Codex round-2): structural
 // mutations must re-verify permission under the lock, not just existence, so a
 // concurrent permission change cannot slip a mutation through after the pre-check.
@@ -284,26 +348,56 @@ export async function canManageFolder(
 
 export type Authz = { ok: true } | { ok: false; status: "not_found" | "forbidden" };
 
+/**
+ * Authorize a write to a document. When `auth` is provided AND `needed` is a
+ * write role (editor/manager), the workspace's agent edit scope is enforced.
+ * Read-style checks (`needed: "viewer"`) skip the scope check.
+ */
 export async function authorizeDocumentRole(
-  userId: string,
+  auth: AuthContext | string,
   documentId: string,
   needed: Role,
   client: DbClient = defaultPrisma,
 ): Promise<Authz> {
+  const userId = typeof auth === "string" ? auth : auth.userId;
   const role = await resolveDocumentRole(userId, documentId, client);
   if (role === null) return { ok: false, status: "not_found" };
   if (!atLeast(role, needed)) return { ok: false, status: "forbidden" };
+  if (typeof auth !== "string" && needed !== "viewer" && isAgentToken(auth)) {
+    const doc = await client.document.findFirst({
+      where: { id: documentId, deletedAt: null },
+      select: { workspaceId: true, folderId: true },
+    });
+    if (!doc) return { ok: false, status: "not_found" };
+    const scope = await enforceAgentEditScope(auth, doc.workspaceId, doc.folderId, client);
+    if (!scope.ok) return scope;
+  }
   return { ok: true };
 }
 
+/**
+ * Authorize a write to a folder. When `auth` is provided AND `needed` is a
+ * write role (editor/manager), the workspace's agent edit scope is enforced
+ * against the target folder itself.
+ */
 export async function authorizeFolderRole(
-  userId: string,
+  auth: AuthContext | string,
   folderId: string,
   needed: Role,
   client: DbClient = defaultPrisma,
 ): Promise<Authz> {
+  const userId = typeof auth === "string" ? auth : auth.userId;
   const role = await resolveFolderRole(userId, folderId, client);
   if (role === null) return { ok: false, status: "not_found" };
   if (!atLeast(role, needed)) return { ok: false, status: "forbidden" };
+  if (typeof auth !== "string" && needed !== "viewer" && isAgentToken(auth)) {
+    const folder = await client.folder.findFirst({
+      where: { id: folderId, deletedAt: null },
+      select: { workspaceId: true },
+    });
+    if (!folder) return { ok: false, status: "not_found" };
+    const scope = await enforceAgentEditScope(auth, folder.workspaceId, folderId, client);
+    if (!scope.ok) return scope;
+  }
   return { ok: true };
 }
