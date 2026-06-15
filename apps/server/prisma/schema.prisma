@@ -43,6 +43,16 @@ enum ChangeSource {
   system
 }
 
+// First-class lifecycle for a document. `canonical` is the live source of truth;
+// `superseded` rows are kept for history but ranked below canonical in search and
+// flagged in the UI so agents do not implement from outdated plans.
+enum DocumentStatus {
+  canonical
+  draft
+  superseded
+  archived
+}
+
 model User {
   id                      String                   @id @default(cuid())
   email                   String                   @unique
@@ -163,6 +173,11 @@ model Document {
   currentVersionId String? // == the wire `version`; FK-free to avoid a write cycle
   currentChecksum  String?
   searchText       String? // denormalized current content for full-text search
+  // Canonical/superseded metadata is parsed from frontmatter on every write so the field is
+  // first-class: search ranks canonical above superseded, MCP can filter to canonical only,
+  // and the doc viewer shows a "superseded by" banner pointing at the replacement.
+  status           DocumentStatus     @default(canonical)
+  supersededById   String?
   createdById      String
   updatedById      String
   deletedAt        DateTime?
@@ -172,13 +187,17 @@ model Document {
   folder           Folder             @relation(fields: [folderId, workspaceId], references: [id, workspaceId])
   createdBy        User               @relation("DocumentCreatedBy", fields: [createdById], references: [id])
   updatedBy        User               @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
+  supersededBy     Document?          @relation("DocumentSupersession", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes       Document[]         @relation("DocumentSupersession")
   revisions        DocumentRevision[]
   attachments      Attachment[]
 
   // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
   // in a raw migration, so soft-deleted rows do not block reuse.
   @@index([workspaceId, folderId])
+  @@index([workspaceId, status])
   @@index([currentVersionId])
+  @@index([supersededById])
 }
 
 model DocumentRevision {

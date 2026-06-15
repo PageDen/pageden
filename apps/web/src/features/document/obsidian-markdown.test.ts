@@ -12,6 +12,7 @@ describe("Obsidian markdown compatibility", () => {
         permission: "editor" as const,
         version: "rev1",
         checksum: "sha256:x",
+        status: "canonical" as const,
         updatedAt: "2026-06-10T00:00:00.000Z",
       },
     ],

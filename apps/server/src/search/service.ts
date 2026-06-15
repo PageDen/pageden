@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type DocumentStatus } from "@prisma/client";
 import type { Role } from "@pageden/api-types";
 import { prisma } from "../prisma.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
@@ -17,6 +17,7 @@ export interface SearchDocumentsResult {
   title: string;
   path: string;
   permission: Role;
+  status: DocumentStatus;
   updatedAt: string;
   snippet: string | null;
 }
@@ -26,6 +27,10 @@ export interface SearchDocumentsOptions {
   workspaceId: string;
   query: string;
   limit?: number;
+  // When true, only canonical docs are returned. Otherwise all four statuses are
+  // ranked canonical > draft > superseded > archived after title-match precedence
+  // so an agent's first hit is always the current source of truth.
+  canonicalOnly?: boolean;
 }
 
 export function clampSearchLimit(value: unknown, fallback = 20): number {
@@ -52,45 +57,51 @@ export function buildSearchSnippet(searchText: string | null, q: string): string
   return frag;
 }
 
+type Candidate = { id: string; folderId: string; title: string; path: string; status: DocumentStatus; updatedAt: Date };
+
 async function searchCandidatePage({
   workspaceId,
   query,
   limit,
   offset,
+  canonicalOnly,
 }: {
   workspaceId: string;
   query: string;
   limit: number;
   offset: number;
-}) {
+  canonicalOnly: boolean;
+}): Promise<Candidate[]> {
   const usesBody = query.length >= SHORT_QUERY_BODY_MIN;
   if (usesBody) {
-    return prisma.$queryRaw<
-      Array<{ id: string; folderId: string; title: string; path: string; updatedAt: Date }>
-    >`
-      SELECT "id", "folderId", "title", "path", "updatedAt"
+    return prisma.$queryRaw<Candidate[]>`
+      SELECT "id", "folderId", "title", "path", "status", "updatedAt"
       FROM "Document"
       WHERE "workspaceId" = ${workspaceId}
         AND "deletedAt" IS NULL
+        AND (NOT ${canonicalOnly} OR "status" = 'canonical')
         AND (
           lower(coalesce("title", '')) LIKE ('%' || lower(${query}) || '%')
           OR lower(coalesce("searchText", '')) LIKE ('%' || lower(${query}) || '%')
         )
       ORDER BY
         (CASE WHEN lower(coalesce("title", '')) LIKE ('%' || lower(${query}) || '%') THEN 0 ELSE 1 END) ASC,
+        (CASE "status" WHEN 'canonical' THEN 0 WHEN 'draft' THEN 1 WHEN 'superseded' THEN 2 ELSE 3 END) ASC,
         word_similarity(lower(${query}), lower(coalesce("title", '') || ' ' || coalesce("searchText", ''))) DESC,
         "updatedAt" DESC,
         "id" ASC
       LIMIT ${limit} OFFSET ${offset}`;
   }
 
-  return prisma.$queryRaw<Array<{ id: string; folderId: string; title: string; path: string; updatedAt: Date }>>`
-    SELECT "id", "folderId", "title", "path", "updatedAt"
+  return prisma.$queryRaw<Candidate[]>`
+    SELECT "id", "folderId", "title", "path", "status", "updatedAt"
     FROM "Document"
     WHERE "workspaceId" = ${workspaceId}
       AND "deletedAt" IS NULL
+      AND (NOT ${canonicalOnly} OR "status" = 'canonical')
       AND lower(coalesce("title", '')) LIKE ('%' || lower(${query}) || '%')
     ORDER BY
+      (CASE "status" WHEN 'canonical' THEN 0 WHEN 'draft' THEN 1 WHEN 'superseded' THEN 2 ELSE 3 END) ASC,
       "updatedAt" DESC,
       "id" ASC
     LIMIT ${limit} OFFSET ${offset}`;
@@ -101,6 +112,7 @@ export async function searchDocuments({
   workspaceId,
   query,
   limit = 20,
+  canonicalOnly = false,
 }: SearchDocumentsOptions): Promise<SearchDocumentsResult[]> {
   const q = query.trim().slice(0, SEARCH_QUERY_MAX);
   if (!q) return [];
@@ -111,7 +123,7 @@ export async function searchDocuments({
   let offset = 0;
 
   while (results.length < limit && offset < SCAN_CAP) {
-    const rows = await searchCandidatePage({ workspaceId, query: q, limit: pageSize, offset });
+    const rows = await searchCandidatePage({ workspaceId, query: q, limit: pageSize, offset, canonicalOnly });
     if (rows.length === 0) break;
 
     for (const doc of rows) {
@@ -122,6 +134,7 @@ export async function searchDocuments({
           title: doc.title,
           path: doc.path,
           permission: role,
+          status: doc.status,
           updatedAt: doc.updatedAt.toISOString(),
         });
         if (results.length >= limit) break;

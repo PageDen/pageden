@@ -12,7 +12,7 @@ import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
-import { applyDocumentWrite, searchTextFor } from "../documents/routes.js";
+import { applyDocumentWrite, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
@@ -41,6 +41,10 @@ const tools = [
         workspaceId: { type: "string", description: "Optional when this token is bound to one workspace." },
         query: { type: "string" },
         limit: { type: "number", minimum: 1, maximum: 50 },
+        canonicalOnly: {
+          type: "boolean",
+          description: "Exclude superseded, draft, and archived documents so an agent reads only current sources of truth.",
+        },
       },
       required: ["query"],
     },
@@ -559,6 +563,7 @@ async function listDocuments(auth: AuthContext, workspaceId: string) {
       permission: role,
       version: doc.currentVersionId,
       checksum: doc.currentChecksum,
+      status: doc.status,
       updatedAt: doc.updatedAt.toISOString(),
     })),
   };
@@ -569,8 +574,9 @@ async function searchDocuments(auth: AuthContext, args: Record<string, unknown>,
   const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
   const query = stringParam(args, "query").trim().slice(0, MAX_QUERY);
   const limit = clampLimit(args.limit);
+  const canonicalOnly = args.canonicalOnly === true || args.canonicalOnly === "true" || args.canonicalOnly === 1;
   if (!query) return { workspaceId, results: [] };
-  const results = await runSearchDocuments({ userId: auth.userId, workspaceId, query, limit });
+  const results = await runSearchDocuments({ userId: auth.userId, workspaceId, query, limit, canonicalOnly });
   return { workspaceId, results };
 }
 
@@ -583,6 +589,7 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
   if (path && !workspaceId) throw new Error("workspaceId is required when reading by path.");
   const doc = await prisma.document.findFirst({
     where: documentId ? { id: documentId, deletedAt: null } : { workspaceId: workspaceId!, path: path!, deletedAt: null },
+    include: { supersededBy: { select: { id: true, title: true, path: true, deletedAt: true } } },
   });
   if (!doc) throw new Error("Document not found.");
   if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) throw new Error("This agent token is bound to another workspace.");
@@ -600,6 +607,10 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
     updatedAt: doc.updatedAt,
     context,
   });
+  const supersededBy =
+    doc.supersededBy && !doc.supersededBy.deletedAt
+      ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
+      : null;
   return {
     workspaceId: doc.workspaceId,
     id: doc.id,
@@ -609,6 +620,8 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
     permission: role,
     version: doc.currentVersionId,
     checksum: doc.currentChecksum,
+    status: doc.status,
+    supersededBy,
     updatedAt: doc.updatedAt.toISOString(),
     content,
     body: context.body,
@@ -668,6 +681,7 @@ async function recentChanges(auth: AuthContext, args: Record<string, unknown>, r
         path: doc.path,
         permission: role,
         version: doc.currentVersionId,
+        status: doc.status,
         updatedAt: doc.updatedAt.toISOString(),
       })),
   };
@@ -778,9 +792,16 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
       const revision = await tx.documentRevision.create({
         data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent" },
       });
+      const metadata = await metadataFromContent(tx, workspaceId, content, doc.id);
       const updated = await tx.document.update({
         where: { id: doc.id },
-        data: { currentVersionId: revision.id, currentChecksum: sum, searchText: searchTextFor(content) },
+        data: {
+          currentVersionId: revision.id,
+          currentChecksum: sum,
+          searchText: searchTextFor(content),
+          status: metadata.status,
+          supersededById: metadata.supersededById,
+        },
       });
       await writeAuditEvent(
         {

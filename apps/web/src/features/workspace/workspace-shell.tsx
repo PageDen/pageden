@@ -781,7 +781,10 @@ function SearchResults({
             onClick={onNavigate}
             className="block rounded px-2 py-1.5 hover:bg-slate-100 [&.active]:bg-slate-200"
           >
-            <span className="block truncate text-slate-700">📄 {result.title}</span>
+            <span className="flex min-w-0 items-center gap-1.5 truncate text-slate-700">
+              <span className="truncate">📄 {result.title}</span>
+              <SearchStatusBadge status={result.status} />
+            </span>
             <span className="block truncate text-xs text-slate-400">{result.path}</span>
             {result.snippet ? (
               <span className="mt-0.5 block text-xs leading-snug text-slate-500 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
@@ -792,6 +795,24 @@ function SearchResults({
         </li>
       ))}
     </ul>
+  );
+}
+
+// Compact 11px pill next to a search result's title; canonical renders nothing so
+// the row stays clean and only off-current-truth docs draw a reader's eye.
+function SearchStatusBadge({ status }: { status: SearchResult["status"] }) {
+  if (status === "canonical") return null;
+  const tone =
+    status === "superseded"
+      ? "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200"
+      : status === "archived"
+        ? "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+        : "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200";
+  const label = status === "superseded" ? "Superseded" : status === "draft" ? "Draft" : "Archived";
+  return (
+    <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone}`}>
+      {label}
+    </span>
   );
 }
 

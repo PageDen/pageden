@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { Prisma } from "@prisma/client";
+import { Prisma, DocumentStatus } from "@prisma/client";
 import type { ChangeSource } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireTokenScope } from "../auth.js";
@@ -28,6 +28,44 @@ import { lockFolderTree } from "../db.js";
 import { clampSearchLimit, searchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 
 type Tx = Prisma.TransactionClient;
+
+const DOCUMENT_STATUS_VALUES: DocumentStatus[] = ["canonical", "draft", "superseded", "archived"];
+
+function parseDocumentStatus(value: unknown): DocumentStatus | null {
+  if (typeof value !== "string") return null;
+  const lower = value.trim().toLowerCase();
+  return (DOCUMENT_STATUS_VALUES as string[]).includes(lower) ? (lower as DocumentStatus) : null;
+}
+
+function normalizeDocumentPath(value: string): { base: string; withMd: string } {
+  const base = value.trim().replace(/^\/+/, "").replace(/\\/g, "/").toLowerCase().replace(/\.md$/i, "");
+  return { base, withMd: `${base}.md` };
+}
+
+// Derive the canonical/superseded metadata from a document's Markdown frontmatter so a single
+// write (web edit, plugin push, agent update) keeps status and the supersededBy link in sync
+// with the document body. Unknown statuses fall back to `canonical`; an unresolvable path
+// frontmatter clears the link rather than failing the write.
+export async function metadataFromContent(
+  tx: Tx,
+  workspaceId: string,
+  content: string,
+  exceptDocumentId?: string,
+): Promise<{ status: DocumentStatus; supersededById: string | null }> {
+  const ctx = documentContext(content);
+  const status = parseDocumentStatus(ctx.frontmatter.status) ?? "canonical";
+  const raw = ctx.frontmatter.supersededBy;
+  const path = typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : undefined;
+  if (!path || path.length > 1024) return { status, supersededById: null };
+  const { base, withMd } = normalizeDocumentPath(path);
+  if (!base) return { status, supersededById: null };
+  const target = await tx.document.findFirst({
+    where: { workspaceId, deletedAt: null, path: { in: [base, withMd] } },
+    select: { id: true },
+  });
+  const supersededById = target?.id && target.id !== exceptDocumentId ? target.id : null;
+  return { status, supersededById };
+}
 
 async function siblingSlugTaken(tx: Tx, folderId: string, slug: string, exceptId?: string): Promise<boolean> {
   const existing = await tx.document.findFirst({
@@ -143,6 +181,7 @@ export async function applyDocumentWrite(opts: {
         changeSource: opts.changeSource,
       },
     });
+    const metadata = await metadataFromContent(tx, doc.workspaceId, opts.content, doc.id);
     const updated = await tx.document.update({
       where: { id: doc.id },
       data: {
@@ -151,6 +190,8 @@ export async function applyDocumentWrite(opts: {
         searchText: searchTextFor(opts.content),
         updatedById: opts.userId,
         title: opts.title ?? doc.title,
+        status: metadata.status,
+        supersededById: metadata.supersededById,
       },
     });
     await writeAuditEvent(
@@ -199,6 +240,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
           permission: role,
           version: doc.currentVersionId,
           checksum: doc.currentChecksum,
+          status: doc.status,
           updatedAt: doc.updatedAt.toISOString(),
         }));
       return { documents };
@@ -209,7 +251,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   // denormalized document body (searchText), permission-filtered. Substring (not full-text)
   // matching is deliberate — users expect "find the text I can see", including stop words like
   // "this" and partial words like "lapt", which Postgres FTS would drop or miss.
-  app.get<{ Querystring: { workspaceId?: string; q?: string; limit?: string } }>(
+  app.get<{ Querystring: { workspaceId?: string; q?: string; limit?: string; canonicalOnly?: string } }>(
     "/api/search",
     async (request, reply) => {
       const auth = await requireAuth(request);
@@ -223,6 +265,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         workspaceId,
         query: q,
         limit: clampSearchLimit(request.query.limit),
+        canonicalOnly: request.query.canonicalOnly === "true" || request.query.canonicalOnly === "1",
       });
       return { results: results.map(({ updatedAt: _updatedAt, ...result }) => result) };
     },
@@ -345,6 +388,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       permission: role,
       version: doc.currentVersionId,
       checksum: doc.currentChecksum,
+      status: doc.status,
       updatedAt: doc.updatedAt.toISOString(),
     }));
     return { folders, documents };
@@ -354,7 +398,10 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   app.get<{ Params: { id: string } }>("/api/documents/:id", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
-    const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null } });
+    const doc = await prisma.document.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      include: { supersededBy: { select: { id: true, title: true, path: true, deletedAt: true } } },
+    });
     if (!doc) return notFound(reply, "Document not found.");
     const role = await resolveDocumentRole(auth.userId, doc.id);
     if (!role) return notFound(reply, "Document not found.");
@@ -374,6 +421,10 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       updatedAt: doc.updatedAt,
       context,
     });
+    const supersededBy =
+      doc.supersededBy && !doc.supersededBy.deletedAt
+        ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
+        : null;
     return {
       id: doc.id,
       workspaceId: doc.workspaceId,
@@ -383,6 +434,8 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       permission: role,
       version: doc.currentVersionId,
       checksum: doc.currentChecksum,
+      status: doc.status,
+      supersededBy,
       content,
       aiReadiness,
       updatedAt: doc.updatedAt.toISOString(),
@@ -495,9 +548,16 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
             changeSource: "web_app",
           },
         });
+        const metadata = await metadataFromContent(tx, workspaceId!, content, doc.id);
         const updated = await tx.document.update({
           where: { id: doc.id },
-          data: { currentVersionId: revision.id, currentChecksum: sum, searchText: searchTextFor(content) },
+          data: {
+            currentVersionId: revision.id,
+            currentChecksum: sum,
+            searchText: searchTextFor(content),
+            status: metadata.status,
+            supersededById: metadata.supersededById,
+          },
         });
         await writeAuditEvent(
           {
@@ -827,9 +887,17 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
           },
         });
         const restoredText = await readContent(source.storageKey);
+        const metadata = await metadataFromContent(tx, doc.workspaceId, restoredText, doc.id);
         const updated = await tx.document.update({
           where: { id: doc.id },
-          data: { currentVersionId: revision.id, currentChecksum: source.checksum, searchText: searchTextFor(restoredText), updatedById: auth.userId },
+          data: {
+            currentVersionId: revision.id,
+            currentChecksum: source.checksum,
+            searchText: searchTextFor(restoredText),
+            updatedById: auth.userId,
+            status: metadata.status,
+            supersededById: metadata.supersededById,
+          },
         });
         await writeAuditEvent(
           { workspaceId: doc.workspaceId, userId: auth.userId, action: "document_restored", targetType: "document", targetId: doc.id, metadata: { version: revision.id, from: source.id } },
