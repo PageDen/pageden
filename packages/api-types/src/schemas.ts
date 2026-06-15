@@ -189,6 +189,32 @@ export const revisionsSchema = z
   })
   .strict();
 
+export const revisionDetailSchema = z
+  .object({
+    revision: z
+      .object({
+        id: z.string(),
+        documentId: z.string(),
+        versionNumber: z.number(),
+        content: z.string(),
+        checksum: z.string(),
+        createdBy: z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            email: z.string(),
+            avatarUrl: z.string().nullable(),
+          })
+          .strict(),
+        createdAt: iso,
+        changeSource: changeSourceSchema,
+        message: z.string().nullable(),
+      })
+      .strict(),
+    document: z.object({ id: z.string(), currentTitle: z.string() }).strict(),
+  })
+  .strict();
+
 // Folders
 export const folderCreateSchema = z.object({ id: z.string(), path: z.string() }).strict();
 export const folderRenameSchema = z.object({ id: z.string(), path: z.string() }).strict();

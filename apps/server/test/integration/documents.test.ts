@@ -91,6 +91,99 @@ describe("documents — endpoints & validation", () => {
     expect(read.json().content).toBe("# Runbook\n");
   });
 
+  it("dedups no-op writes and updates title-only without a revision", async () => {
+    const s = await baseScenario();
+    const initialDoc = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: s.adminCookie });
+    const initialChecksum = initialDoc.json().checksum as string;
+    const initialAuditCount = await prisma.auditEvent.count({ where: { targetId: s.docId } });
+
+    const noop = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# Runbook\n" },
+    });
+    expect(noop.statusCode).toBe(200);
+    expect(noop.json()).toMatchObject({ id: s.docId, version: s.version, checksum: initialChecksum });
+    let revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(1);
+    await expect(prisma.auditEvent.count({ where: { targetId: s.docId } })).resolves.toBe(initialAuditCount);
+
+    const titleOnly = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, title: "Renamed Runbook", content: "# Runbook\n" },
+    });
+    expect(titleOnly.statusCode).toBe(200);
+    expect(titleOnly.json()).toMatchObject({ id: s.docId, version: s.version, checksum: initialChecksum });
+    revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(1);
+    const afterTitle = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: s.adminCookie });
+    expect(afterTitle.json().title).toBe("Renamed Runbook");
+    const titleAudit = await prisma.auditEvent.findFirstOrThrow({ where: { targetId: s.docId, action: "document_updated" }, orderBy: { createdAt: "desc" } });
+    expect(titleAudit.metadata).toMatchObject({ version: s.version, titleOnly: true });
+
+    const pluginNoop = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/push`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, checksum: initialChecksum, content: "# Runbook\n" },
+    });
+    expect(pluginNoop.statusCode).toBe(200);
+    expect(pluginNoop.json()).toMatchObject({ id: s.docId, version: s.version, checksum: initialChecksum });
+    revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(1);
+
+    const changed = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# Changed\n" },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json().version).not.toBe(s.version);
+    revs = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect((revs.json().revisions as unknown[]).length).toBe(2);
+
+    const staleNoop = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# Changed\n" },
+    });
+    expect(staleNoop.statusCode).toBe(409);
+  });
+
+  it("returns a single revision with content and hides it by permission", async () => {
+    const s = await baseScenario();
+    const initialDoc = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: s.adminCookie });
+    const initialChecksum = initialDoc.json().checksum as string;
+    const list = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    const rev = (list.json().revisions as Array<{ id: string }>)[0]!;
+
+    const detail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${rev.id}`, cookies: s.adminCookie });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().revision).toMatchObject({
+      id: rev.id,
+      documentId: s.docId,
+      versionNumber: 1,
+      content: "# Runbook\n",
+      checksum: initialChecksum,
+      changeSource: "web_app",
+      message: null,
+      createdBy: { id: s.admin.id, name: s.admin.name, email: s.admin.email, avatarUrl: null },
+    });
+    expect(detail.json().document).toEqual({ id: s.docId, currentTitle: "Runbook" });
+
+    const missing = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/rev_does_not_exist`, cookies: s.adminCookie });
+    expect(missing.statusCode).toBe(404);
+
+    const { cookie } = await member(s.ws.id, "revision-hidden@t.co", "member");
+    const hidden = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${rev.id}`, cookies: cookie });
+    expect(hidden.statusCode).toBe(404);
+  });
+
   it("hides documents the user cannot see (404 on read, absent from list)", async () => {
     const s = await baseScenario();
     const { cookie } = await member(s.ws.id, "nobody@t.co", "member");

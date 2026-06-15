@@ -58,16 +58,16 @@ describe("storage atomicity + orphan sweep", () => {
     expect(existsSync(objectPath(staleContent, s.ws.id))).toBe(false);
   });
 
-  it("retrying the same content is idempotent — both revisions share one object", async () => {
+  it("retrying the same content is idempotent — no extra revision, one object", async () => {
     const s = await baseScenario();
     const content = "# Same Content\n";
     const r1 = await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: s.version, content } });
     expect(r1.statusCode).toBe(200);
     const r2 = await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: r1.json().version, content } });
     expect(r2.statusCode).toBe(200);
-    const revs = await prisma.documentRevision.findMany({ where: { id: { in: [r1.json().version, r2.json().version] } }, select: { storageKey: true } });
-    expect(revs).toHaveLength(2);
-    expect(revs[0]!.storageKey).toBe(revs[1]!.storageKey);
+    expect(r2.json().version).toBe(r1.json().version);
+    const revs = await prisma.documentRevision.findMany({ where: { id: r1.json().version }, select: { storageKey: true } });
+    expect(revs).toHaveLength(1);
     expect(existsSync(objectPath(content, s.ws.id))).toBe(true);
   });
 

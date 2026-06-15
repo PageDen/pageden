@@ -3,7 +3,7 @@ import type { z } from "zod";
 import {
   meResponseSchema, documentListSchema, treeSchema, documentWithContentSchema,
   documentCreateSchema, writeResultSchema, documentRenameSchema, documentMoveSchema,
-  revisionsSchema, folderCreateSchema, folderRenameSchema, folderMoveSchema,
+  revisionsSchema, revisionDetailSchema, folderCreateSchema, folderRenameSchema, folderMoveSchema,
   permissionsListSchema, permissionsWriteSchema, okSchema, okDeletedSchema, tokenCreateSchema, tokenListSchema,
   workspacesSchema, currentWorkspaceSchema, usersListSchema, userCreateSchema, groupCreateSchema, groupsListSchema, auditSchema,
   validationErrorSchema, notFoundSchema, conflictSchema, forbiddenSchema, unauthorizedSchema,
@@ -49,6 +49,7 @@ describe("contract conformance — status + shape + hygiene on every response", 
     check(documentMoveSchema, 200, await req({ method: "POST", url: `/api/documents/${s.docId}/move`, cookies: c, payload: { folderId: ops.json().id } }));
     check(revisionsSchema, 200, await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: c }));
     const revs = (await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: c })).json() as { revisions: Array<{ id: string }> };
+    check(revisionDetailSchema, 200, await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${revs.revisions[0]!.id}`, cookies: c }));
     check(writeResultSchema, 200, await req({ method: "POST", url: `/api/documents/${s.docId}/revisions/${revs.revisions.at(-1)!.id}/restore`, cookies: c }));
     check(folderRenameSchema, 200, await req({ method: "POST", url: `/api/folders/${s.folderId}/rename`, cookies: c, payload: { slug: "engineering-2" } }));
     check(folderMoveSchema, 200, await req({ method: "POST", url: `/api/folders/${ops.json().id}/move`, cookies: c, payload: { parentFolderId: s.folderId } }));

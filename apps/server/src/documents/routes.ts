@@ -61,7 +61,7 @@ export async function applyDocumentWrite(opts: {
   // write does not perform storage work. Avoids a storage/CPU abuse vector.
   const pre = await prisma.document.findFirst({
     where: { id: opts.documentId, deletedAt: null },
-    select: { currentVersionId: true, workspaceId: true },
+    select: { currentVersionId: true, currentChecksum: true, title: true, workspaceId: true },
   });
   if (!pre) return { ok: false, status: "not_found" };
   const preRole = await resolveDocumentRole(opts.userId, opts.documentId);
@@ -71,10 +71,12 @@ export async function applyDocumentWrite(opts: {
     return { ok: false, status: "conflict", currentVersion: pre.currentVersionId ?? "" };
   }
 
-  // Content is written before the transaction so the row lock is held only for the DB work.
-  // Orphan objects are harmless: storage is content-addressed and idempotent (review H4).
   const sum = computeChecksum(opts.content);
-  const { storageKey } = await writeContent(opts.content, pre.workspaceId);
+  const preContentUnchanged = pre.currentChecksum !== null && pre.currentChecksum === sum;
+  // Content is written before the transaction only when the preflight proves it may be needed, so
+  // the row lock is held only for DB work. Orphan objects are harmless: storage is
+  // content-addressed and idempotent (review H4).
+  const storageKey = preContentUnchanged ? null : (await writeContent(opts.content, pre.workspaceId)).storageKey;
 
   return prisma.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -90,6 +92,43 @@ export async function applyDocumentWrite(opts: {
       return { ok: false, status: "conflict", currentVersion: doc.currentVersionId ?? "" };
     }
 
+    const titleChanged = opts.title !== undefined && opts.title !== doc.title;
+    if (doc.currentChecksum !== null && doc.currentChecksum === sum) {
+      if (!titleChanged) {
+        return {
+          ok: true,
+          documentId: doc.id,
+          version: doc.currentVersionId ?? "",
+          checksum: doc.currentChecksum,
+          updatedAt: doc.updatedAt,
+        };
+      }
+
+      const updated = await tx.document.update({
+        where: { id: doc.id },
+        data: { title: opts.title, updatedById: opts.userId },
+      });
+      await writeAuditEvent(
+        {
+          workspaceId: doc.workspaceId,
+          userId: opts.userId,
+          action: opts.changeSource === "obsidian_plugin" ? "document_pushed" : "document_updated",
+          targetType: "document",
+          targetId: doc.id,
+          metadata: { version: doc.currentVersionId, titleOnly: true },
+        },
+        tx,
+      );
+      return {
+        ok: true,
+        documentId: doc.id,
+        version: doc.currentVersionId ?? "",
+        checksum: doc.currentChecksum,
+        updatedAt: updated.updatedAt,
+      };
+    }
+
+    const revisionStorageKey = storageKey ?? (await writeContent(opts.content, doc.workspaceId)).storageKey;
     const max = await tx.documentRevision.aggregate({
       where: { documentId: doc.id },
       _max: { versionNumber: true },
@@ -98,7 +137,7 @@ export async function applyDocumentWrite(opts: {
       data: {
         documentId: doc.id,
         versionNumber: (max._max.versionNumber ?? 0) + 1,
-        storageKey,
+        storageKey: revisionStorageKey,
         checksum: sum,
         createdById: opts.userId,
         changeSource: opts.changeSource,
@@ -706,6 +745,51 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       })),
     };
   });
+
+  // Single revision preview (viewer). The list endpoint stays metadata-only; this endpoint returns
+  // the selected snapshot body. Revision titles are not snapshotted today, so return the current
+  // document title alongside the revision instead of pretending it is historical.
+  app.get<{ Params: { id: string; revisionId: string } }>(
+    "/api/documents/:id/revisions/:revisionId",
+    { config: { rateLimit: { max: Number(process.env.REVISION_DETAIL_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, title: true },
+      });
+      if (!doc) return notFound(reply, "Document not found.");
+      if (!(await resolveDocumentRole(auth.userId, doc.id))) return notFound(reply, "Document not found.");
+
+      const revision = await prisma.documentRevision.findFirst({
+        where: { id: request.params.revisionId, documentId: doc.id },
+        include: { createdBy: { select: { id: true, name: true, email: true } } },
+      });
+      if (!revision) return notFound(reply, "Revision not found.");
+
+      const content = await readContent(revision.storageKey);
+      return {
+        revision: {
+          id: revision.id,
+          documentId: doc.id,
+          versionNumber: revision.versionNumber,
+          content,
+          checksum: revision.checksum,
+          changeSource: revision.changeSource,
+          message: revision.message,
+          createdAt: revision.createdAt.toISOString(),
+          createdBy: {
+            id: revision.createdBy.id,
+            name: revision.createdBy.name,
+            email: revision.createdBy.email,
+            avatarUrl: null,
+          },
+        },
+        document: { id: doc.id, currentTitle: doc.title },
+      };
+    },
+  );
 
   // Restore an older revision as a new current revision (manager).
   app.post<{ Params: { id: string; revisionId: string } }>(
