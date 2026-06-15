@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { createHash } from "node:crypto";
 import type { PermissionResourceType, PermissionRole, PermissionSubjectType, Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
-import { requireAuth, requireTokenScope } from "../auth.js";
+import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, authorizeDocumentRole, authorizeFolderRole, resolveDocumentRole, resolveFolderRole } from "./index.js";
@@ -107,14 +107,14 @@ async function replacePermissions(
   resourceId: string,
   rows: Array<{ subjectType: PermissionSubjectType; subjectId: string; role: PermissionRole }>,
   baseVersion: string | null,
-  userId: string,
+  auth: AuthContext,
 ): Promise<ReplacePermissionsOutcome> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ReplacePermissionsOutcome> => {
     // Re-verify manage permission under the transaction so a concurrent revoke is honored.
     const az =
       resourceType === "document"
-        ? await authorizeDocumentRole(userId, resourceId, "manager", tx)
-        : await authorizeFolderRole(userId, resourceId, "manager", tx);
+        ? await authorizeDocumentRole(auth, resourceId, "manager", tx)
+        : await authorizeFolderRole(auth, resourceId, "manager", tx);
     if (!az.ok) return az;
     const current = await currentPermissionRows(tx, workspaceId, resourceType, resourceId);
     const currentVersion = permissionVersion(current);
@@ -141,7 +141,7 @@ async function replacePermissions(
       });
     }
     await writeAuditEvent(
-      { workspaceId, userId, action: "permissions_replaced", targetType: resourceType, targetId: resourceId, metadata: { count: rows.length } },
+      { workspaceId, userId: auth.userId, action: "permissions_replaced", targetType: resourceType, targetId: resourceId, metadata: { count: rows.length } },
       tx,
     );
     return { ok: true, version: permissionVersion(rows) };
@@ -172,7 +172,7 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
     if (!parsed.ok) return validationError(reply, { permissions: parsed.message });
     const subjectError = await invalidSubject(doc.workspaceId, parsed.value);
     if (subjectError) return validationError(reply, { permissions: subjectError });
-    const outcome = await replacePermissions(doc.workspaceId, "document", doc.id, parsed.value, parsed.version, auth.userId);
+    const outcome = await replacePermissions(doc.workspaceId, "document", doc.id, parsed.value, parsed.version, auth);
     if (!outcome.ok) {
       if (outcome.status === "not_found") return notFound(reply, "Document not found.");
       if (outcome.status === "conflict") {
@@ -206,7 +206,7 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
     if (!parsed.ok) return validationError(reply, { permissions: parsed.message });
     const subjectError = await invalidSubject(folder.workspaceId, parsed.value);
     if (subjectError) return validationError(reply, { permissions: subjectError });
-    const outcome = await replacePermissions(folder.workspaceId, "folder", folder.id, parsed.value, parsed.version, auth.userId);
+    const outcome = await replacePermissions(folder.workspaceId, "folder", folder.id, parsed.value, parsed.version, auth);
     if (!outcome.ok) {
       if (outcome.status === "not_found") return notFound(reply, "Folder not found.");
       if (outcome.status === "conflict") {

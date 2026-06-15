@@ -7,7 +7,7 @@ import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
 import { isUniqueViolation } from "../errors.js";
-import { atLeast, authorizeFolderRole, canManageWorkspace, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
+import { atLeast, authorizeFolderRole, canManageWorkspace, enforceAgentEditScope, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
@@ -1200,11 +1200,25 @@ async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>
     }))
     .sort((a, b) => b.documentCount - a.documentCount || a.path.localeCompare(b.path))
     .slice(0, limit);
+  // Phase C2: surface the workspace's agent edit scope so the calling agent
+  // can pre-flight write tools instead of probing per-folder. Both the folder
+  // id and its path are returned for human-readable affordance in logs.
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: {
+      agentEditScopeFolderId: true,
+      agentEditScopeFolder: { select: { path: true } },
+    },
+  });
+  const agentEditScope = workspace?.agentEditScopeFolderId
+    ? { folderId: workspace.agentEditScopeFolderId, folderPath: workspace.agentEditScopeFolder?.path ?? null }
+    : null;
   return {
     workspaceId,
     totals: { folders: listed.folders.length, documents: listed.documents.length },
     topFolders,
     recentDocuments: recent.documents,
+    agentEditScope,
   };
 }
 
@@ -1303,7 +1317,7 @@ async function createFolder(auth: AuthContext, args: Record<string, unknown>, re
           select: { path: true },
         });
         if (!parent) throw new Error("Parent folder not found.");
-        const az = await authorizeFolderRole(auth.userId, parentFolderId, "editor", tx);
+        const az = await authorizeFolderRole(auth, parentFolderId, "editor", tx);
         if (!az.ok) throw new Error(az.status === "not_found" ? "Parent folder not found." : "Forbidden.");
         parentPath = parent.path;
       } else if (!(await canManageWorkspace(auth.userId, workspaceId, tx))) {
@@ -1506,7 +1520,7 @@ async function upsertDocumentAtPath({
     const guardVersion = baseVersion ?? existing.currentVersionId ?? "";
     const outcome = await applyDocumentWrite({
       documentId: existing.id,
-      userId: auth.userId,
+      auth,
       baseVersion: guardVersion,
       content,
       title: parsed.documentTitle,
@@ -1563,10 +1577,12 @@ async function upsertDocumentAtPath({
   try {
     return await prisma.$transaction(async (tx) => {
       await lockFolderTree(tx, workspaceId);
-      const { folder, createdFolders } = await ensureFolderPath(tx, auth.userId, workspaceId, parsed.folderSegments, createFolders);
+      const { folder, createdFolders } = await ensureFolderPath(tx, auth, workspaceId, parsed.folderSegments, createFolders);
       const role = await resolveFolderRole(auth.userId, folder.id, tx);
       if (role === null) throw new Error("Folder not found.");
       if (!atLeast(role, "editor")) throw new Error("Forbidden.");
+      const scope = await enforceAgentEditScope(auth, workspaceId, folder.id, tx);
+      if (!scope.ok) throw new Error("Forbidden.");
       const duplicate = await tx.document.findFirst({
         where: { workspaceId, folderId: folder.id, slug: parsed.documentSlug, deletedAt: null },
         select: { id: true },
@@ -1623,11 +1639,12 @@ async function upsertDocumentAtPath({
 
 async function ensureFolderPath(
   tx: Tx,
-  userId: string,
+  auth: AuthContext,
   workspaceId: string,
   segments: ParsedMarkdownPath["folderSegments"],
   createFolders: boolean,
 ) {
+  const userId = auth.userId;
   if (segments.length === 0) throw new Error("Documents must be inside a folder path.");
   let parent: { id: string; path: string } | null = null;
   const createdFolders: Array<{ id: string; path: string }> = [];
@@ -1645,7 +1662,7 @@ async function ensureFolderPath(
     }
     if (!createFolders) throw new Error("Folder not found. Pass createFolders=true to create missing folders.");
     if (parent) {
-      const az = await authorizeFolderRole(userId, parent.id, "editor", tx);
+      const az = await authorizeFolderRole(auth, parent.id, "editor", tx);
       if (!az.ok) throw new Error(az.status === "not_found" ? "Parent folder not found." : "Forbidden.");
     } else if (!(await canManageWorkspace(userId, workspaceId, tx))) {
       throw new Error("Only workspace admins can create root folders.");
@@ -1798,7 +1815,7 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
   const content = stringParam(args, "content");
   const title = maybeString(args.title)?.trim();
   await assertTokenOwnsDocument(auth, documentId);
-  const outcome = await applyDocumentWrite({ documentId, userId: auth.userId, baseVersion, content, title, changeSource: "agent" });
+  const outcome = await applyDocumentWrite({ documentId, auth, baseVersion, content, title, changeSource: "agent" });
   if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
   await writeAuditEvent({
     workspaceId: await workspaceIdForDocument(documentId),
@@ -1821,7 +1838,7 @@ async function appendToDocument(auth: AuthContext, args: Record<string, unknown>
   await assertTokenOwnsDocument(auth, current.id);
   const outcome = await applyDocumentWrite({
     documentId: current.id,
-    userId: auth.userId,
+    auth,
     baseVersion: current.version ?? "",
     content: `${base}${addition}`,
     changeSource: "agent",
