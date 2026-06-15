@@ -751,6 +751,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   // document title alongside the revision instead of pretending it is historical.
   app.get<{ Params: { id: string; revisionId: string } }>(
     "/api/documents/:id/revisions/:revisionId",
+    { config: { rateLimit: { max: Number(process.env.REVISION_DETAIL_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
     async (request, reply) => {
       const auth = await requireAuth(request);
       requireTokenScope(auth, "read");
