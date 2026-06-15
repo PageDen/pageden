@@ -22,6 +22,7 @@ import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
 import { registerCommentRoutes } from "./documents/comments.js";
 import { registerClaimRoutes } from "./documents/claims.js";
+import { registerPublicShareRoutes, registerShareRoutes } from "./documents/shares.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -133,6 +134,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerWorkspaceInsightsRoutes(app);
   await registerCommentRoutes(app);
   await registerClaimRoutes(app);
+  await registerShareRoutes(app);
+  await registerPublicShareRoutes(app);
 
   app.get<{ Querystring: { subdomain?: string } }>("/api/workspaces/availability", async (request) => {
     const subdomain = normalizeWorkspaceSubdomain(request.query.subdomain ?? "");

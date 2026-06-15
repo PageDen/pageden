@@ -19,6 +19,7 @@ import { workspaceActivityFor } from "../workspaces/insights.js";
 import { createComment, listComments, resolveCommentRecord } from "../documents/comments.js";
 import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
 import { claimDocument, listActiveClaims, releaseClaim } from "../documents/claims.js";
+import { createShare, listShares, revokeShare } from "../documents/shares.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 
@@ -373,6 +374,42 @@ const tools = [
       properties: { workspaceId: { type: "string" } },
     },
   },
+  {
+    name: "pageden_share_document",
+    description: "Create a public share link for a document. Returns { slug, publicUrl, expiresAt }. Manager-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves by path within the workspace." },
+        ttlDays: { type: "number", minimum: 1, maximum: 365, description: "Days until the share expires; omit for no expiry." },
+        password: { type: "string", description: "Optional share password; readers must pass ?password=… on the /s/:slug URL." },
+        allowIndexing: { type: "boolean", description: "When true the share is crawler-friendly (x-robots-tag: all). Default false." },
+      },
+    },
+  },
+  {
+    name: "pageden_revoke_share",
+    description: "Revoke a share by id. Idempotent; returns the share row with revokedAt set. Author or manager.",
+    inputSchema: {
+      type: "object",
+      properties: { shareId: { type: "string" } },
+      required: ["shareId"],
+    },
+  },
+  {
+    name: "pageden_list_shares",
+    description: "List active public shares in a workspace. Pass includeRevoked=true to see history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        includeRevoked: { type: "boolean" },
+      },
+    },
+  },
 ];
 
 export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
@@ -676,6 +713,9 @@ async function callTool(
   else if (name === "pageden_claim_document") data = await claimByMcp(auth, args, request);
   else if (name === "pageden_release_document") data = await releaseByMcp(auth, args, request);
   else if (name === "pageden_list_claims") data = await listClaimsByMcp(auth, args, request);
+  else if (name === "pageden_share_document") data = await shareByMcp(auth, args, request);
+  else if (name === "pageden_revoke_share") data = await revokeShareByMcp(auth, args);
+  else if (name === "pageden_list_shares") data = await listSharesByMcp(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
 
   await writeAuditEvent({
@@ -1084,6 +1124,38 @@ async function listClaimsByMcp(auth: AuthContext, args: Record<string, unknown>,
   const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
   const claims = await listActiveClaims(workspaceId);
   return { workspaceId, claims };
+}
+
+async function shareByMcp(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const documentId = await resolveDocumentIdForArg(auth, args);
+  const ttlDays = typeof args.ttlDays === "number" ? args.ttlDays : undefined;
+  const password = maybeString(args.password) ?? null;
+  const allowIndexing = args.allowIndexing === true;
+  const result = await createShare(auth, documentId, { ttlDays, password, allowIndexing });
+  if (result.status === "not_found") throw new Error("Document not found.");
+  if (result.status === "forbidden") throw new Error("Only managers can create shares.");
+  if (result.status === "validation") throw new Error(result.message);
+  return result.share;
+}
+
+async function revokeShareByMcp(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "update");
+  const shareId = stringParam(args, "shareId");
+  const result = await revokeShare(auth, shareId);
+  if (result.status === "not_found") throw new Error("Share not found.");
+  if (result.status === "forbidden") throw new Error("You may not revoke this share.");
+  return result.share;
+}
+
+async function listSharesByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const documentId = maybeString(args.documentId);
+  const includeRevoked = args.includeRevoked === true || args.includeRevoked === "true";
+  const result = await listShares(auth, workspaceId, { documentId, includeRevoked });
+  if (result.status === "not_found") throw new Error("Workspace not found.");
+  return { workspaceId, shares: result.shares };
 }
 
 async function getTaskPacket(auth: AuthContext, args: Record<string, unknown>) {
