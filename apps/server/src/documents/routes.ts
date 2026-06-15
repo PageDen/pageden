@@ -485,14 +485,19 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   );
 
   // Handoff packet: pre-digested view of a document for an agent or human reviewer
-  // about to start implementation. Returns the same shape as the MCP tool.
-  app.get<{ Params: { id: string } }>("/api/documents/:id/handoff", async (request, reply) => {
-    const auth = await requireAuth(request);
-    requireTokenScope(auth, "read");
-    const packet = await buildHandoffPacket(auth.userId, request.params.id);
-    if (packet.status === "not_found") return notFound(reply, "Document not found.");
-    return packet.value;
-  });
+  // about to start implementation. Returns the same shape as the MCP tool. Rate-
+  // limited because building the packet reads storage + parses the full body.
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/handoff",
+    { config: { rateLimit: { max: Number(process.env.HANDOFF_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const packet = await buildHandoffPacket(auth.userId, request.params.id);
+      if (packet.status === "not_found") return notFound(reply, "Document not found.");
+      return packet.value;
+    },
+  );
 
   // Create a document (requires editor on the target folder).
   app.post<{
