@@ -1,10 +1,10 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { AlertTriangle, CheckCircle2, Download, FileUp, FolderOpen, Loader2, UploadCloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileArchive, FileUp, FolderOpen, Loader2, UploadCloud } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { crudErrorMessage } from "../../lib/api";
+import { api, ApiError, crudErrorMessage, type ImportJob } from "../../lib/api";
 import { treeQuery } from "../../lib/queries";
 import { buildImportReportMarkdown, buildWebImportPreview, filesFromFileList, importFilesToWorkspace, type BrowserImportFile, type ImportConflictPolicy, type ImportProgress, type WebImportPreview, type WebImportReport } from "./vault-import";
 
@@ -22,7 +22,10 @@ export function ImportPage() {
   const [conflictPolicy, setConflictPolicy] = useState<ImportConflictPolicy>("skip");
   const [isReadingFolder, setIsReadingFolder] = useState(false);
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
+  const [zipUploadProgress, setZipUploadProgress] = useState<number | null>(null);
+  const [serverImportJob, setServerImportJob] = useState<ImportJob | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
 
   const fileSummary = useMemo(() => {
     const totalBytes = files.reduce((sum, item) => sum + item.file.size, 0);
@@ -47,7 +50,38 @@ export function ImportPage() {
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
     },
   });
-  const canImport = Boolean(workspaceId && tree.data && files.length && preview && !importMutation.isPending && !isReadingFolder);
+  const zipImportMutation = useMutation({
+    mutationFn: async (file: File) => {
+      setReport(null);
+      setProgress(null);
+      setPreviewError(null);
+      setServerImportJob(null);
+      setZipUploadProgress(0);
+      const started = await api.uploadVaultZip(
+        file,
+        {
+          workspaceId,
+          targetRootName: targetRootName || "Imported from Web",
+          conflictPolicy,
+        },
+        setZipUploadProgress,
+      );
+      const done = await waitForImportJob(started.jobId, setServerImportJob);
+      if (done.status === "failed") throw new Error(done.error ?? "Zip import failed.");
+      return done;
+    },
+    onSuccess: (job) => {
+      setZipUploadProgress(null);
+      setServerImportJob(job);
+      if (job.report) setReport(webReportFromServerJob(job, targetRootName || "Imported from Web"));
+      void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+    },
+    onError: () => {
+      setZipUploadProgress(null);
+    },
+  });
+  const isBusy = importMutation.isPending || zipImportMutation.isPending;
+  const canImport = Boolean(workspaceId && tree.data && files.length && preview && !isBusy && !isReadingFolder);
 
   async function updatePreview(nextFiles = files, nextRoot = targetRootName) {
     if (!tree.data || nextFiles.length === 0) {
@@ -73,6 +107,12 @@ export function ImportPage() {
   async function onFilesSelected(selected: FileList | null) {
     const nextFiles = selected ? filesFromFileList(selected) : [];
     await prepareFiles(nextFiles, "Selected folder");
+  }
+
+  function onZipSelected(selected: FileList | null) {
+    const file = selected?.[0];
+    if (!file) return;
+    zipImportMutation.mutate(file);
   }
 
   async function onFolderPickerClick() {
@@ -113,7 +153,7 @@ export function ImportPage() {
             <p className="text-xs font-semibold uppercase tracking-wide text-orange-700 dark:text-orange-300">Import</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">Import an Obsidian vault</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Choose a local folder of Markdown files. Pageden previews the import, preserves frontmatter, creates matching folders, and skips existing documents.
+              Choose a local folder of Markdown files or upload a zipped vault. Pageden previews folder imports, preserves frontmatter, creates matching folders, and skips existing documents.
             </p>
           </div>
         </div>
@@ -135,7 +175,7 @@ export function ImportPage() {
             <button
               type="button"
               className="mt-4 flex w-full cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center transition hover:border-orange-300 hover:bg-orange-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 dark:border-slate-700 dark:bg-slate-950/40 dark:hover:border-orange-400/60 dark:hover:bg-orange-500/10 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={importMutation.isPending || isReadingFolder}
+              disabled={isBusy || isReadingFolder}
               onClick={() => void onFolderPickerClick()}
             >
               <FileUp className="h-8 w-8 text-orange-600 dark:text-orange-300" aria-hidden="true" />
@@ -149,12 +189,42 @@ export function ImportPage() {
               type="file"
               multiple
               className="sr-only"
-              disabled={importMutation.isPending}
+              disabled={isBusy}
               onChange={(event) => {
                 void onFilesSelected(event.currentTarget.files);
                 event.currentTarget.value = "";
               }}
               {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            />
+            <div className="my-4 flex items-center gap-3">
+              <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+              <span className="text-xs font-medium text-slate-400 dark:text-slate-500">or</span>
+              <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+            </div>
+            <button
+              type="button"
+              className="flex w-full cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-6 text-center transition hover:border-orange-300 hover:bg-orange-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 dark:border-slate-700 dark:bg-slate-950/40 dark:hover:border-orange-400/60 dark:hover:bg-orange-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isBusy || isReadingFolder}
+              onClick={() => zipInputRef.current?.click()}
+            >
+              <FileArchive className="h-8 w-8 text-orange-600 dark:text-orange-300" aria-hidden="true" />
+              <span className="mt-3 text-sm font-medium text-slate-900 dark:text-slate-100">
+                {zipImportMutation.isPending ? "Uploading zip..." : "Upload zip file"}
+              </span>
+              <span className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                Best on mobile or when folder upload is not available.
+              </span>
+            </button>
+            <input
+              ref={zipInputRef}
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              className="sr-only"
+              disabled={isBusy}
+              onChange={(event) => {
+                onZipSelected(event.currentTarget.files);
+                event.currentTarget.value = "";
+              }}
             />
 
             {fileSummary.count ? (
@@ -169,6 +239,10 @@ export function ImportPage() {
                 Reading selected folder...
               </p>
             ) : null}
+            {zipImportMutation.isPending || serverImportJob ? (
+              <ServerImportStatus uploadProgress={zipUploadProgress} job={serverImportJob} />
+            ) : null}
+            {zipImportMutation.isError ? <p className="mt-3 text-sm text-red-600 dark:text-red-300">{importErrorMessage(zipImportMutation.error)}</p> : null}
           </section>
 
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -327,6 +401,89 @@ export function ImportPage() {
       </div>
     </div>
   );
+}
+
+function ServerImportStatus({ uploadProgress, job }: { uploadProgress: number | null; job: ImportJob | null }) {
+  const phase = job?.progress?.phase ?? (uploadProgress !== null ? "upload" : "queued");
+  const label = job?.progress?.label ?? (uploadProgress !== null ? "Uploading zip" : "Queued");
+  const current = typeof job?.progress?.current === "number" ? job.progress.current : uploadProgress ?? 0;
+  const total = typeof job?.progress?.total === "number" && job.progress.total > 0 ? job.progress.total : uploadProgress !== null ? 100 : 0;
+  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : job?.status === "done" ? 100 : 0;
+  const statusLabel = job?.status === "done" ? "Import complete" : job?.status === "failed" ? "Import failed" : label;
+
+  return (
+    <div className="mt-3 rounded-lg border border-orange-100 bg-orange-50 p-3 dark:border-orange-500/30 dark:bg-orange-500/10">
+      <div className="flex items-center justify-between gap-3 text-xs font-medium text-orange-800 dark:text-orange-200">
+        <span className="truncate">
+          {job?.status === "queued" || job?.status === "running" || uploadProgress !== null ? (
+            <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+          ) : null}
+          {statusLabel}
+        </span>
+        <span>{phase === "upload" || total > 0 ? `${pct}%` : job?.status ?? "queued"}</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-orange-100 dark:bg-orange-950/60">
+        <div className="h-full rounded-full bg-orange-600 transition-all dark:bg-orange-400" style={{ width: `${pct}%` }} />
+      </div>
+      {job?.status === "done" && job.report ? (
+        <p className="mt-2 text-xs leading-5 text-orange-800 dark:text-orange-100">
+          Created {job.report.foldersCreated ?? 0} folder{job.report.foldersCreated === 1 ? "" : "s"} and {job.report.documentsCreated ?? 0} document{job.report.documentsCreated === 1 ? "" : "s"}.
+          {job.report.documentsSkipped ? ` Skipped ${job.report.documentsSkipped} existing document${job.report.documentsSkipped === 1 ? "" : "s"}.` : ""}
+        </p>
+      ) : null}
+      {job?.status === "failed" ? <p className="mt-2 text-xs text-red-700 dark:text-red-200">{job.error ?? "Zip import failed."}</p> : null}
+    </div>
+  );
+}
+
+async function waitForImportJob(jobId: string, onUpdate: (job: ImportJob) => void): Promise<ImportJob> {
+  for (;;) {
+    const job = await api.importJob(jobId);
+    onUpdate(job);
+    if (job.status === "done" || job.status === "failed") return job;
+    await delay(1_500);
+  }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function webReportFromServerJob(job: ImportJob, targetRootName: string): WebImportReport {
+  const serverReport = job.report;
+  const rows = serverReport?.rows ?? [];
+  const attachmentWarnings = serverReport?.attachmentWarnings ?? [];
+  return {
+    targetRootName,
+    targetRootSlug: slugifyImportTarget(targetRootName),
+    notes: (serverReport?.documentsCreated ?? 0) + (serverReport?.documentsSkipped ?? 0),
+    attachments: serverReport?.attachmentsUploaded ?? 0,
+    skipped: 0,
+    frontmatter: 0,
+    conflicts: [],
+    attachmentWarnings,
+    samplePaths: rows.slice(0, 5).map((row) => row.path),
+    foldersCreated: serverReport?.foldersCreated ?? 0,
+    documentsCreated: serverReport?.documentsCreated ?? 0,
+    documentsSkipped: serverReport?.documentsSkipped ?? 0,
+    attachmentsUploaded: serverReport?.attachmentsUploaded ?? 0,
+    rows,
+  };
+}
+
+function slugifyImportTarget(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "imported";
+}
+
+function importErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) return crudErrorMessage(error);
+  if (error instanceof Error) return error.message;
+  return crudErrorMessage(error);
 }
 
 function ImportProgressBar({ progress }: { progress: ImportProgress }) {

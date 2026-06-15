@@ -92,6 +92,7 @@ model User {
   documentClaims          DocumentClaim[]          @relation("DocumentClaimUser")
   permissions             Permission[]             @relation("PermissionUser")
   documentShares          DocumentShare[]          @relation("DocumentShareCreator")
+  importJobs              ImportJob[]
 }
 
 model Workspace {
@@ -122,6 +123,7 @@ model Workspace {
   readCursors            TokenReadCursor[]
   claims                 DocumentClaim[]
   shares                 DocumentShare[]
+  importJobs             ImportJob[]
 }
 
 model WorkspaceMembership {
@@ -520,4 +522,29 @@ model DocumentShare {
 
   @@index([workspaceId, revokedAt, expiresAt])
   @@index([documentId, revokedAt])
+}
+
+// Server-side vault import jobs. The uploaded zip lives under the import/ storage prefix
+// (excluded from the orphan sweep); jobs and zips are cleaned up 24h after finishing.
+model ImportJob {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  userId          String
+  status          String // queued | running | done | failed
+  params          Json // { targetFolderId? | targetRootName?, conflictPolicy }
+  progress        Json? // compact counters, batched updates
+  report          Json? // final report + per-entry checkpoint (flushed every N files)
+  error           String?
+  storageKey      String // uploaded zip, under the import/ prefix
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime? // set on the queued->running claim
+  updatedAt       DateTime  @updatedAt
+  lastHeartbeatAt DateTime? // bumped at every checkpoint flush; watchdog input
+  finishedAt      DateTime?
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([status])
+  @@index([finishedAt])
 }

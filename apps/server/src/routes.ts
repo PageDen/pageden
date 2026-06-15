@@ -17,6 +17,7 @@ import { registerAdminRoutes } from "./admin/routes.js";
 import { registerDeviceRoutes } from "./device/routes.js";
 import { registerAttachmentRoutes } from "./attachments/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
+import { registerImportRoutes } from "./import/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
@@ -130,6 +131,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerDocumentRoutes(app);
   await registerAttachmentRoutes(app);
   await registerMcpRoutes(app);
+  await registerImportRoutes(app);
   await registerPermissionRoutes(app);
   await registerWorkspaceInsightsRoutes(app);
   await registerCommentRoutes(app);
