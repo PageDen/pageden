@@ -73,6 +73,7 @@ describe("implementationReadinessFor", () => {
     const ctx = documentContext("# Doc");
     const result = implementationReadinessFor({ status: "superseded", context: ctx });
     expect(result.status).toBe("superseded");
+    expect(result.score).toBe(0);
     expect(result.reasons[0]?.code).toBe("superseded");
   });
 
@@ -80,6 +81,8 @@ describe("implementationReadinessFor", () => {
     const ctx = documentContext("# Doc\n\nSome text.");
     const result = implementationReadinessFor({ status: "canonical", context: ctx });
     expect(result.reasons.some((r) => r.code === "missing_acceptance_criteria")).toBe(true);
+    expect(result.reasons.some((r) => r.code === "missing_next_pr_scope")).toBe(true);
+    expect(result.score).toBeLessThan(100);
     expect(result.status).not.toBe("has_blocking_questions");
   });
 
@@ -95,6 +98,40 @@ describe("implementationReadinessFor", () => {
     const result = implementationReadinessFor({ status: "canonical", context: ctx });
     expect(result.status).toBe("needs_contract_update");
   });
+
+  it("does not require contract work when the document confirms the contract is updated", () => {
+    const doc = PLAN.replace("- Should drafts also rank above superseded? Blocking.", "- All resolved.").replace(
+      "- Update the api-contract documentation",
+      "- Update the api-contract documentation\n- API contract updated",
+    );
+    const ctx = documentContext(doc);
+    const result = implementationReadinessFor({ status: "canonical", context: ctx });
+    expect(result.reasons.some((r) => r.code === "contract_update_needed")).toBe(false);
+  });
+
+  it("uses unresolved reviewer comments as implementation readiness signals", () => {
+    const ctx = documentContext(`# Plan
+
+## Acceptance Criteria
+
+- Done
+
+## Tests
+
+- pnpm test
+
+## Next PR Scope
+
+- Update the route only.
+`);
+    const result = implementationReadinessFor({
+      status: "canonical",
+      context: ctx,
+      comments: [{ body: "Needs API contract update", sectionAnchor: "acceptance-criteria" }],
+    });
+    expect(result.status).toBe("needs_contract_update");
+    expect(result.reasons.some((r) => r.code === "unresolved_contract_comment")).toBe(true);
+  });
 });
 
 describe("taskPacketFor", () => {
@@ -109,6 +146,7 @@ describe("taskPacketFor", () => {
     expect(packet.openQuestions[0]).toMatch(/Should drafts/);
     expect(packet.relatedFiles).toContain("apps/server/src/documents/routes.ts");
     expect(packet.implementationReadiness.status).toBe("has_blocking_questions");
+    expect(packet.implementationReadiness.score).toEqual(expect.any(Number));
   });
 });
 

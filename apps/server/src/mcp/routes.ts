@@ -79,6 +79,18 @@ const tools = [
           maximum: 200000,
           description: "Maximum characters of content to return. Default 50000.",
         },
+        headingsOnly: {
+          type: "boolean",
+          description: "Return navigation metadata and headings without document content.",
+        },
+        latestChangedSection: {
+          type: "boolean",
+          description: "Also return the section that contains the latest changed line compared with the previous revision.",
+        },
+        canonicalOnly: {
+          type: "boolean",
+          description: "Fail if the requested document is draft, archived, or superseded.",
+        },
       },
     },
   },
@@ -624,7 +636,7 @@ async function handleJsonRpc(
       const params = asRecord(msg.params);
       const uri = stringParam(params, "uri");
       const parsed = parsePagedenUri(uri);
-      const doc = await readDocument(auth, { workspaceId: parsed.workspaceId, path: parsed.path });
+      const doc = await readDocument(auth, { workspaceId: parsed.workspaceId, path: parsed.path }, { auditRead: true, readMode: "resource" });
       return rpcResult(id, { contents: [{ uri, mimeType: "text/markdown", text: doc.content }] });
     }
     return rpcError(id, -32601, `Unsupported method: ${msg.method}`);
@@ -734,7 +746,7 @@ async function searchDocuments(auth: AuthContext, args: Record<string, unknown>,
   return { workspaceId, results };
 }
 
-async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
+async function readDocument(auth: AuthContext, args: Record<string, unknown>, opts: { auditRead?: boolean; readMode?: string } = {}) {
   requireTokenScope(auth, "read");
   const documentId = maybeString(args.documentId);
   const path = maybeString(args.path);
@@ -747,6 +759,8 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
   });
   if (!doc) throw new Error("Document not found.");
   if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) throw new Error("This agent token is bound to another workspace.");
+  const canonicalOnly = args.canonicalOnly === true || args.canonicalOnly === "true" || args.canonicalOnly === 1;
+  if (canonicalOnly && doc.status !== "canonical") throw new Error("Document is not canonical.");
   const role = await resolveDocumentRole(auth.userId, doc.id);
   if (!role) throw new Error("Document not found.");
   let content = "";
@@ -769,6 +783,16 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
   // changed since I last looked?" without scanning every revision. Failures
   // here must not break the read — log nothing and move on.
   await touchReadCursor(auth, { id: doc.id, workspaceId: doc.workspaceId, currentVersionId: doc.currentVersionId }).catch(() => undefined);
+  if (opts.auditRead && auth.tokenKind === "agent") {
+    await writeAuditEvent({
+      workspaceId: doc.workspaceId,
+      userId: auth.userId,
+      action: "document_read_by_agent",
+      targetType: "document",
+      targetId: doc.id,
+      metadata: { version: doc.currentVersionId, path: doc.path, readMode: opts.readMode ?? "document", tokenId: auth.tokenId ?? null },
+    }).catch(() => undefined);
+  }
   return {
     workspaceId: doc.workspaceId,
     id: doc.id,
@@ -800,7 +824,24 @@ const READ_CHUNK_MAX = 200_000;
  * limited context. Internal callers (append/update) keep using readDocument directly.
  */
 async function readDocumentChunked(auth: AuthContext, args: Record<string, unknown>) {
-  const doc = await readDocument(auth, args);
+  const doc = await readDocument(auth, args, { auditRead: true, readMode: "document" });
+  const headingsOnly = args.headingsOnly === true || args.headingsOnly === "true" || args.headingsOnly === 1;
+  const latestChangedSection = args.latestChangedSection === true || args.latestChangedSection === "true" || args.latestChangedSection === 1;
+  const latest = latestChangedSection ? await latestChangedSectionFor(doc.id, doc.content) : null;
+  if (headingsOnly) {
+    return {
+      ...doc,
+      content: "",
+      body: undefined,
+      totalChars: doc.content.length,
+      offset: 0,
+      returnedChars: 0,
+      truncated: false,
+      nextOffset: null,
+      headingsOnly: true,
+      latestChangedSection: latest,
+    };
+  }
   const rawOffset = typeof args.offset === "number" && Number.isFinite(args.offset) ? Math.floor(args.offset) : 0;
   const offset = Math.max(0, rawOffset);
   const rawMax = typeof args.maxChars === "number" && Number.isFinite(args.maxChars) ? Math.floor(args.maxChars) : READ_CHUNK_DEFAULT;
@@ -819,7 +860,76 @@ async function readDocumentChunked(auth: AuthContext, args: Record<string, unkno
     returnedChars: chunk.length,
     truncated,
     nextOffset: offset + chunk.length < totalChars ? offset + chunk.length : null,
+    latestChangedSection: latest,
   };
+}
+
+async function latestChangedSectionFor(documentId: string, currentContent: string) {
+  const current = await prisma.document.findUnique({
+    where: { id: documentId },
+    select: { currentVersionId: true },
+  });
+  if (!current?.currentVersionId) return null;
+  const currentRevision = await prisma.documentRevision.findUnique({
+    where: { id: current.currentVersionId },
+    select: { versionNumber: true },
+  });
+  if (!currentRevision) return null;
+  const previous = await prisma.documentRevision.findFirst({
+    where: { documentId, versionNumber: { lt: currentRevision.versionNumber } },
+    orderBy: { versionNumber: "desc" },
+    select: { id: true, versionNumber: true, storageKey: true },
+  });
+  if (!previous) return null;
+  const previousContent = await readContent(previous.storageKey);
+  const changedLine = firstChangedLine(previousContent, currentContent);
+  const section = sectionAtLine(currentContent, changedLine);
+  return {
+    previousRevisionId: previous.id,
+    previousVersionNumber: previous.versionNumber,
+    changedLine: changedLine + 1,
+    section,
+  };
+}
+
+function firstChangedLine(before: string, after: string): number {
+  const beforeLines = before.split("\n");
+  const afterLines = after.split("\n");
+  const count = Math.max(beforeLines.length, afterLines.length);
+  for (let i = 0; i < count; i += 1) {
+    if ((beforeLines[i] ?? "") !== (afterLines[i] ?? "")) return i;
+  }
+  return 0;
+}
+
+function sectionAtLine(content: string, lineIndex: number) {
+  const lines = content.split("\n");
+  const headings: Array<{ heading: string; anchor: string; level: number; startLine: number }> = [];
+  lines.forEach((line, index) => {
+    const match = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (!match) return;
+    const heading = match[2]!.replace(/\s+#+$/, "").trim();
+    if (!heading) return;
+    headings.push({ heading, anchor: anchorForMcp(heading), level: match[1]!.length, startLine: index });
+  });
+  const current = headings.filter((heading) => heading.startLine <= lineIndex).at(-1) ?? headings[0] ?? null;
+  if (!current) return null;
+  const currentIndex = headings.indexOf(current);
+  const endLine = headings[currentIndex + 1]?.startLine ?? lines.length;
+  return {
+    heading: current.heading,
+    anchor: current.anchor,
+    level: current.level,
+    content: lines.slice(current.startLine + 1, endLine).join("\n").trim(),
+  };
+}
+
+function anchorForMcp(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`*_~[\]().,!?;:'"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 async function readSection(auth: AuthContext, args: Record<string, unknown>) {
@@ -831,7 +941,8 @@ async function readSection(auth: AuthContext, args: Record<string, unknown>) {
     workspaceId: args.workspaceId,
     documentId: args.documentId,
     path: args.path,
-  });
+    canonicalOnly: args.canonicalOnly,
+  }, { auditRead: true, readMode: "section" });
   const sections = extractSections(doc.body ?? doc.content);
   const section = findSection(sections, heading);
   if (!section) {

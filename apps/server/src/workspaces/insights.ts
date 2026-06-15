@@ -19,9 +19,19 @@ const DOCUMENT_ACTIONS = new Set([
   "document_moved",
   "document_deleted",
   "document_restored",
+  "document_read_by_agent",
+  "document_marked_canonical",
+  "document_marked_superseded",
+  "document_marked_draft",
+  "document_marked_archived",
   "document_created_by_agent",
   "document_updated_by_agent",
   "document_appended_by_agent",
+  "comment_added",
+  "comment_added_by_agent",
+  "comment_resolved",
+  "comment_resolved_by_agent",
+  "comment_deleted",
   "mcp_tool_called",
 ]);
 
@@ -82,7 +92,8 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
       const documentIds = new Set<string>();
       for (const event of events) {
-        if (event.targetType === "document" && event.targetId) documentIds.add(event.targetId);
+        const docId = documentIdForEvent(event);
+        if (docId) documentIds.add(docId);
       }
       const documents = documentIds.size
         ? await prisma.document.findMany({
@@ -97,7 +108,8 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
         workspaceId,
         events: events
           .map((event) => {
-            const doc = event.targetType === "document" && event.targetId ? docById.get(event.targetId) ?? null : null;
+            const docId = documentIdForEvent(event);
+            const doc = docId ? docById.get(docId) ?? null : null;
             if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
             return {
               id: event.id,
@@ -106,7 +118,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
               actor: actorFor(event.action, event.metadata, event.userId),
               action: event.action,
               targetType: event.targetType,
-              targetId: event.targetId,
+              targetId: doc?.id ?? event.targetId,
               documentTitle: doc?.title ?? null,
               documentPath: doc?.path ?? null,
               createdAt: event.createdAt.toISOString(),
@@ -191,7 +203,8 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
       });
       const recentDocIds = new Set<string>();
       for (const event of recentEvents) {
-        if (event.targetType === "document" && event.targetId) recentDocIds.add(event.targetId);
+        const docId = documentIdForEvent(event);
+        if (docId) recentDocIds.add(docId);
       }
       const recentDocs = recentDocIds.size
         ? await prisma.document.findMany({
@@ -203,7 +216,8 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
       const recentActivity = recentEvents
         .map((event) => {
-          const doc = event.targetType === "document" && event.targetId ? recentById.get(event.targetId) ?? null : null;
+          const docId = documentIdForEvent(event);
+          const doc = docId ? recentById.get(docId) ?? null : null;
           if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
           return {
             id: event.id,
@@ -212,7 +226,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
             actor: actorFor(event.action, event.metadata, event.userId),
             action: event.action,
             targetType: event.targetType,
-            targetId: event.targetId,
+            targetId: doc?.id ?? event.targetId,
             documentTitle: doc?.title ?? null,
             documentPath: doc?.path ?? null,
             createdAt: event.createdAt.toISOString(),
@@ -274,7 +288,8 @@ async function workspaceActivityImpl(
 
   const documentIds = new Set<string>();
   for (const event of events) {
-    if (event.targetType === "document" && event.targetId) documentIds.add(event.targetId);
+    const docId = documentIdForEvent(event);
+    if (docId) documentIds.add(docId);
   }
   const documents = documentIds.size
     ? await prisma.document.findMany({
@@ -289,7 +304,8 @@ async function workspaceActivityImpl(
     workspaceId,
     events: events
       .map((event) => {
-        const doc = event.targetType === "document" && event.targetId ? docById.get(event.targetId) ?? null : null;
+        const docId = documentIdForEvent(event);
+        const doc = docId ? docById.get(docId) ?? null : null;
         if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
         return {
           id: event.id,
@@ -298,7 +314,7 @@ async function workspaceActivityImpl(
           actor: actorFor(event.action, event.metadata, event.userId),
           action: event.action,
           targetType: event.targetType,
-          targetId: event.targetId,
+          targetId: doc?.id ?? event.targetId,
           documentTitle: doc?.title ?? null,
           documentPath: doc?.path ?? null,
           createdAt: event.createdAt.toISOString(),
@@ -308,4 +324,13 @@ async function workspaceActivityImpl(
       .filter((event): event is NonNullable<typeof event> => event !== null),
     nextBefore: next ? next.createdAt.toISOString() : null,
   };
+}
+
+function documentIdForEvent(event: { targetType: string; targetId: string | null; metadata: unknown }): string | null {
+  if (event.targetType === "document" && event.targetId) return event.targetId;
+  if (event.metadata && typeof event.metadata === "object" && "documentId" in event.metadata) {
+    const documentId = (event.metadata as { documentId?: unknown }).documentId;
+    return typeof documentId === "string" && documentId ? documentId : null;
+  }
+  return null;
 }

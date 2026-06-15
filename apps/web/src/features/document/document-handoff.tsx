@@ -272,6 +272,9 @@ function ReadinessBadge({ readiness }: { readiness: Readiness }) {
     <span className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold ring-1 ${readinessTone[readiness.status]}`}>
       <Icon size={14} aria-hidden="true" />
       {readinessLabel[readiness.status]}
+      <span className="ml-1 rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-700 dark:bg-slate-950/40 dark:text-slate-200">
+        {readiness.score}
+      </span>
     </span>
   );
 }

@@ -112,6 +112,7 @@ describe("MCP agent access", () => {
     expect(readData.frontmatter).toEqual({});
     expect(readData.aiReadiness).toMatchObject({ status: expect.any(String), score: expect.any(Number) });
     expect(readData.aiReadiness.issues).toEqual(expect.any(Array));
+    expect(readData.implementationReadiness.score).toEqual(expect.any(Number));
   });
 
   it("chunks large document reads with offset/maxChars and paging metadata", async () => {
@@ -160,6 +161,44 @@ describe("MCP agent access", () => {
     expect(small.truncated).toBe(false);
     expect(small.nextOffset).toBeNull();
     expect(small.body).toContain("# Runbook");
+  });
+
+  it("supports agent-friendly read modes and records explicit agent reads", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const created = toolJson(
+      await tool(s.token, "pageden_create_document", {
+        workspaceId: s.ws.id,
+        folderId: s.folderId,
+        title: "Agent Plan",
+        slug: "agent-plan",
+        content: "# Agent Plan\n\n## Scope\n\nOld text\n\n## Tests\n\n- pnpm test\n",
+      }),
+    );
+    const firstRead = toolJson(await tool(s.token, "pageden_read_document", { documentId: created.id, headingsOnly: true }));
+    expect(firstRead.headings.map((h: { title: string }) => h.title)).toContain("Scope");
+    expect(firstRead.content).toBe("");
+    expect(firstRead.body).toBeUndefined();
+
+    await tool(s.token, "pageden_update_document", {
+      documentId: created.id,
+      baseVersion: created.version,
+      content: "# Agent Plan\n\n## Scope\n\nNew text\n\n## Tests\n\n- pnpm test\n",
+    });
+    const changed = toolJson(await tool(s.token, "pageden_read_document", { documentId: created.id, latestChangedSection: true }));
+    expect(changed.latestChangedSection.section).toMatchObject({ heading: "Scope", anchor: "scope" });
+
+    await tool(s.token, "pageden_update_document", {
+      documentId: created.id,
+      baseVersion: changed.version,
+      content: "---\nstatus: draft\n---\n\n# Agent Plan\n\n## Scope\n\nNew text\n",
+    });
+    const canonicalOnly = await tool(s.token, "pageden_read_document", { documentId: created.id, canonicalOnly: true });
+    expect(canonicalOnly.json().error.message).toMatch(/not canonical/i);
+
+    const activity = toolJson(await tool(s.token, "pageden_activity_timeline", { limit: 20 }));
+    const actions = activity.events.map((event: { action: string }) => event.action);
+    expect(actions).toContain("document_read_by_agent");
+    expect(actions).toContain("document_marked_draft");
   });
 
   it("reports AI-readiness issues that help agents judge document quality", async () => {
