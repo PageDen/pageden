@@ -25,10 +25,10 @@ enum PermissionRole {
   manager
 }
 
-enum PermissionSubjectType {
-  user
-  group
-}
+// PermissionSubjectType enum was removed in the A3 cutover — Permission rows
+// now use nullable userId + groupId (XOR-checked) instead of a discriminator.
+// The API request shape still accepts subjectType: "user" | "group" as a plain
+// string union; see apps/server/src/permissions/routes.ts.
 
 enum PermissionResourceType {
   folder
@@ -326,13 +326,11 @@ model DocumentRevision {
 model Permission {
   id           String                 @id @default(cuid())
   workspaceId  String
-  subjectType  PermissionSubjectType
-  subjectId    String
-  // A3 (Codex-reviewed permission plan): subjectType/subjectId remain
-  // authoritative for the read path until the expand-contract is finished, but
-  // every new Permission row also writes userId XOR groupId so a raw-SQL CHECK
-  // constraint enforces the invariant at the DB layer. The two columns let us
-  // drop the discriminator in a follow-up without a second backfill.
+  // A3 cutover: subjectType/subjectId discriminator columns have been dropped.
+  // userId XOR groupId is enforced at the DB level by Permission_user_xor_group_check.
+  // Uniqueness is enforced by partial unique indexes (one for users, one for
+  // groups) added in the raw migration so a row's (user|group, resource) pair
+  // appears at most once.
   userId       String?
   groupId      String?
   resourceType PermissionResourceType
@@ -344,11 +342,7 @@ model Permission {
   user         User?                  @relation("PermissionUser", fields: [userId], references: [id], onDelete: Cascade)
   group        Group?                 @relation("PermissionGroup", fields: [groupId], references: [id], onDelete: Cascade)
 
-  // CHECK ((userId IS NOT NULL AND groupId IS NULL) OR (userId IS NULL AND groupId IS NOT NULL))
-  // is added in the raw migration alongside the backfill.
-  @@unique([workspaceId, subjectType, subjectId, resourceType, resourceId])
   @@index([workspaceId, resourceType, resourceId])
-  @@index([workspaceId, subjectType, subjectId])
   @@index([userId])
   @@index([groupId])
 }

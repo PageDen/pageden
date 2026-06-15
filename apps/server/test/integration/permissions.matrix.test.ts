@@ -143,7 +143,7 @@ describe("permission effects (state actually changes / does not change)", () => 
     expect(res.statusCode).toBe(200);
     const rows = await prisma.permission.findMany({ where: { resourceType: "document", resourceId: s.docId } });
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.subjectId).toBe(other.id);
-    expect(rows.some((r) => r.subjectId === stale.id)).toBe(false);
+    expect(rows[0]!.userId).toBe(other.id);
+    expect(rows.some((r) => r.userId === stale.id)).toBe(false);
   });
 });
