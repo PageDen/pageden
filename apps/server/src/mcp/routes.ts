@@ -16,6 +16,9 @@ import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchText
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
 import { workspaceActivityFor } from "../workspaces/insights.js";
+import { createComment, listComments, resolveCommentRecord } from "../documents/comments.js";
+import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
+import { claimDocument, listActiveClaims, releaseClaim } from "../documents/claims.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 
@@ -274,6 +277,88 @@ const tools = [
           description: "ISO timestamp; only events strictly older than this are returned. Use for paging.",
         },
       },
+    },
+  },
+  {
+    name: "pageden_add_section_comment",
+    description: "Add an inline review comment on a document, optionally anchored to a heading. Use for raising open questions or noting blockers without rewriting the doc prose.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        sectionAnchor: { type: "string", description: "Optional heading anchor (e.g. \"acceptance-criteria\") to scope the comment." },
+        body: { type: "string", description: "The comment text." },
+      },
+      required: ["body"],
+    },
+  },
+  {
+    name: "pageden_list_comments",
+    description: "List comments on a document. Returns open comments by default; pass includeResolved=true to see history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+        includeResolved: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "pageden_resolve_comment",
+    description: "Resolve a comment. Authors and managers can resolve; others get a forbidden error.",
+    inputSchema: {
+      type: "object",
+      properties: { commentId: { type: "string" } },
+      required: ["commentId"],
+    },
+  },
+  {
+    name: "pageden_my_unread",
+    description: "List documents whose current version is newer than this caller's last-read bookmark for them. Useful as the first call in a session to focus on what changed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 100 },
+      },
+    },
+  },
+  {
+    name: "pageden_claim_document",
+    description: "Soft-claim a document for the next ttlMinutes so other agents know you're working on it. Not a write lock — writes still serialize through baseVersion. Returns 409-style conflict if another actor holds an active claim.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+        ttlMinutes: { type: "number", minimum: 1, maximum: 240, description: "How long the claim should last; default 30, max 240." },
+        note: { type: "string", description: "Optional short note explaining what you're doing." },
+      },
+    },
+  },
+  {
+    name: "pageden_release_document",
+    description: "Release your active claim on a document. Idempotent — returns ok even if no claim is held.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "pageden_list_claims",
+    description: "List active document claims in a workspace so an agent can see who is working on what.",
+    inputSchema: {
+      type: "object",
+      properties: { workspaceId: { type: "string" } },
     },
   },
 ];
@@ -572,6 +657,13 @@ async function callTool(
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
   else if (name === "pageden_activity_timeline") data = await activityTimeline(auth, args, request);
+  else if (name === "pageden_add_section_comment") data = await addSectionComment(auth, args, request);
+  else if (name === "pageden_list_comments") data = await listSectionComments(auth, args, request);
+  else if (name === "pageden_resolve_comment") data = await resolveSectionComment(auth, args);
+  else if (name === "pageden_my_unread") data = await myUnread(auth, args, request);
+  else if (name === "pageden_claim_document") data = await claimByMcp(auth, args, request);
+  else if (name === "pageden_release_document") data = await releaseByMcp(auth, args, request);
+  else if (name === "pageden_list_claims") data = await listClaimsByMcp(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
 
   await writeAuditEvent({
@@ -673,6 +765,10 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>) {
     doc.supersededBy && !doc.supersededBy.deletedAt
       ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
       : null;
+  // Touch the caller's read cursor so pageden_my_unread can answer "what
+  // changed since I last looked?" without scanning every revision. Failures
+  // here must not break the read — log nothing and move on.
+  await touchReadCursor(auth, { id: doc.id, workspaceId: doc.workspaceId, currentVersionId: doc.currentVersionId }).catch(() => undefined);
   return {
     workspaceId: doc.workspaceId,
     id: doc.id,
@@ -783,6 +879,100 @@ async function activityTimeline(auth: AuthContext, args: Record<string, unknown>
   const before = typeof args.before === "string" && args.before ? new Date(args.before) : null;
   if (before && Number.isNaN(before.getTime())) throw new Error("before must be an ISO timestamp.");
   return workspaceActivityFor(auth.userId, workspaceId, { limit, before });
+}
+
+// Resolve documentId from either documentId/path, with the same workspace
+// binding rules as readDocument. Returns the doc id so the helpers stay
+// permission-agnostic; permission gates live in the specific handler.
+async function resolveDocumentIdForArg(auth: AuthContext, args: Record<string, unknown>): Promise<string> {
+  const documentId = maybeString(args.documentId);
+  if (documentId) return documentId;
+  const path = maybeString(args.path);
+  if (!path) throw new Error("documentId or path is required.");
+  const workspaceId = maybeString(args.workspaceId) ?? auth.tokenWorkspaceId;
+  if (!workspaceId) throw new Error("workspaceId is required when looking up by path.");
+  const doc = await prisma.document.findFirst({ where: { workspaceId, path, deletedAt: null }, select: { id: true, workspaceId: true } });
+  if (!doc) throw new Error("Document not found.");
+  if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) throw new Error("This agent token is bound to another workspace.");
+  return doc.id;
+}
+
+async function addSectionComment(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "create");
+  const documentId = await resolveDocumentIdForArg(auth, args);
+  const body = stringParam(args, "body");
+  const sectionAnchor = maybeString(args.sectionAnchor) ?? null;
+  const result = await createComment(auth, documentId, { body, sectionAnchor });
+  if (result.status === "not_found") throw new Error("Document not found.");
+  if (result.status === "validation") throw new Error(result.message);
+  return result.comment;
+}
+
+async function listSectionComments(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const documentId = await resolveDocumentIdForArg(auth, args);
+  const includeResolved = args.includeResolved === true || args.includeResolved === "true";
+  const result = await listComments(auth, documentId, { includeResolved });
+  if (result.status === "not_found") throw new Error("Document not found.");
+  return { documentId, comments: result.comments };
+}
+
+async function resolveSectionComment(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "update");
+  const commentId = stringParam(args, "commentId");
+  const result = await resolveCommentRecord(auth, commentId);
+  if (result.status === "not_found") throw new Error("Comment not found.");
+  if (result.status === "forbidden") throw new Error("You may not resolve this comment.");
+  return result.comment;
+}
+
+async function myUnread(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const limit = Math.min(clampLimit(args.limit), 100);
+  const docs = await unreadDocuments(auth, workspaceId);
+  // Permission-filter so we never leak titles/paths the caller can't see.
+  const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
+  const visible = docs.filter((doc) => resolver.documentRole({ id: doc.id, folderId: doc.folderId }) !== null).slice(0, limit);
+  return {
+    workspaceId,
+    documents: visible.map((doc) => ({
+      id: doc.id,
+      title: doc.title,
+      path: doc.path,
+      status: doc.status,
+      version: doc.version,
+      updatedAt: doc.updatedAt.toISOString(),
+      lastReadAt: doc.lastReadAt ? doc.lastReadAt.toISOString() : null,
+      lastReadVersion: doc.lastReadVersion,
+    })),
+  };
+}
+
+async function claimByMcp(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const documentId = await resolveDocumentIdForArg(auth, args);
+  const ttl = typeof args.ttlMinutes === "number" ? args.ttlMinutes : undefined;
+  const note = maybeString(args.note) ?? null;
+  const result = await claimDocument(auth, documentId, { ttlMinutes: ttl, note });
+  if (result.status === "not_found") throw new Error("Document not found.");
+  if (result.status === "conflict") throw new Error(`Already claimed by ${result.existing.actorLabel ?? "another actor"} until ${result.existing.expiresAt}.`);
+  return result.claim;
+}
+
+async function releaseByMcp(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const documentId = await resolveDocumentIdForArg(auth, args);
+  const result = await releaseClaim(auth, documentId);
+  if (result.status === "not_found") throw new Error("Document not found.");
+  return { claim: result.claim };
+}
+
+async function listClaimsByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const claims = await listActiveClaims(workspaceId);
+  return { workspaceId, claims };
 }
 
 async function getTaskPacket(auth: AuthContext, args: Record<string, unknown>) {

@@ -236,10 +236,59 @@ export const activityFeedSchema = z
   })
   .strict();
 
+export const documentCommentSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    documentId: z.string(),
+    sectionAnchor: z.string().nullable(),
+    body: z.string(),
+    authorUserId: z.string().nullable(),
+    authorTokenId: z.string().nullable(),
+    authorLabel: z.string().nullable(),
+    resolvedAt: iso.nullable(),
+    resolvedById: z.string().nullable(),
+    createdAt: iso,
+    updatedAt: iso,
+  })
+  .strict();
+
+export const documentCommentsListSchema = z.object({ comments: z.array(documentCommentSchema) }).strict();
+export const documentCommentResponseSchema = z.object({ comment: documentCommentSchema }).strict();
+
+export const documentClaimSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    documentId: z.string(),
+    tokenId: z.string().nullable(),
+    userId: z.string().nullable(),
+    actorLabel: z.string().nullable(),
+    note: z.string().nullable(),
+    expiresAt: iso,
+    releasedAt: iso.nullable(),
+    active: z.boolean(),
+    createdAt: iso,
+    updatedAt: iso,
+  })
+  .strict();
+
+export const documentClaimWithDocSchema = documentClaimSchema
+  .extend({
+    document: z.object({ id: z.string(), title: z.string(), path: z.string() }).strict(),
+  })
+  .strict();
+
+export const workspaceClaimsListSchema = z
+  .object({ workspaceId: z.string(), claims: z.array(documentClaimWithDocSchema) })
+  .strict();
+
 export const dashboardStatsSchema = z
   .object({
     workspaceId: z.string(),
-    totals: z.object({ folders: z.number(), documents: z.number() }).strict(),
+    totals: z
+      .object({ folders: z.number(), documents: z.number(), openComments: z.number() })
+      .strict(),
     statusCounts: z
       .object({
         canonical: z.number(),
@@ -280,6 +329,7 @@ export const dashboardStatsSchema = z
         })
         .strict(),
     ),
+    activeClaims: z.array(documentClaimWithDocSchema),
   })
   .strict();
 

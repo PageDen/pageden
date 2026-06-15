@@ -76,6 +76,10 @@ model User {
   oauthAccounts           OAuthAccount[]
   mcpOAuthCodes           McpOAuthCode[]
   uploadedAttachments     Attachment[]             @relation("AttachmentUploadedBy")
+  authoredComments        DocumentComment[]        @relation("DocumentCommentAuthor")
+  resolvedComments        DocumentComment[]        @relation("DocumentCommentResolver")
+  documentReadCursors     TokenReadCursor[]        @relation("TokenReadCursorUser")
+  documentClaims          DocumentClaim[]          @relation("DocumentClaimUser")
 }
 
 model Workspace {
@@ -96,6 +100,9 @@ model Workspace {
   auditEvents            AuditEvent[]
   attachments            Attachment[]
   mcpOAuthCodes          McpOAuthCode[]
+  comments               DocumentComment[]
+  readCursors            TokenReadCursor[]
+  claims                 DocumentClaim[]
 }
 
 model WorkspaceMembership {
@@ -191,6 +198,9 @@ model Document {
   supersedes       Document[]         @relation("DocumentSupersession")
   revisions        DocumentRevision[]
   attachments      Attachment[]
+  comments         DocumentComment[]
+  readCursors      TokenReadCursor[]
+  claims           DocumentClaim[]
 
   // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
   // in a raw migration, so soft-deleted rows do not block reuse.
@@ -198,6 +208,78 @@ model Document {
   @@index([workspaceId, status])
   @@index([currentVersionId])
   @@index([supersededById])
+}
+
+// Inline review comment scoped to a document, optionally anchored to a heading.
+// Authored by a user (web) or an agent token (MCP). Comments don't gate writes —
+// they're a coordination signal so multiple agents can leave notes on a plan
+// without rewriting prose, and so an editor can see open questions at a glance.
+model DocumentComment {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  documentId    String
+  sectionAnchor String? // null = comment on the whole doc; otherwise the heading anchor slug
+  authorUserId  String?
+  authorTokenId String?
+  authorLabel   String? // human-friendly label captured at write time (token name, etc.)
+  body          String
+  resolvedAt    DateTime?
+  resolvedById  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document      Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  authorUser    User?     @relation("DocumentCommentAuthor", fields: [authorUserId], references: [id])
+  authorToken   ApiToken? @relation("DocumentCommentAuthorToken", fields: [authorTokenId], references: [id])
+  resolvedBy    User?     @relation("DocumentCommentResolver", fields: [resolvedById], references: [id])
+
+  @@index([documentId, resolvedAt])
+  @@index([workspaceId, resolvedAt])
+}
+
+// Per-token (or per-user) bookmark: where this caller was the last time they
+// read this document. Used by pageden_my_unread to answer "what changed since
+// I last looked?" without scanning every revision row.
+model TokenReadCursor {
+  id              String    @id @default(cuid())
+  tokenId         String?
+  userId          String?
+  workspaceId     String
+  documentId      String
+  lastReadVersion String?
+  lastReadAt      DateTime  @default(now())
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document        Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  token           ApiToken? @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  user            User?     @relation("TokenReadCursorUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenId, documentId])
+  @@unique([userId, documentId])
+  @@index([workspaceId, lastReadAt])
+}
+
+// Soft "I'm working on this doc" claim. Not a lock — writes still go through
+// the row-locked applyDocumentWrite path. The dashboard surfaces active claims
+// so concurrent agents can coordinate ("Codex already has this one").
+model DocumentClaim {
+  id          String    @id @default(cuid())
+  workspaceId String
+  documentId  String
+  tokenId     String?
+  userId      String?
+  actorLabel  String? // human-readable label captured at claim time
+  note        String?
+  expiresAt   DateTime
+  releasedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document    Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  token       ApiToken? @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  user        User?     @relation("DocumentClaimUser", fields: [userId], references: [id])
+
+  @@index([workspaceId, releasedAt, expiresAt])
+  @@index([documentId, releasedAt, expiresAt])
 }
 
 model DocumentRevision {
@@ -237,19 +319,22 @@ model Permission {
 // B5: token lookup must be deterministic, so tokenHash is HMAC-SHA256(token, TOKEN_HASH_SECRET).
 // Never bcrypt/argon2 here — those are salted and cannot be looked up by hash.
 model ApiToken {
-  id          String    @id @default(cuid())
-  userId      String
-  name        String
-  kind        String    @default("personal") // personal | obsidian | agent
-  scopes      String[]  @default(["search", "read", "create", "update", "append", "attachments"])
-  workspaceId String?
-  tokenHash   String    @unique // HMAC-SHA256, keyed by TOKEN_HASH_SECRET
-  lastUsedAt  DateTime?
-  lastUsedIp  String?
-  expiresAt   DateTime?
-  revokedAt   DateTime?
-  createdAt   DateTime  @default(now())
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String            @id @default(cuid())
+  userId           String
+  name             String
+  kind             String            @default("personal") // personal | obsidian | agent
+  scopes           String[]          @default(["search", "read", "create", "update", "append", "attachments"])
+  workspaceId      String?
+  tokenHash        String            @unique // HMAC-SHA256, keyed by TOKEN_HASH_SECRET
+  lastUsedAt       DateTime?
+  lastUsedIp       String?
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime          @default(now())
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authoredComments DocumentComment[] @relation("DocumentCommentAuthorToken")
+  readCursors      TokenReadCursor[]
+  claims           DocumentClaim[]
 
   @@index([userId])
   @@index([kind])

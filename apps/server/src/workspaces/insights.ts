@@ -4,6 +4,8 @@ import { prisma } from "../prisma.js";
 import { requireAuth, requireTokenScope } from "../auth.js";
 import { notFound, validationError } from "../errors.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
+import { listActiveClaims } from "../documents/claims.js";
+import { openCommentCountByDocument } from "../documents/comments.js";
 
 // Activity timeline + workspace dashboard. Both are derived from data we already
 // store (AuditEvent + Document + Folder), so we can ship them without a schema
@@ -220,14 +222,25 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
         .filter((event): event is NonNullable<typeof event> => event !== null)
         .slice(0, 15);
 
+      // Filter claims down to documents the caller can see; this prevents
+      // surfacing a doc title through a claim row that the user has no
+      // role on.
+      const visibleDocIds = new Set(visibleDocs.map((d) => d.id));
+      const allClaims = await listActiveClaims(workspaceId);
+      const activeClaims = allClaims.filter((claim) => visibleDocIds.has(claim.documentId));
+
+      const openCommentCounts = await openCommentCountByDocument(visibleDocs.map((d) => d.id));
+      const openComments = [...openCommentCounts.entries()].reduce((sum, [, count]) => sum + count, 0);
+
       return {
         workspaceId,
-        totals: { folders: resolver.folders.length, documents: visibleDocs.length },
+        totals: { folders: resolver.folders.length, documents: visibleDocs.length, openComments },
         statusCounts,
         supersededDocs,
         recentChanges,
         recentActivity,
         topFolders,
+        activeClaims,
       };
     },
   );

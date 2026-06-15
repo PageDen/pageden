@@ -31,6 +31,9 @@ export const workspaceActivityQuery = (workspaceId: string) =>
 export const workspaceDashboardQuery = (workspaceId: string) =>
   queryOptions({ queryKey: ["dashboard", workspaceId], queryFn: () => api.workspaceDashboard(workspaceId) });
 
+export const documentCommentsQuery = (documentId: string) =>
+  queryOptions({ queryKey: ["document", documentId, "comments"], queryFn: () => api.documentComments(documentId) });
+
 export const revisionsQuery = (id: string) =>
   queryOptions({ queryKey: ["revisions", id], queryFn: () => api.revisions(id) });
 
