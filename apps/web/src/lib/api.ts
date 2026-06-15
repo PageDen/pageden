@@ -286,7 +286,7 @@ export const api = {
   // --- admin / management ---
   users: (workspaceId: string) =>
     request("GET", `/users?workspaceId=${encodeURIComponent(workspaceId)}`, { schema: usersListSchema }),
-  createUser: (body: { workspaceId: string; email: string; name: string; password: string; role: "member" | "admin" }) =>
+  createUser: (body: { workspaceId: string; email: string; name: string; password: string; role: "member" | "admin" | "viewer" | "guest" }) =>
     request("POST", "/users", { body, schema: userCreateSchema }),
   groups: (workspaceId: string) =>
     request("GET", `/groups?workspaceId=${encodeURIComponent(workspaceId)}`, { schema: groupsListSchema }),

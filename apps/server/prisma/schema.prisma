@@ -7,9 +7,19 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Phase B identity tiers.
+//   admin   — workspace-wide manager.
+//   member  — historical default; sees nothing unless granted or via
+//             Folder.defaultRole.
+//   viewer  — workspace-wide read-only invariant; caps explicit grants
+//             so writes are impossible regardless of any per-resource role.
+//   guest   — no implicit access AND defaultRole floors do NOT apply; only
+//             explicit per-resource grants count. For external reviewers.
 enum WorkspaceRole {
   member
   admin
+  viewer
+  guest
 }
 
 enum CustomDomainStatus {

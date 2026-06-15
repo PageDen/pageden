@@ -16,6 +16,12 @@ export function atLeast(role: Role | null, needed: Role): boolean {
   return role != null && RANK[role] >= RANK[needed];
 }
 
+/** Cap a role so it can't exceed `max`. Used by the workspace-wide viewer tier. */
+export function capRole(role: Role | null, max: Role): Role | null {
+  if (!role) return null;
+  return RANK[role] > RANK[max] ? max : role;
+}
+
 function roleName(role: PermissionRole): Role {
   return role;
 }
@@ -109,10 +115,14 @@ export async function resolveDocumentRole(
 
   const groupIds = await groupIdsForUser(userId, document.workspaceId, client);
   const folderIds = await inheritedFolderIds(document.folderId, client);
-  // Default-role floor for any workspace member from the folder chain.
-  const inheritedFloors = await inheritedDefaultRoles(document.folderId, client);
+  // Default-role floor for any workspace member from the folder chain. Guests
+  // skip these — they only see what they're explicitly granted.
+  const inheritedFloors =
+    membership.role === "guest" ? [] : await inheritedDefaultRoles(document.folderId, client);
 
-  const roles: Role[] = [...inheritedFloors];
+  // Phase B: a workspace-wide "viewer" tier sees every doc as at least viewer.
+  const viewerFloor: Role[] = membership.role === "viewer" ? ["viewer"] : [];
+  const roles: Role[] = [...viewerFloor, ...inheritedFloors];
   const collectSubjectFilters = [
     { subjectType: "user" as const, subjectId: userId },
     ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
@@ -140,7 +150,10 @@ export async function resolveDocumentRole(
   });
   roles.push(...documentPermissions.map((permission) => roleName(permission.role)));
 
-  return strongest(roles);
+  const computed = strongest(roles);
+  // Viewer tier caps the role at viewer so a stale higher grant can never
+  // unlock writes after a workspace role downgrade.
+  return membership.role === "viewer" ? capRole(computed, "viewer") : computed;
 }
 
 export async function canReadDocument(
@@ -190,7 +203,9 @@ export async function resolveFolderRole(
 
   const groupIds = await groupIdsForUser(userId, folder.workspaceId, client);
   const folderIds = await inheritedFolderIds(folderId, client);
-  const inheritedFloors = await inheritedDefaultRoles(folderId, client);
+  const inheritedFloors =
+    membership.role === "guest" ? [] : await inheritedDefaultRoles(folderId, client);
+  const viewerFloor: Role[] = membership.role === "viewer" ? ["viewer"] : [];
   const subjectFilters = [
     { subjectType: "user" as const, subjectId: userId },
     ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
@@ -205,7 +220,12 @@ export async function resolveFolderRole(
     },
     select: { role: true },
   });
-  return strongest([...inheritedFloors, ...permissions.map((permission) => roleName(permission.role))]);
+  const computed = strongest([
+    ...viewerFloor,
+    ...inheritedFloors,
+    ...permissions.map((permission) => roleName(permission.role)),
+  ]);
+  return membership.role === "viewer" ? capRole(computed, "viewer") : computed;
 }
 
 // ---------------------------------------------------------------------------
