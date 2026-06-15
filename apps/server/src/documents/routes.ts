@@ -278,8 +278,56 @@ export async function applyDocumentWrite(opts: {
       },
       tx,
     );
+    await writeStatusTransitionAudit(tx, {
+      workspaceId: doc.workspaceId,
+      userId: opts.userId,
+      documentId: doc.id,
+      previousStatus: doc.status,
+      nextStatus: metadata.status,
+      previousSupersededById: doc.supersededById,
+      nextSupersededById: metadata.supersededById,
+    });
     return { ok: true, documentId: doc.id, version: revision.id, checksum: sum, updatedAt: updated.updatedAt };
   });
+}
+
+async function writeStatusTransitionAudit(
+  tx: Prisma.TransactionClient,
+  opts: {
+    workspaceId: string;
+    userId: string;
+    documentId: string;
+    previousStatus: DocumentStatus;
+    nextStatus: DocumentStatus;
+    previousSupersededById: string | null;
+    nextSupersededById: string | null;
+  },
+): Promise<void> {
+  if (opts.previousStatus === opts.nextStatus && opts.previousSupersededById === opts.nextSupersededById) return;
+  const action =
+    opts.nextStatus === "canonical"
+      ? "document_marked_canonical"
+      : opts.nextStatus === "superseded"
+        ? "document_marked_superseded"
+        : opts.nextStatus === "archived"
+          ? "document_marked_archived"
+          : "document_marked_draft";
+  await writeAuditEvent(
+    {
+      workspaceId: opts.workspaceId,
+      userId: opts.userId,
+      action,
+      targetType: "document",
+      targetId: opts.documentId,
+      metadata: {
+        previousStatus: opts.previousStatus,
+        nextStatus: opts.nextStatus,
+        previousSupersededById: opts.previousSupersededById,
+        nextSupersededById: opts.nextSupersededById,
+      },
+    },
+    tx,
+  );
 }
 
 // Per-workspace single-flight guard for reindex so an admin can't pile up concurrent full scans.
@@ -1017,11 +1065,17 @@ export async function buildHandoffPacket(
     if (revision) content = await readContent(revision.storageKey);
   }
   const context = documentContext(content);
+  const comments = await prisma.documentComment.findMany({
+    where: { documentId: doc.id, resolvedAt: null },
+    select: { id: true, body: true, sectionAnchor: true },
+    orderBy: { createdAt: "asc" },
+    take: 50,
+  });
   const supersededBy =
     doc.supersededBy && !doc.supersededBy.deletedAt
       ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
       : null;
-  const packet = taskPacketFor({ status: doc.status, supersededBy, context });
+  const packet = taskPacketFor({ status: doc.status, supersededBy, context, comments });
   return {
     status: "ok",
     value: {

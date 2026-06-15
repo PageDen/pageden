@@ -1,5 +1,20 @@
 import { Link } from "@tanstack/react-router";
-import { Bot, FileText, Hammer, MoveRight, Pencil, Plus, RefreshCw, Trash2, Upload, type LucideIcon } from "lucide-react";
+import {
+  Archive,
+  Bot,
+  CheckCircle2,
+  CircleDashed,
+  FileText,
+  Hammer,
+  MessageSquare,
+  MoveRight,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Upload,
+  type LucideIcon,
+} from "lucide-react";
 import type { z } from "zod";
 import type { activityEventSchema } from "@pageden/api-types";
 
@@ -19,6 +34,16 @@ const ICONS: Record<string, LucideIcon> = {
   document_moved: MoveRight,
   document_deleted: Trash2,
   document_restored: RefreshCw,
+  document_read_by_agent: Bot,
+  document_marked_canonical: CheckCircle2,
+  document_marked_superseded: CircleDashed,
+  document_marked_draft: CircleDashed,
+  document_marked_archived: Archive,
+  comment_added: MessageSquare,
+  comment_added_by_agent: MessageSquare,
+  comment_resolved: CheckCircle2,
+  comment_resolved_by_agent: CheckCircle2,
+  comment_deleted: Trash2,
   mcp_tool_called: Hammer,
 };
 
@@ -33,6 +58,16 @@ const LABELS: Record<string, string> = {
   document_moved: "moved",
   document_deleted: "deleted",
   document_restored: "restored",
+  document_read_by_agent: "read (agent)",
+  document_marked_canonical: "marked canonical",
+  document_marked_superseded: "marked superseded",
+  document_marked_draft: "marked draft",
+  document_marked_archived: "marked archived",
+  comment_added: "commented",
+  comment_added_by_agent: "commented (agent)",
+  comment_resolved: "resolved comment",
+  comment_resolved_by_agent: "resolved comment (agent)",
+  comment_deleted: "deleted comment",
   mcp_tool_called: "MCP tool",
 };
 
@@ -54,7 +89,7 @@ export function ActivityRow({ event, workspaceId, compact }: { event: Event; wor
         <p className="truncate text-sm text-slate-700 dark:text-slate-300">
           <span className={`font-medium capitalize ${actorTone[event.actor]}`}>{event.actor}</span>{" "}
           <span>{verb}</span>{" "}
-          {event.targetId && event.targetType === "document" ? (
+          {event.targetId && event.documentTitle ? (
             event.documentTitle ? (
               <Link
                 to="/w/$workspaceId/d/$documentId"

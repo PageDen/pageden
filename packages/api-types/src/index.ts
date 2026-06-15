@@ -94,6 +94,7 @@ export interface ImplementationReadinessReason {
 
 export interface ImplementationReadiness {
   status: ImplementationReadinessStatus;
+  score: number;
   reasons: ImplementationReadinessReason[];
 }
 

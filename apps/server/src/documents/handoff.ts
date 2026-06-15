@@ -24,7 +24,14 @@ export interface ImplementationReadinessReason {
 
 export interface ImplementationReadiness {
   status: ImplementationReadinessStatus;
+  score: number;
   reasons: ImplementationReadinessReason[];
+}
+
+export interface ReadinessComment {
+  id?: string;
+  body: string;
+  sectionAnchor?: string | null;
 }
 
 export interface DocumentSection {
@@ -197,14 +204,17 @@ export function findSection(sections: DocumentSection[], needle: string): Docume
 export function implementationReadinessFor({
   status,
   context,
+  comments = [],
 }: {
   status: DocumentStatus;
   context: DocumentContext;
+  comments?: ReadinessComment[];
 }): ImplementationReadiness {
   const reasons: ImplementationReadinessReason[] = [];
   if (status === "superseded") {
     return {
       status: "superseded",
+      score: 0,
       reasons: [
         {
           code: "superseded",
@@ -224,6 +234,7 @@ export function implementationReadinessFor({
   if (status === "archived") {
     return {
       status: "draft_only",
+      score: 0,
       reasons: [
         {
           code: "status_archived",
@@ -243,6 +254,7 @@ export function implementationReadinessFor({
   const tests = collectBullets(sectionContent(SECTION_PATTERNS.tests));
   const nonGoals = collectBullets(sectionContent(SECTION_PATTERNS.nonGoals));
   const openQuestions = collectBullets(sectionContent(SECTION_PATTERNS.openQuestions));
+  const nextPrScope = collectBullets(sectionContent(SECTION_PATTERNS.nextPrScope));
 
   if (!acceptanceCriteria.length && !hasSection(SECTION_PATTERNS.acceptance)) {
     reasons.push({
@@ -265,11 +277,18 @@ export function implementationReadinessFor({
       message: "Non-goals are unstated — agents may overreach scope.",
     });
   }
-  if (hasContractRequirement(context, sections)) {
+  if (hasContractRequirement(context, sections) && !hasContractConfirmation(context, sections)) {
     reasons.push({
       code: "contract_update_needed",
       severity: "warning",
       message: "Document mentions API contract changes — confirm the api-contract is updated before merging.",
+    });
+  }
+  if (!nextPrScope.length && !hasSection(SECTION_PATTERNS.nextPrScope)) {
+    reasons.push({
+      code: "missing_next_pr_scope",
+      severity: "warning",
+      message: "Add a Next PR Scope section so the first implementation pull request is clear.",
     });
   }
 
@@ -296,16 +315,47 @@ export function implementationReadinessFor({
     });
   }
 
+  for (const comment of comments) {
+    const body = comment.body.trim();
+    if (!body) continue;
+    if (/conflicts? with|conflicting|inconsistent/i.test(body)) {
+      reasons.push({
+        code: "unresolved_conflict_comment",
+        severity: "warning",
+        message: "An unresolved section comment flags conflicting guidance.",
+      });
+      continue;
+    }
+    if (/needs? api contract update|api[- ]?contract/i.test(body)) {
+      reasons.push({
+        code: "unresolved_contract_comment",
+        severity: "warning",
+        message: "An unresolved section comment asks for an API contract update.",
+      });
+      continue;
+    }
+    if (/ready for implementation/i.test(body)) {
+      reasons.push({
+        code: "ready_comment_present",
+        severity: "info",
+        message: "A reviewer comment says this is ready for implementation.",
+      });
+    }
+  }
+
   // Status precedence: blocking > conflicting > contract-update > draft > ready.
   const blocking = reasons.some((r) => r.severity === "blocking");
   if (blocking) {
-    if (reasons.some((r) => r.code === "blocking_questions")) return { status: "has_blocking_questions", reasons };
-    return { status: "has_blocking_questions", reasons };
+    return { status: "has_blocking_questions", score: readinessScore(status, reasons), reasons };
   }
-  if (reasons.some((r) => r.code === "conflicting_guidance")) return { status: "conflicting_guidance", reasons };
-  if (reasons.some((r) => r.code === "contract_update_needed")) return { status: "needs_contract_update", reasons };
-  if (status === "draft") return { status: "draft_only", reasons };
-  return { status: "ready_to_implement", reasons };
+  if (reasons.some((r) => r.code === "conflicting_guidance" || r.code === "unresolved_conflict_comment")) {
+    return { status: "conflicting_guidance", score: readinessScore(status, reasons), reasons };
+  }
+  if (reasons.some((r) => r.code === "contract_update_needed" || r.code === "unresolved_contract_comment")) {
+    return { status: "needs_contract_update", score: readinessScore(status, reasons), reasons };
+  }
+  if (status === "draft") return { status: "draft_only", score: readinessScore(status, reasons), reasons };
+  return { status: "ready_to_implement", score: readinessScore(status, reasons), reasons };
 }
 
 const SECTION_PATTERNS = {
@@ -314,6 +364,7 @@ const SECTION_PATTERNS = {
   tests: /^(tests?|test plan|testing|test checklist|qa)/i,
   nonGoals: /^(non[- ]goals?|out of scope|will not|won['']t do)/i,
   openQuestions: /^(open questions?|questions?|blocking questions?|unresolved)/i,
+  nextPrScope: /^(next pr scope|pr scope|first pr scope|first pull request|next pull request)/i,
   nextSteps: /^(next steps?|next action|first pr|implementation steps?|plan|phases?)/i,
   currentPhase: /^(current phase|phase \d|status:?)\b/i,
   decisions: /^(decisions?|decision log|history of decisions)/i,
@@ -324,10 +375,12 @@ export function taskPacketFor({
   status,
   supersededBy,
   context,
+  comments,
 }: {
   status: DocumentStatus;
   supersededBy: TaskPacket["supersededBy"];
   context: DocumentContext;
+  comments?: ReadinessComment[];
 }): TaskPacket {
   const sections = extractSections(context.body);
   const sectionByPattern = (re: RegExp): DocumentSection | null =>
@@ -353,7 +406,7 @@ export function taskPacketFor({
     relatedFiles: extractRelatedFiles(context.body),
     decisions: extractDecisions(context.body),
     prLinks: extractPrLinks(context.body, context.frontmatter),
-    implementationReadiness: implementationReadinessFor({ status, context }),
+    implementationReadiness: implementationReadinessFor({ status, context, comments }),
   };
 }
 
@@ -404,6 +457,14 @@ function hasContractRequirement(context: DocumentContext, sections: DocumentSect
   return /api[- ]?contract|endpoint|schema (?:change|update)/i.test(text) || Boolean(context.frontmatter.contract);
 }
 
+function hasContractConfirmation(context: DocumentContext, sections: DocumentSection[]): boolean {
+  const value = context.frontmatter.apiContractUpdated ?? context.frontmatter.contractUpdated;
+  if (typeof value === "string" && /^(true|yes|done|not required|n\/a)$/i.test(value.trim())) return true;
+  if (Array.isArray(value) && value.some((item) => /^(true|yes|done|not required|n\/a)$/i.test(item.trim()))) return true;
+  const text = sections.map((s) => `${s.heading}\n${s.content}`).join("\n");
+  return /api[- ]?contract (?:updated|done|confirmed|not required|not needed|unchanged|no change)/i.test(text);
+}
+
 function hasConflictingGuidance(context: DocumentContext, sections: DocumentSection[]): boolean {
   const text = sections.map((s) => s.content).join("\n");
   if (/conflicting|conflicts with|inconsistent|outdated guidance/i.test(text)) return true;
@@ -413,6 +474,16 @@ function hasConflictingGuidance(context: DocumentContext, sections: DocumentSect
 function condense(value: string, max: number): string {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+}
+
+function readinessScore(status: DocumentStatus, reasons: ImplementationReadinessReason[]): number {
+  if (status === "superseded" || status === "archived") return 0;
+  let score = 100;
+  for (const reason of reasons) {
+    score -= reason.severity === "blocking" ? 35 : reason.severity === "warning" ? 15 : 5;
+  }
+  if (status === "draft") score = Math.min(score, 70);
+  return Math.max(0, Math.min(100, score));
 }
 
 function anchorFor(value: string): string {

@@ -178,6 +178,7 @@ export const implementationReadinessReasonSchema = z
 export const implementationReadinessSchema = z
   .object({
     status: implementationReadinessStatusSchema,
+    score: z.number(),
     reasons: z.array(implementationReadinessReasonSchema),
   })
   .strict();
