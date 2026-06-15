@@ -75,6 +75,7 @@ describe("web vault import", () => {
             version: "rev1",
             checksum: "sha256:x",
             status: "canonical",
+            capabilities: { canView: true, canEdit: true, canDelete: false, canManage: false, canComment: true, canShare: false },
             updatedAt: "2026-06-10T00:00:00.000Z",
           },
         ],
@@ -118,8 +119,8 @@ describe("web vault import", () => {
       conflictPolicy: "rename",
       tree: {
         folders: [
-          { id: "root", parentFolderId: null, name: "Imported", slug: "imported", path: "imported", permission: "manager" },
-          { id: "team", parentFolderId: "root", name: "Team", slug: "team", path: "imported/team", permission: "manager" },
+          { id: "root", parentFolderId: null, name: "Imported", slug: "imported", path: "imported", permission: "manager", defaultRole: null },
+          { id: "team", parentFolderId: "root", name: "Team", slug: "team", path: "imported/team", permission: "manager", defaultRole: null },
         ],
         documents: [
           {
@@ -131,6 +132,7 @@ describe("web vault import", () => {
             version: "rev1",
             checksum: "sha256:x",
             status: "canonical",
+            capabilities: { canView: true, canEdit: true, canDelete: false, canManage: false, canComment: true, canShare: false },
             updatedAt: "2026-06-10T00:00:00.000Z",
           },
         ],

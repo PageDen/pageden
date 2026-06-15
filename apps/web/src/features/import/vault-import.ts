@@ -136,7 +136,7 @@ export async function importFilesToWorkspace({
       const created = await withRateLimitRetry(() =>
         api.createFolder({ workspaceId, parentFolderId: null, name: targetRootName, slug: targetRootSlug }),
       );
-      parent = { id: created.id, path: created.path, parentFolderId: null, name: targetRootName, slug: targetRootSlug, permission: "manager" };
+      parent = { id: created.id, path: created.path, parentFolderId: null, name: targetRootName, slug: targetRootSlug, permission: "manager", defaultRole: null };
       folderByPath.set(trimSlashes(created.path), parent);
       foldersCreated += 1;
     }
@@ -154,7 +154,7 @@ export async function importFilesToWorkspace({
       const created = await withRateLimitRetry(() =>
         api.createFolder({ workspaceId, parentFolderId, name: segment, slug }),
       );
-      parent = { id: created.id, path: created.path, parentFolderId: parent.id, name: segment, slug, permission: "manager" };
+      parent = { id: created.id, path: created.path, parentFolderId: parent.id, name: segment, slug, permission: "manager", defaultRole: null };
       folderByPath.set(trimSlashes(created.path), parent);
       foldersCreated += 1;
     }

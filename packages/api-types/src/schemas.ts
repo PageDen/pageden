@@ -108,6 +108,20 @@ export const documentMetaSchema = z
 
 export const documentListSchema = z.object({ documents: z.array(documentMetaSchema) }).strict();
 
+// Capability map serialized per document so the frontend can show/hide actions
+// without re-deriving the role → action matrix. Permission stays as the raw
+// role; capabilities is the rendered policy.
+export const capabilitiesSchema = z
+  .object({
+    canView: z.boolean(),
+    canEdit: z.boolean(),
+    canDelete: z.boolean(),
+    canManage: z.boolean(),
+    canComment: z.boolean(),
+    canShare: z.boolean(),
+  })
+  .strict();
+
 export const treeSchema = z
   .object({
     folders: z.array(
@@ -119,6 +133,7 @@ export const treeSchema = z
           slug: z.string(),
           path: z.string(),
           permission: roleSchema.nullable(),
+          defaultRole: roleSchema.nullable(),
         })
         .strict(),
     ),
@@ -130,6 +145,7 @@ export const treeSchema = z
           title: z.string(),
           path: z.string(),
           permission: roleSchema,
+          capabilities: capabilitiesSchema,
           version: z.string().nullable(),
           checksum: z.string().nullable(),
           status: documentStatusSchema,
@@ -139,6 +155,8 @@ export const treeSchema = z
     ),
   })
   .strict();
+
+export const folderDefaultRoleSchema = z.object({ id: z.string(), defaultRole: roleSchema.nullable() }).strict();
 
 export const documentRefSchema = z.object({ id: z.string(), title: z.string(), path: z.string() }).strict();
 
@@ -351,6 +369,7 @@ export const documentWithContentSchema = documentMetaSchema
     aiReadiness: aiReadinessSchema,
     implementationReadiness: implementationReadinessSchema,
     supersededBy: documentRefSchema.nullable(),
+    capabilities: capabilitiesSchema,
   })
   .strict();
 

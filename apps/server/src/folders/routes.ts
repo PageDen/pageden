@@ -339,4 +339,44 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
     if (result.status === "not_empty") return validationError(reply, { folder: "Folder is not empty. Remove its contents first." });
     return { ok: true };
   });
+
+  // Set/clear the default role floor for the folder (manager-gated). Setting it to
+  // "viewer" / "editor" / "manager" makes every workspace member at least that role
+  // on the folder and its descendants; setting null restores the historical private
+  // behavior (explicit grants only). See Phase A1 in pageden-dev/docs/permission-model-review-outline-docmost.md.
+  app.put<{ Params: { id: string }; Body: { defaultRole?: "viewer" | "editor" | "manager" | null } }>(
+    "/api/folders/:id/default-role",
+    { config: { rateLimit: { max: Number(process.env.FOLDER_DEFAULT_ROLE_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const next = request.body?.defaultRole ?? null;
+      if (next !== null && next !== "viewer" && next !== "editor" && next !== "manager") {
+        return validationError(reply, { defaultRole: "defaultRole must be viewer, editor, manager, or null." });
+      }
+      const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null } });
+      if (!folder) return notFound(reply, "Folder not found.");
+      const role = await resolveFolderRole(auth.userId, folder.id);
+      if (role === null) return notFound(reply, "Folder not found.");
+      if (!atLeast(role, "manager")) return forbidden(reply);
+
+      const previous = folder.defaultRole;
+      const updated = await prisma.folder.update({
+        where: { id: folder.id },
+        data: { defaultRole: next, updatedById: auth.userId },
+        select: { id: true, defaultRole: true },
+      });
+      await writeAuditEvent({
+        workspaceId: folder.workspaceId,
+        userId: auth.userId,
+        action: "folder_default_role_changed",
+        targetType: "folder",
+        targetId: folder.id,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+        metadata: { previous, next },
+      });
+      return { id: updated.id, defaultRole: updated.defaultRole };
+    },
+  );
 }

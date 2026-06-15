@@ -34,7 +34,21 @@ export async function grant(
   resourceId: string,
   role: PermissionRole,
 ) {
-  return prisma.permission.create({ data: { workspaceId, subjectType, subjectId, resourceType, resourceId, role } });
+  // Phase A3: every Permission row must satisfy the XOR check on (userId, groupId).
+  // The legacy (subjectType, subjectId) columns are still authoritative on the
+  // read path; populating both keeps tests working with the new constraint.
+  return prisma.permission.create({
+    data: {
+      workspaceId,
+      subjectType,
+      subjectId,
+      userId: subjectType === "user" ? subjectId : null,
+      groupId: subjectType === "group" ? subjectId : null,
+      resourceType,
+      resourceId,
+      role,
+    },
+  });
 }
 
 /** Create a user, add as workspace member, and return { user, cookie }. */

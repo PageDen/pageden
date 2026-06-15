@@ -80,6 +80,8 @@ model User {
   resolvedComments        DocumentComment[]        @relation("DocumentCommentResolver")
   documentReadCursors     TokenReadCursor[]        @relation("TokenReadCursorUser")
   documentClaims          DocumentClaim[]          @relation("DocumentClaimUser")
+  permissions             Permission[]             @relation("PermissionUser")
+  documentShares          DocumentShare[]          @relation("DocumentShareCreator")
 }
 
 model Workspace {
@@ -103,6 +105,7 @@ model Workspace {
   comments               DocumentComment[]
   readCursors            TokenReadCursor[]
   claims                 DocumentClaim[]
+  shares                 DocumentShare[]
 }
 
 model WorkspaceMembership {
@@ -127,6 +130,7 @@ model Group {
   updatedAt   DateTime          @updatedAt
   workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   memberships GroupMembership[]
+  permissions Permission[]      @relation("PermissionGroup")
 
   @@unique([workspaceId, slug])
 }
@@ -146,22 +150,27 @@ model GroupMembership {
 // M7: createdBy/updatedBy are now real relations, and Folder gets soft-delete parity
 // with Document so the partial-unique migration (B4) can cover both tables.
 model Folder {
-  id             String     @id @default(cuid())
+  id             String          @id @default(cuid())
   workspaceId    String
   parentFolderId String?
   name           String
   slug           String
   path           String
+  // Default role floor for any workspace member on documents in this folder (and
+  // descendants when no closer ancestor sets one). null = private, the historical
+  // behavior — only explicit grants apply. Set to "viewer" or "editor" to make a
+  // folder "open" to all members without N explicit permission rows.
+  defaultRole    PermissionRole?
   createdById    String
   updatedById    String
   deletedAt      DateTime?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
-  workspace      Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  parentFolder   Folder?    @relation("FolderTree", fields: [parentFolderId, workspaceId], references: [id, workspaceId])
-  childFolders   Folder[]   @relation("FolderTree")
-  createdBy      User       @relation("FolderCreatedBy", fields: [createdById], references: [id])
-  updatedBy      User       @relation("FolderUpdatedBy", fields: [updatedById], references: [id])
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parentFolder   Folder?         @relation("FolderTree", fields: [parentFolderId, workspaceId], references: [id, workspaceId])
+  childFolders   Folder[]        @relation("FolderTree")
+  createdBy      User            @relation("FolderCreatedBy", fields: [createdById], references: [id])
+  updatedBy      User            @relation("FolderUpdatedBy", fields: [updatedById], references: [id])
   documents      Document[]
 
   // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
@@ -201,6 +210,7 @@ model Document {
   comments         DocumentComment[]
   readCursors      TokenReadCursor[]
   claims           DocumentClaim[]
+  shares           DocumentShare[]
 
   // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
   // in a raw migration, so soft-deleted rows do not block reuse.
@@ -283,22 +293,22 @@ model DocumentClaim {
 }
 
 model DocumentRevision {
-  id            String       @id @default(cuid()) // this id is the wire `version`/`baseVersion`
-  documentId    String
-  versionNumber Int // display only
-  storageKey    String // content-addressed (checksum-derived); immutable
-  checksum      String
-  createdById   String
-  createdAt     DateTime     @default(now())
-  changeSource  ChangeSource
-  message       String?
+  id              String       @id @default(cuid()) // this id is the wire `version`/`baseVersion`
+  documentId      String
+  versionNumber   Int // display only
+  storageKey      String // content-addressed (checksum-derived); immutable
+  checksum        String
+  createdById     String
+  createdAt       DateTime     @default(now())
+  changeSource    ChangeSource
+  message         String?
   revisionGroupId String?
-  contributorIds String[]      @default([])
-  isPinned      Boolean      @default(false)
-  label         String?
-  prunedAt      DateTime?
-  document      Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  createdBy     User         @relation(fields: [createdById], references: [id])
+  contributorIds  String[]     @default([])
+  isPinned        Boolean      @default(false)
+  label           String?
+  prunedAt        DateTime?
+  document        Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdBy       User         @relation(fields: [createdById], references: [id])
 
   @@unique([documentId, versionNumber])
   @@index([documentId, createdAt])
@@ -311,16 +321,29 @@ model Permission {
   workspaceId  String
   subjectType  PermissionSubjectType
   subjectId    String
+  // A3 (Codex-reviewed permission plan): subjectType/subjectId remain
+  // authoritative for the read path until the expand-contract is finished, but
+  // every new Permission row also writes userId XOR groupId so a raw-SQL CHECK
+  // constraint enforces the invariant at the DB layer. The two columns let us
+  // drop the discriminator in a follow-up without a second backfill.
+  userId       String?
+  groupId      String?
   resourceType PermissionResourceType
   resourceId   String
   role         PermissionRole
   createdAt    DateTime               @default(now())
   updatedAt    DateTime               @updatedAt
   workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User?                  @relation("PermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  group        Group?                 @relation("PermissionGroup", fields: [groupId], references: [id], onDelete: Cascade)
 
+  // CHECK ((userId IS NOT NULL AND groupId IS NULL) OR (userId IS NULL AND groupId IS NOT NULL))
+  // is added in the raw migration alongside the backfill.
   @@unique([workspaceId, subjectType, subjectId, resourceType, resourceId])
   @@index([workspaceId, resourceType, resourceId])
   @@index([workspaceId, subjectType, subjectId])
+  @@index([userId])
+  @@index([groupId])
 }
 
 // B5: token lookup must be deterministic, so tokenHash is HMAC-SHA256(token, TOKEN_HASH_SECRET).
@@ -461,4 +484,29 @@ model McpOAuthCode {
   @@index([expiresAt])
   @@index([userId])
   @@index([workspaceId])
+}
+
+// Public share link for a single document. Anonymous /s/:slug returns sanitized
+// Markdown when the share is unrevoked, unexpired, and the (optional) password
+// matches. Subtree / folder-scoped sharing is deliberately deferred per the
+// accepted decision in pageden-dev/docs/permission-model-review-outline-docmost.md
+// — `includeFolderDocuments` will be added in a follow-up if real usage demands it.
+model DocumentShare {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  documentId    String
+  slug          String    @unique // random URL-safe token
+  passwordHash  String? // HMAC-SHA256 of the share password if one was set
+  allowIndexing Boolean   @default(false) // when true the public route may be crawled
+  expiresAt     DateTime? // null = never expires
+  revokedAt     DateTime?
+  createdById   String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document      Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdBy     User      @relation("DocumentShareCreator", fields: [createdById], references: [id])
+
+  @@index([workspaceId, revokedAt, expiresAt])
+  @@index([documentId, revokedAt])
 }
