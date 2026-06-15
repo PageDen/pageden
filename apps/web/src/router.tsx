@@ -16,6 +16,8 @@ import { WorkspaceShell, WorkspaceEmptyState, WorkspaceChooser } from "./feature
 const DocumentView = lazy(() => import("./features/document/document-view").then((m) => ({ default: m.DocumentView })));
 const RevisionHistory = lazy(() => import("./features/document/revision-history").then((m) => ({ default: m.RevisionHistory })));
 const DocumentHandoff = lazy(() => import("./features/document/document-handoff").then((m) => ({ default: m.DocumentHandoff })));
+const WorkspaceDashboard = lazy(() => import("./features/workspace/workspace-dashboard").then((m) => ({ default: m.WorkspaceDashboard })));
+const WorkspaceActivity = lazy(() => import("./features/workspace/workspace-activity").then((m) => ({ default: m.WorkspaceActivity })));
 const TokensPage = lazy(() => import("./features/admin/tokens-page").then((m) => ({ default: m.TokensPage })));
 const AgentsPage = lazy(() => import("./features/admin/agents-page").then((m) => ({ default: m.AgentsPage })));
 const AccountPage = lazy(() => import("./features/account/account-page").then((m) => ({ default: m.AccountPage })));
@@ -192,6 +194,26 @@ const documentHandoffRoute = createRoute({
   ),
 });
 
+const dashboardRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "dashboard",
+  component: () => (
+    <Lazy>
+      <WorkspaceDashboard />
+    </Lazy>
+  ),
+});
+
+const activityRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "activity",
+  component: () => (
+    <Lazy>
+      <WorkspaceActivity />
+    </Lazy>
+  ),
+});
+
 const tokensRoute = createRoute({
   getParentRoute: () => workspaceRoute,
   path: "tokens",
@@ -304,6 +326,8 @@ const routeTree = rootRoute.addChildren([
       documentRoute,
       documentHistoryRoute,
       documentHandoffRoute,
+      dashboardRoute,
+      activityRoute,
       tokensRoute,
       agentsRoute,
       accountRoute,

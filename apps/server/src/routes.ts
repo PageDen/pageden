@@ -19,6 +19,7 @@ import { registerAttachmentRoutes } from "./attachments/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
+import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -127,6 +128,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerAttachmentRoutes(app);
   await registerMcpRoutes(app);
   await registerPermissionRoutes(app);
+  await registerWorkspaceInsightsRoutes(app);
 
   app.get<{ Querystring: { subdomain?: string } }>("/api/workspaces/availability", async (request) => {
     const subdomain = normalizeWorkspaceSubdomain(request.query.subdomain ?? "");

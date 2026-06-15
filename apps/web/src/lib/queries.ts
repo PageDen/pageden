@@ -25,6 +25,12 @@ export const documentQuery = (id: string) =>
 export const documentHandoffQuery = (id: string) =>
   queryOptions({ queryKey: ["document", id, "handoff"], queryFn: () => api.documentHandoff(id) });
 
+export const workspaceActivityQuery = (workspaceId: string) =>
+  queryOptions({ queryKey: ["activity", workspaceId], queryFn: () => api.workspaceActivity(workspaceId) });
+
+export const workspaceDashboardQuery = (workspaceId: string) =>
+  queryOptions({ queryKey: ["dashboard", workspaceId], queryFn: () => api.workspaceDashboard(workspaceId) });
+
 export const revisionsQuery = (id: string) =>
   queryOptions({ queryKey: ["revisions", id], queryFn: () => api.revisions(id) });
 

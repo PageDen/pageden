@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { documentContext } from "../ai-readiness.js";
-import { extractSections, findSection, implementationReadinessFor, taskPacketFor } from "./handoff.js";
+import {
+  extractDecisions,
+  extractPrLinks,
+  extractSections,
+  findSection,
+  implementationReadinessFor,
+  taskPacketFor,
+} from "./handoff.js";
 
 const PLAN = `---
 status: canonical
@@ -102,5 +109,52 @@ describe("taskPacketFor", () => {
     expect(packet.openQuestions[0]).toMatch(/Should drafts/);
     expect(packet.relatedFiles).toContain("apps/server/src/documents/routes.ts");
     expect(packet.implementationReadiness.status).toBe("has_blocking_questions");
+  });
+});
+
+const DECISION_DOC = `# Plan
+
+:::decision
+id: history-diff-baseline
+status: accepted
+date: 2026-06-14
+owner: product
+replaces: previous-current-version-diff
+
+decision: Default history diff compares the selected revision against the previous older revision.
+reason: This answers "what changed in this save?" and matches Outline/Docmost behavior.
+:::
+
+See https://github.com/PageDen/pageden-cloud/pull/37 and https://github.com/PageDen/pageden/issues/12 for the rollout.
+`;
+
+describe("extractDecisions", () => {
+  it("parses :::decision blocks into structured records", () => {
+    const ctx = documentContext(DECISION_DOC);
+    const decisions = extractDecisions(ctx.body);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      id: "history-diff-baseline",
+      status: "accepted",
+      date: "2026-06-14",
+      owner: "product",
+      replaces: "previous-current-version-diff",
+    });
+    expect(decisions[0]?.decision).toMatch(/Default history diff/);
+    expect(decisions[0]?.reason).toMatch(/Outline\/Docmost/);
+  });
+
+  it("returns an empty list when no fences are present", () => {
+    expect(extractDecisions("# Just a doc")).toEqual([]);
+  });
+});
+
+describe("extractPrLinks", () => {
+  it("pulls github PR/issue links from the body and frontmatter", () => {
+    const ctx = documentContext(DECISION_DOC);
+    const links = extractPrLinks(ctx.body, { prLinks: ["https://github.com/PageDen/pageden-cloud/pull/38"] });
+    expect(links).toContain("https://github.com/PageDen/pageden-cloud/pull/37");
+    expect(links).toContain("https://github.com/PageDen/pageden/issues/12");
+    expect(links).toContain("https://github.com/PageDen/pageden-cloud/pull/38");
   });
 });

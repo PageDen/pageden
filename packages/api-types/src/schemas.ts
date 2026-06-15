@@ -182,6 +182,18 @@ export const implementationReadinessSchema = z
   })
   .strict();
 
+export const decisionSchema = z
+  .object({
+    id: z.string(),
+    status: z.string(),
+    date: z.string().nullable(),
+    owner: z.string().nullable(),
+    replaces: z.string().nullable(),
+    decision: z.string(),
+    reason: z.string(),
+  })
+  .strict();
+
 export const taskPacketSchema = z
   .object({
     summary: z.string(),
@@ -194,8 +206,80 @@ export const taskPacketSchema = z
     nonGoals: z.array(z.string()),
     openQuestions: z.array(z.string()),
     relatedFiles: z.array(z.string()),
-    decisions: z.array(z.string()),
+    decisions: z.array(decisionSchema),
+    prLinks: z.array(z.string()),
     implementationReadiness: implementationReadinessSchema,
+  })
+  .strict();
+
+export const activityEventSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string().nullable(),
+    userId: z.string().nullable(),
+    actor: z.enum(["user", "agent", "system", "obsidian_plugin", "unknown"]),
+    action: z.string(),
+    targetType: z.string(),
+    targetId: z.string().nullable(),
+    documentTitle: z.string().nullable(),
+    documentPath: z.string().nullable(),
+    createdAt: iso,
+    metadata: z.unknown().nullable(),
+  })
+  .strict();
+
+export const activityFeedSchema = z
+  .object({
+    workspaceId: z.string(),
+    events: z.array(activityEventSchema),
+    nextBefore: z.string().nullable(),
+  })
+  .strict();
+
+export const dashboardStatsSchema = z
+  .object({
+    workspaceId: z.string(),
+    totals: z.object({ folders: z.number(), documents: z.number() }).strict(),
+    statusCounts: z
+      .object({
+        canonical: z.number(),
+        draft: z.number(),
+        superseded: z.number(),
+        archived: z.number(),
+      })
+      .strict(),
+    supersededDocs: z.array(
+      z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          path: z.string(),
+          supersededBy: documentRefSchema.nullable(),
+        })
+        .strict(),
+    ),
+    recentChanges: z.array(
+      z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          path: z.string(),
+          status: documentStatusSchema,
+          updatedAt: iso,
+        })
+        .strict(),
+    ),
+    recentActivity: z.array(activityEventSchema),
+    topFolders: z.array(
+      z
+        .object({
+          id: z.string(),
+          path: z.string(),
+          name: z.string(),
+          documentCount: z.number(),
+        })
+        .strict(),
+    ),
   })
   .strict();
 

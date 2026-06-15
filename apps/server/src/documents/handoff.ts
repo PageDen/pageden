@@ -34,6 +34,16 @@ export interface DocumentSection {
   content: string;
 }
 
+export interface Decision {
+  id: string;
+  status: string;
+  date: string | null;
+  owner: string | null;
+  replaces: string | null;
+  decision: string;
+  reason: string;
+}
+
 export interface TaskPacket {
   summary: string;
   status: DocumentStatus;
@@ -45,11 +55,102 @@ export interface TaskPacket {
   nonGoals: string[];
   openQuestions: string[];
   relatedFiles: string[];
-  decisions: string[];
+  decisions: Decision[];
+  prLinks: string[];
   implementationReadiness: ImplementationReadiness;
 }
 
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+const DECISION_FENCE_OPEN = /^:::\s*decision\s*$/i;
+const DECISION_FENCE_CLOSE = /^:::\s*$/;
+const PR_LINK_RE = /https?:\/\/(?:[\w-]+\.)*github\.com\/[\w./-]+\/(?:pull|issues)\/\d+|https?:\/\/(?:[\w-]+\.)*gitlab\.com\/[\w./-]+\/(?:-\/)?(?:merge_requests|issues)\/\d+/g;
+
+// Parse ::: decision … ::: fence blocks into structured records so an agent can
+// list canonical decisions without re-reading the whole document. Lines inside
+// the fence are split into a YAML-ish header and free-form prose; the prose is
+// further split into `decision:` and `reason:` lines when present so the
+// agent does not have to do that parsing itself.
+export function extractDecisions(body: string): Decision[] {
+  const lines = body.split("\n");
+  const decisions: Decision[] = [];
+  let inside = false;
+  let buffer: string[] = [];
+  for (const line of lines) {
+    if (!inside) {
+      if (DECISION_FENCE_OPEN.test(line.trim())) {
+        inside = true;
+        buffer = [];
+      }
+      continue;
+    }
+    if (DECISION_FENCE_CLOSE.test(line.trim())) {
+      const decision = parseDecisionBlock(buffer);
+      if (decision) decisions.push(decision);
+      inside = false;
+      buffer = [];
+      continue;
+    }
+    buffer.push(line);
+  }
+  return decisions;
+}
+
+function parseDecisionBlock(lines: string[]): Decision | null {
+  const header: Record<string, string> = {};
+  const prose: string[] = [];
+  let inProse = false;
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!inProse) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        inProse = true;
+        continue;
+      }
+      const match = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(trimmed);
+      if (match) {
+        header[match[1]!.toLowerCase()] = match[2]!.trim();
+        continue;
+      }
+      // First non-header, non-blank line ends the header section.
+      inProse = true;
+      prose.push(line);
+      continue;
+    }
+    prose.push(line);
+  }
+  const id = header.id ?? "";
+  if (!id) return null;
+  const proseText = prose.join("\n").trim();
+  const decisionLine = /^decision:\s*(.+)$/im.exec(proseText)?.[1]?.trim() ?? "";
+  const reasonLine = /^reason:\s*(.+)$/im.exec(proseText)?.[1]?.trim() ?? "";
+  return {
+    id,
+    status: header.status ?? "unspecified",
+    date: header.date ?? null,
+    owner: header.owner ?? null,
+    replaces: header.replaces ?? null,
+    decision: decisionLine || proseText,
+    reason: reasonLine,
+  };
+}
+
+// Pull github/gitlab pull-request and issue links out of the frontmatter and body
+// so the handoff packet can show "this doc → PR #123 in repo X" without an agent
+// having to grep for them.
+export function extractPrLinks(body: string, frontmatter: Record<string, string | string[]>): string[] {
+  const found = new Set<string>();
+  const fmRaw = frontmatter.prLinks;
+  if (Array.isArray(fmRaw)) {
+    for (const value of fmRaw) {
+      if (typeof value === "string") found.add(value.trim());
+    }
+  } else if (typeof fmRaw === "string") {
+    found.add(fmRaw.trim());
+  }
+  for (const match of body.matchAll(PR_LINK_RE)) found.add(match[0]);
+  return [...found].filter((value) => value.length > 0 && value.length <= 512).slice(0, 30);
+}
 
 // Split the body into a flat ordered list of sections. Each section's `content`
 // is the text from the line after its heading up to the next heading line — so
@@ -238,7 +339,6 @@ export function taskPacketFor({
   const tests = sectionByPattern(SECTION_PATTERNS.tests);
   const nonGoals = sectionByPattern(SECTION_PATTERNS.nonGoals);
   const openQ = sectionByPattern(SECTION_PATTERNS.openQuestions);
-  const decisions = sectionByPattern(SECTION_PATTERNS.decisions);
 
   return {
     summary: condense(summary, 480),
@@ -251,7 +351,8 @@ export function taskPacketFor({
     nonGoals: collectBullets(nonGoals?.content),
     openQuestions: collectBullets(openQ?.content),
     relatedFiles: extractRelatedFiles(context.body),
-    decisions: collectBullets(decisions?.content),
+    decisions: extractDecisions(context.body),
+    prLinks: extractPrLinks(context.body, context.frontmatter),
     implementationReadiness: implementationReadinessFor({ status, context }),
   };
 }

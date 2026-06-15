@@ -10,6 +10,8 @@ import {
   documentRenameSchema,
   documentWithContentSchema,
   handoffPacketSchema,
+  activityFeedSchema,
+  dashboardStatsSchema,
   groupCreateSchema,
   groupsListSchema,
   permissionsListSchema,
@@ -159,6 +161,14 @@ export const api = {
   },
   documentHandoff: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/handoff`, { schema: handoffPacketSchema }),
+  workspaceActivity: (workspaceId: string, before?: string) =>
+    request(
+      "GET",
+      `/workspaces/${encodeURIComponent(workspaceId)}/activity${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+      { schema: activityFeedSchema },
+    ),
+  workspaceDashboard: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/dashboard`, { schema: dashboardStatsSchema }),
   attachments: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/attachments`, { schema: attachmentListSchema }),
   attachmentUrl: (id: string) => `${BASE}/attachments/${encodeURIComponent(id)}`,

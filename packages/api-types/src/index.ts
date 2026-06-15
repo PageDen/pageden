@@ -97,6 +97,16 @@ export interface ImplementationReadiness {
   reasons: ImplementationReadinessReason[];
 }
 
+export interface Decision {
+  id: string;
+  status: string;
+  date: string | null;
+  owner: string | null;
+  replaces: string | null;
+  decision: string;
+  reason: string;
+}
+
 export interface TaskPacket {
   summary: string;
   status: DocumentStatus;
@@ -108,8 +118,41 @@ export interface TaskPacket {
   nonGoals: string[];
   openQuestions: string[];
   relatedFiles: string[];
-  decisions: string[];
+  decisions: Decision[];
+  prLinks: string[];
   implementationReadiness: ImplementationReadiness;
+}
+
+export type ActivityActor = "user" | "agent" | "system" | "obsidian_plugin" | "unknown";
+
+export interface ActivityEvent {
+  id: string;
+  workspaceId: string | null;
+  userId: string | null;
+  actor: ActivityActor;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  documentTitle: string | null;
+  documentPath: string | null;
+  createdAt: string;
+  metadata: unknown;
+}
+
+export interface ActivityFeed {
+  workspaceId: string;
+  events: ActivityEvent[];
+  nextBefore: string | null;
+}
+
+export interface DashboardStats {
+  workspaceId: string;
+  totals: { folders: number; documents: number };
+  statusCounts: { canonical: number; draft: number; superseded: number; archived: number };
+  supersededDocs: Array<{ id: string; title: string; path: string; supersededBy: DocumentRef | null }>;
+  recentChanges: Array<{ id: string; title: string; path: string; status: DocumentStatus; updatedAt: string }>;
+  recentActivity: ActivityEvent[];
+  topFolders: Array<{ id: string; path: string; name: string; documentCount: number }>;
 }
 
 export interface HandoffPacket {
