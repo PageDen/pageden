@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Download, Eye, History, Info, Radio, Save, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Download, Eye, History, Info, Radio, Save, Share2, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -14,6 +14,7 @@ import { documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
 import { useDocumentDraft } from "../../lib/draft";
 import { Button } from "../../components/ui/button";
 import { RichMarkdownEditor } from "./rich-markdown-editor";
+import { ShareDialog } from "./share-dialog";
 import { isAllowedEmbedSrc } from "./media";
 import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
@@ -33,6 +34,8 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   const [conflict, setConflict] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const canShare = doc.capabilities?.canShare ?? doc.permission === "manager";
   const tree = useQuery({ ...treeQuery(workspaceId), enabled: preview || !canEdit });
   const attachments = useQuery({
     queryKey: ["attachments", doc.id],
@@ -200,6 +203,17 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                 {live ? `Live ${liveStatus === "connected" ? "on" : "connecting"}` : "Live"}
               </Button>
             ) : null}
+            {canShare ? (
+              <Button
+                variant="ghost"
+                className="h-9 gap-1.5 px-2.5"
+                onClick={() => setShareOpen(true)}
+                title="Create or manage public share links"
+              >
+                <Share2 size={15} />
+                Share
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               className="h-9 gap-1.5 px-2.5"
@@ -340,6 +354,14 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         </div>
         {!canEdit || preview ? <DocumentInsightsPanel content={previewContent} readiness={doc.aiReadiness} /> : null}
       </div>
+      {shareOpen ? (
+        <ShareDialog
+          documentId={doc.id}
+          workspaceId={workspaceId}
+          documentTitle={doc.title}
+          onClose={() => setShareOpen(false)}
+        />
+      ) : null}
     </article>
   );
 }

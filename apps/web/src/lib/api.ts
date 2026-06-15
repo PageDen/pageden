@@ -19,6 +19,11 @@ import {
   groupsListSchema,
   permissionsListSchema,
   permissionsWriteSchema,
+  folderDefaultRoleSchema,
+  documentShareResponseSchema,
+  documentShareListSchema,
+  agentEditScopeSchema,
+  agentEditScopeUpdateSchema,
   searchSchema,
   tokenCreateSchema,
   tokenListSchema,
@@ -364,6 +369,35 @@ export const api = {
     request("GET", `/folders/${encodeURIComponent(id)}/permissions`, { schema: permissionsListSchema }),
   setFolderPermissions: (id: string, permissions: PermissionInput[], version?: string) =>
     request("PUT", `/folders/${encodeURIComponent(id)}/permissions`, { body: { permissions, version }, schema: permissionsWriteSchema }),
+  setFolderDefaultRole: (id: string, defaultRole: "viewer" | "editor" | "manager" | null) =>
+    request("PUT", `/folders/${encodeURIComponent(id)}/default-role`, { body: { defaultRole }, schema: folderDefaultRoleSchema }),
+  // --- shares (Phase A2) ---
+  createShare: (
+    documentId: string,
+    body: { ttlDays?: number; password?: string | null; allowIndexing?: boolean },
+  ) =>
+    request("POST", `/documents/${encodeURIComponent(documentId)}/share`, { body, schema: documentShareResponseSchema }),
+  listShares: (
+    workspaceId: string,
+    opts: { documentId?: string; includeRevoked?: boolean } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.documentId) params.set("documentId", opts.documentId);
+    if (opts.includeRevoked) params.set("includeRevoked", "true");
+    const qs = params.toString();
+    return request(
+      "GET",
+      `/workspaces/${encodeURIComponent(workspaceId)}/shares${qs ? `?${qs}` : ""}`,
+      { schema: documentShareListSchema },
+    );
+  },
+  revokeShare: (shareId: string) =>
+    request("DELETE", `/shares/${encodeURIComponent(shareId)}`, { schema: documentShareResponseSchema }),
+  // --- agent edit scope (Phase C2) ---
+  getAgentEditScope: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/agent-edit-scope`, { schema: agentEditScopeSchema }),
+  setAgentEditScope: (workspaceId: string, folderId: string | null) =>
+    request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/agent-edit-scope`, { body: { folderId }, schema: agentEditScopeUpdateSchema }),
 };
 
 function websocketBaseUrl(): string {

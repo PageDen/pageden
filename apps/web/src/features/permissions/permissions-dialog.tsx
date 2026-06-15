@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, crudErrorMessage, type PermissionInput } from "../../lib/api";
-import { groupsQuery, usersQuery } from "../../lib/queries";
+import { groupsQuery, treeQuery, usersQuery } from "../../lib/queries";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
+
+type DefaultRole = "viewer" | "editor" | "manager" | null;
 
 type Kind = "document" | "folder";
 
@@ -113,6 +115,10 @@ export function PermissionsDialog({
             onAdd={(row) => update([...editable, row])}
           />
 
+          {kind === "folder" ? (
+            <FolderDefaultRoleSection folderId={id} workspaceId={workspaceId} />
+          ) : null}
+
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
           <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
             <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -173,6 +179,63 @@ function AddGrant({
           Add
         </Button>
       </div>
+    </div>
+  );
+}
+
+// Folder default-role floor — every workspace member sees docs in this folder
+// (and descendants without a closer override) as at least this role. null =
+// private, the historical "explicit grants only" behavior.
+function FolderDefaultRoleSection({ folderId, workspaceId }: { folderId: string; workspaceId: string }) {
+  const queryClient = useQueryClient();
+  const tree = useQuery({ ...treeQuery(workspaceId), staleTime: 30_000 });
+  const folder = tree.data?.folders.find((f) => f.id === folderId);
+  const serverValue: DefaultRole = (folder?.defaultRole ?? null) as DefaultRole;
+  const [value, setValue] = useState<DefaultRole>(serverValue);
+  const [error, setError] = useState<string | null>(null);
+
+  // Re-sync the local picker if the tree refetches with a different value.
+  useEffect(() => {
+    setValue(serverValue);
+  }, [serverValue]);
+
+  const save = useMutation({
+    mutationFn: () => api.setFolderDefaultRole(folderId, value),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+    },
+    onError: (err) => setError(crudErrorMessage(err)),
+  });
+
+  const dirty = value !== serverValue;
+
+  return (
+    <div className="space-y-2 border-t border-slate-200 pt-3 text-sm">
+      <div className="flex flex-col gap-1">
+        <span className="text-sm font-medium text-slate-700">Default role for workspace members</span>
+        <span className="text-xs text-slate-500">
+          Every member sees documents in this folder as at least this role, even without an explicit grant.
+          Guests are not affected.
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <select
+          aria-label="Default role"
+          className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+          value={value ?? ""}
+          onChange={(e) => setValue((e.target.value || null) as DefaultRole)}
+        >
+          <option value="">Private (explicit grants only)</option>
+          <option value="viewer">Viewer</option>
+          <option value="editor">Editor</option>
+          <option value="manager">Manager</option>
+        </select>
+        <Button variant="ghost" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+          {save.isPending ? "Saving…" : "Save default"}
+        </Button>
+      </div>
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </div>
   );
 }

@@ -9,6 +9,7 @@ export function AdminLayout() {
       <nav className="mb-6 flex gap-1 border-b border-slate-200 pb-2">
         <Link to="/w/$workspaceId/admin/users" params={{ workspaceId }} className={tab}>Users</Link>
         <Link to="/w/$workspaceId/admin/groups" params={{ workspaceId }} className={tab}>Groups</Link>
+        <Link to="/w/$workspaceId/admin/settings" params={{ workspaceId }} className={tab}>Settings</Link>
       </nav>
       <Outlet />
     </div>
