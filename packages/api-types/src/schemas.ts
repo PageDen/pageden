@@ -158,6 +158,34 @@ export const treeSchema = z
 
 export const folderDefaultRoleSchema = z.object({ id: z.string(), defaultRole: roleSchema.nullable() }).strict();
 
+export const documentShareSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    documentId: z.string(),
+    slug: z.string(),
+    hasPassword: z.boolean(),
+    allowIndexing: z.boolean(),
+    expiresAt: iso.nullable(),
+    revokedAt: iso.nullable(),
+    createdById: z.string(),
+    createdAt: iso,
+    updatedAt: iso,
+    active: z.boolean(),
+  })
+  .strict();
+
+export const documentShareResponseSchema = z.object({ share: documentShareSchema }).strict();
+export const documentShareListSchema = z.object({ workspaceId: z.string(), shares: z.array(documentShareSchema) }).strict();
+export const publicShareSchema = z
+  .object({
+    title: z.string(),
+    path: z.string(),
+    content: z.string(),
+    share: z.object({ slug: z.string(), allowIndexing: z.boolean(), expiresAt: iso.nullable() }).strict(),
+  })
+  .strict();
+
 export const documentRefSchema = z.object({ id: z.string(), title: z.string(), path: z.string() }).strict();
 
 export const aiReadinessIssueSchema = z
