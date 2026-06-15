@@ -12,6 +12,15 @@ export default defineConfig({
     fileParallelism: false,
     hookTimeout: 30000,
     testTimeout: 30000,
+    // @vitest/coverage-v8@2.1.9 intermittently crashes its default tinypool
+    // thread worker on CI with "Worker exited unexpectedly" right after the
+    // last test file finishes — every test passes but vitest exits non-zero,
+    // failing the coverage gate. Use the forks pool (Node child_process) so
+    // each test file runs in its own short-lived process; that sidesteps the
+    // worker-thread bug while keeping the per-file module isolation our
+    // tests rely on (each file's afterAll disconnects prisma + closes the
+    // shared Fastify app, which only works if the module is per-file).
+    pool: "forks",
     coverage: {
       enabled: true,
       provider: "v8",

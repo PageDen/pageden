@@ -233,6 +233,67 @@ describe("agent edit scope (Phase C2)", () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it("GET returns null scope by default and reflects the latest PUT", async () => {
+    const s = await setup();
+    const before = await req({
+      method: "GET",
+      url: `/api/workspaces/${s.ws.id}/agent-edit-scope`,
+      cookies: s.adminCookie,
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json()).toMatchObject({
+      workspaceId: s.ws.id,
+      agentEditScopeFolderId: null,
+      agentEditScopeFolder: null,
+    });
+
+    await req({
+      method: "PUT",
+      url: `/api/workspaces/${s.ws.id}/agent-edit-scope`,
+      cookies: s.adminCookie,
+      payload: { folderId: s.folderId },
+    });
+
+    const after = await req({
+      method: "GET",
+      url: `/api/workspaces/${s.ws.id}/agent-edit-scope`,
+      cookies: s.adminCookie,
+    });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().agentEditScopeFolderId).toBe(s.folderId);
+    expect(after.json().agentEditScopeFolder?.id).toBe(s.folderId);
+    expect(typeof after.json().agentEditScopeFolder?.path).toBe("string");
+    expect(typeof after.json().agentEditScopeFolder?.name).toBe("string");
+  });
+
+  it("GET requires admin (members get 404, not the scope)", async () => {
+    const s = await setup();
+    const member = await req({
+      method: "POST",
+      url: "/api/users",
+      cookies: s.adminCookie,
+      payload: {
+        workspaceId: s.ws.id,
+        email: "scope-reader@t.co",
+        name: "Member",
+        password: "ChangeMe-12345678",
+        role: "member",
+      },
+    });
+    expect(member.statusCode).toBe(201);
+    const memberId = member.json().id as string;
+    const { sealSession, SESSION_COOKIE } = await import("../../src/session.js");
+    const { env } = await import("../../src/env.js");
+    const cookie = { [SESSION_COOKIE]: sealSession(memberId, 0, env.sessionSecret) };
+
+    const res = await req({
+      method: "GET",
+      url: `/api/workspaces/${s.ws.id}/agent-edit-scope`,
+      cookies: cookie,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it("MCP pageden_workspace_summary surfaces the scope so agents can pre-flight", async () => {
     const s = await setup(["search", "read"]);
     await req({
