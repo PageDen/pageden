@@ -192,6 +192,21 @@ export interface RevisionSummary {
   createdAt: string;
   changeSource: ChangeSource;
   message: string | null;
+  groupId: string;
+  groupCount: number;
+  groupStartVersionNumber: number;
+  groupEndVersionNumber: number;
+  collapsedRevisions: CollapsedRevisionSummary[];
+}
+
+export interface CollapsedRevisionSummary {
+  id: string;
+  versionNumber: number;
+  checksum: string;
+  createdBy: string;
+  createdAt: string;
+  changeSource: ChangeSource;
+  message: string | null;
 }
 
 export interface RevisionDetail {

@@ -34,6 +34,12 @@ export const workspaceDashboardQuery = (workspaceId: string) =>
 export const revisionsQuery = (id: string) =>
   queryOptions({ queryKey: ["revisions", id], queryFn: () => api.revisions(id) });
 
+export const revisionDetailQuery = (id: string, revisionId: string) =>
+  queryOptions({
+    queryKey: ["revision", id, revisionId],
+    queryFn: () => api.revisionDetail(id, revisionId),
+  });
+
 export const usersQuery = (workspaceId: string) =>
   queryOptions({ queryKey: ["users", workspaceId], queryFn: () => api.users(workspaceId) });
 

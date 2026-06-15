@@ -184,6 +184,48 @@ describe("documents — endpoints & validation", () => {
     expect(hidden.statusCode).toBe(404);
   });
 
+  it("groups rapid same-user same-source revisions without hiding their detail endpoint", async () => {
+    const s = await baseScenario();
+    const v2 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# v2\n" },
+    });
+    const v3 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: v2.json().version, content: "# v3\n" },
+    });
+    expect(v3.statusCode).toBe(200);
+
+    const list = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions`, cookies: s.adminCookie });
+    expect(list.statusCode).toBe(200);
+    const revisions = list.json().revisions as Array<{
+      id: string;
+      versionNumber: number;
+      groupCount: number;
+      groupStartVersionNumber: number;
+      groupEndVersionNumber: number;
+      collapsedRevisions: Array<{ id: string; versionNumber: number }>;
+    }>;
+    expect(revisions).toHaveLength(2);
+    expect(revisions[0]).toMatchObject({
+      id: v3.json().version,
+      versionNumber: 3,
+      groupCount: 2,
+      groupStartVersionNumber: 2,
+      groupEndVersionNumber: 3,
+    });
+    expect(revisions[0]!.collapsedRevisions).toEqual([{ id: v2.json().version, versionNumber: 2, checksum: expect.any(String), createdBy: s.admin.id, createdAt: expect.any(String), changeSource: "web_app", message: null }]);
+    expect(revisions[1]).toMatchObject({ versionNumber: 1, groupCount: 1, collapsedRevisions: [] });
+
+    const collapsedDetail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${v2.json().version}`, cookies: s.adminCookie });
+    expect(collapsedDetail.statusCode).toBe(200);
+    expect(collapsedDetail.json().revision.content).toBe("# v2\n");
+  });
+
   it("hides documents the user cannot see (404 on read, absent from list)", async () => {
     const s = await baseScenario();
     const { cookie } = await member(s.ws.id, "nobody@t.co", "member");
