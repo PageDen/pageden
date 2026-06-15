@@ -12,7 +12,7 @@ export function AdminUsers() {
   const workspaceId = params.workspaceId ?? "";
   const queryClient = useQueryClient();
   const users = useQuery(usersQuery(workspaceId));
-  const [form, setForm] = useState({ email: "", name: "", password: "", role: "member" as "member" | "admin" });
+  const [form, setForm] = useState({ email: "", name: "", password: "", role: "member" as "member" | "admin" | "viewer" | "guest" });
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -38,9 +38,11 @@ export function AdminUsers() {
         <Input placeholder="Email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
         <Input placeholder="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
         <PasswordInput placeholder="Temp password (≥8)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
-        <select aria-label="Role" className="rounded-md border border-slate-300 px-3 py-2 text-sm" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as "member" | "admin" })}>
+        <select aria-label="Role" className="rounded-md border border-slate-300 px-3 py-2 text-sm" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as "member" | "admin" | "viewer" | "guest" })}>
           <option value="member">Member</option>
           <option value="admin">Admin</option>
+          <option value="viewer">Viewer (read-only)</option>
+          <option value="guest">Guest (explicit grants only)</option>
         </select>
         <div className="col-span-2 flex items-center justify-between">
           {error ? <span className="text-sm text-red-600">{error}</span> : <span />}

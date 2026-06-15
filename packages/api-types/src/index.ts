@@ -2,7 +2,7 @@
 // The wire `version` is a DocumentRevision id (opaque string). Roles are viewer|editor|manager.
 
 export type Role = "viewer" | "editor" | "manager";
-export type WorkspaceRole = "member" | "admin";
+export type WorkspaceRole = "member" | "admin" | "viewer" | "guest";
 export type WorkspaceRoutingMode = "cloud_subdomain" | "custom_domain" | "self_hosted" | "explicit";
 export type CustomDomainStatus = "pending" | "verified" | "active" | "failed";
 export type ChangeSource = "web_app" | "obsidian_plugin" | "agent" | "import" | "system";

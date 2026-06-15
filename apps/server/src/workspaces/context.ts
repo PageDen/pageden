@@ -12,7 +12,7 @@ export interface WorkspaceContext {
   subdomain: string | null;
   customDomain: string | null;
   customDomainStatus: "pending" | "verified" | "active" | "failed";
-  role: "member" | "admin";
+  role: "member" | "admin" | "viewer" | "guest";
   routingMode: WorkspaceRoutingMode;
 }
 

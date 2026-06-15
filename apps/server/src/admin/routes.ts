@@ -217,7 +217,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const email = request.body.email?.trim().toLowerCase();
       const name = request.body.name?.trim();
       const password = request.body.password ?? "";
-      const role: WorkspaceRole = request.body.role === "admin" ? "admin" : "member";
+      // Phase B: accept viewer/guest tiers alongside the historical member/admin.
+      const requestedRole = request.body.role;
+      const role: WorkspaceRole =
+        requestedRole === "admin" || requestedRole === "viewer" || requestedRole === "guest"
+          ? requestedRole
+          : "member";
 
       const fields: Record<string, string> = {};
       if (!workspaceId) fields.workspaceId = "workspaceId is required.";

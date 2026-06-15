@@ -1,6 +1,6 @@
 import type { Role } from "@pageden/api-types";
 import { prisma } from "../prisma.js";
-import { strongest } from "./index.js";
+import { capRole, strongest } from "./index.js";
 
 export interface FolderNode {
   id: string;
@@ -31,6 +31,8 @@ export async function buildWorkspaceResolver(
   });
   const isAdmin = membership?.role === "admin";
   const isMember = membership !== null;
+  const isViewerTier = membership?.role === "viewer";
+  const isGuest = membership?.role === "guest";
 
   const groupIds = (
     await prisma.groupMembership.findMany({
@@ -90,25 +92,32 @@ export async function buildWorkspaceResolver(
     if (!isMember) return null;
     if (isAdmin) return "manager";
     const roles: Role[] = [];
+    // Phase B: workspace-wide viewer tier sees every folder.
+    if (isViewerTier) roles.push("viewer");
     for (const id of ancestorFolderIds(folderId)) {
-      // Workspace-member default-role floor from any ancestor folder.
-      const floor = defaultRoleOf.get(id);
-      if (floor) roles.push(floor);
+      // Default-role floors skipped for guests so they only see explicit grants.
+      if (!isGuest) {
+        const floor = defaultRoleOf.get(id);
+        if (floor) roles.push(floor);
+      }
       const grants = folderGrants.get(id);
       if (grants) roles.push(...grants);
     }
-    return strongest(roles);
+    const computed = strongest(roles);
+    return isViewerTier ? capRole(computed, "viewer") : computed;
   }
 
   function documentRole(doc: { id: string; folderId: string }): Role | null {
     if (!isMember) return null;
     if (isAdmin) return "manager";
     const roles: Role[] = [];
+    if (isViewerTier) roles.push("viewer");
     const inherited = folderRole(doc.folderId);
     if (inherited) roles.push(inherited);
     const grants = documentGrants.get(doc.id);
     if (grants) roles.push(...grants);
-    return strongest(roles);
+    const computed = strongest(roles);
+    return isViewerTier ? capRole(computed, "viewer") : computed;
   }
 
   return { workspaceId, isAdmin, folders, folderRole, documentRole, ancestorFolderIds };

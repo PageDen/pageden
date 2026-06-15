@@ -15,7 +15,7 @@ type Workspace = {
   name: string;
   slug?: string | null;
   subdomain?: string | null;
-  role: "member" | "admin";
+  role: "member" | "admin" | "viewer" | "guest";
 };
 
 function subdomainFromName(value: string): string {

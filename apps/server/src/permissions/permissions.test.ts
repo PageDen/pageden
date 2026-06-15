@@ -41,7 +41,7 @@ interface FakePermission {
 
 function fakeClient(input: {
   document?: { id: string; workspaceId: string; folderId: string };
-  workspaceRole?: "member" | "admin" | null;
+  workspaceRole?: "member" | "admin" | "viewer" | "guest" | null;
   groupIds?: string[];
   folders?: Record<string, { id: string; parentFolderId: string | null }>;
   permissions?: FakePermission[];
