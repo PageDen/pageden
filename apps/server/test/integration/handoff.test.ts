@@ -164,6 +164,7 @@ describe("MCP handoff tools", () => {
     const s = await agentToken();
     const res = await tool(s.token, "pageden_get_task_packet", {});
     expect(res.statusCode).toBe(200);
-    expect(res.json().result.content[0].text).toMatch(/documentId or path/i);
+    // Tool errors come back as a JSON-RPC error, not a tool result.
+    expect(res.json().error.message).toMatch(/documentId or path/i);
   });
 });
