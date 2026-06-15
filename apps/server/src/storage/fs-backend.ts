@@ -2,17 +2,28 @@ import { access, lstat, mkdir, open, readdir, readFile, rename, stat, unlink, ut
 import { createReadStream, createWriteStream } from "node:fs";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StorageNotFoundError, type StorageBackend, type StoredObject } from "./backend.js";
 
 // Local filesystem store rooted at `root`. Writes go via temp file -> fsync -> atomic
 // rename, so a destination object is never partially written and a crash/retry cannot
 // create a divergent file (content-addressing makes a concurrent-writer race safe).
+const SAFE_STORAGE_KEY_RE = /^(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+$/;
+
 export class FsBackend implements StorageBackend {
   constructor(private readonly root: string) {}
 
   private abs(key: string): string {
-    return join(this.root, key);
+    if (!SAFE_STORAGE_KEY_RE.test(key) || key.split("/").includes("..")) {
+      throw new Error(`Refusing unsafe storage key: ${key}`);
+    }
+    const root = resolve(this.root);
+    const destination = resolve(root, key);
+    const rel = relative(root, destination);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error(`Refusing storage key outside root: ${key}`);
+    }
+    return destination;
   }
 
   private async exists(path: string): Promise<boolean> {

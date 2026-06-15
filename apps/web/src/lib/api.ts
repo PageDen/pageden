@@ -250,6 +250,44 @@ export const api = {
       xhr.send(file);
     });
   },
+  uploadVaultZip: (
+    file: File,
+    options: { workspaceId: string; targetRootName: string; conflictPolicy: "skip" | "rename" },
+    onProgress: (percent: number) => void,
+  ): Promise<{ jobId: string }> => {
+    return new Promise((resolve, reject) => {
+      const params = new URLSearchParams({
+        workspaceId: options.workspaceId,
+        targetRootName: options.targetRootName,
+        conflictPolicy: options.conflictPolicy,
+      });
+      const xhr = new XMLHttpRequest();
+      xhr.withCredentials = true;
+      xhr.open("POST", `${BASE}/import/vault?${params.toString()}`);
+      xhr.setRequestHeader("content-type", file.type || "application/zip");
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+      xhr.addEventListener("load", () => {
+        const json = safeJson(xhr.responseText);
+        if (xhr.status === 401 && onUnauthorized) onUnauthorized();
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new ApiError(xhr.status, json));
+          return;
+        }
+        if (!json || typeof json !== "object" || typeof (json as { jobId?: unknown }).jobId !== "string") {
+          reject(new ApiError(xhr.status, json));
+          return;
+        }
+        resolve({ jobId: (json as { jobId: string }).jobId });
+      });
+      xhr.addEventListener("error", () => reject(new ApiError(0, "Network error")));
+      xhr.addEventListener("abort", () => reject(new ApiError(0, "Upload aborted")));
+      xhr.send(file);
+    });
+  },
+  importJob: (id: string) => request<ImportJob>("GET", `/import/jobs/${encodeURIComponent(id)}`),
+  retryImportJob: (id: string) => request<{ jobId: string }>("POST", `/import/jobs/${encodeURIComponent(id)}/retry`),
   revisions: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/revisions`, { schema: revisionsSchema }),
   documentHistory: (id: string) =>
@@ -343,6 +381,24 @@ export interface PermissionInput {
   subjectType: "user" | "group";
   subjectId: string;
   role: "viewer" | "editor" | "manager";
+}
+
+export interface ImportJob {
+  id: string;
+  workspaceId: string;
+  status: "queued" | "running" | "done" | "failed";
+  progress: { phase?: string; current?: number; total?: number; label?: string } | null;
+  report: {
+    foldersCreated?: number;
+    documentsCreated?: number;
+    documentsSkipped?: number;
+    attachmentsUploaded?: number;
+    attachmentWarnings?: string[];
+    rows?: Array<{ path: string; status: "created" | "skipped" | "warning"; message: string }>;
+  } | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 /** Human-readable message for a CRUD failure, covering the backend's expected outcomes. */
