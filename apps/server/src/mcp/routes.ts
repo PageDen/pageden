@@ -1238,7 +1238,7 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
         data: { workspaceId, folderId, title, slug, path, createdById: auth.userId, updatedById: auth.userId },
       });
       const revision = await tx.documentRevision.create({
-        data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent" },
+        data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent", contributorIds: [auth.userId] },
       });
       const metadata = await metadataFromContent(tx, workspaceId, content, doc.id);
       const updated = await tx.document.update({
@@ -1584,7 +1584,7 @@ async function upsertDocumentAtPath({
         },
       });
       const revision = await tx.documentRevision.create({
-        data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent" },
+        data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent", contributorIds: [auth.userId] },
       });
       const updated = await tx.document.update({
         where: { id: doc.id },

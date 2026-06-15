@@ -33,6 +33,7 @@ import {
   okSchema,
   authConfigSchema,
   publicCurrentWorkspaceSchema,
+  documentHistorySchema,
   revisionDetailSchema,
   revisionsSchema,
   treeSchema,
@@ -251,6 +252,8 @@ export const api = {
   },
   revisions: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/revisions`, { schema: revisionsSchema }),
+  documentHistory: (id: string) =>
+    request("GET", `/documents/${encodeURIComponent(id)}/history`, { schema: documentHistorySchema }),
   revisionDetail: (id: string, revisionId: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}`, {
       schema: revisionDetailSchema,
@@ -261,6 +264,8 @@ export const api = {
     request("POST", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
       schema: writeResultSchema,
     }),
+  updateRevisionMetadata: (id: string, revisionId: string, body: { label?: string | null; isPinned?: boolean }) =>
+    request("PATCH", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}`, { body, schema: okSchema }),
   createDocument: (body: { workspaceId: string; folderId: string; title: string; slug: string; content?: string }) =>
     request("POST", "/documents", { body: { content: "", ...body }, schema: documentCreateSchema }),
   renameDocument: (id: string, body: { slug: string; title?: string }) =>

@@ -37,6 +37,9 @@ export const documentCommentsQuery = (documentId: string) =>
 export const revisionsQuery = (id: string) =>
   queryOptions({ queryKey: ["revisions", id], queryFn: () => api.revisions(id) });
 
+export const documentHistoryQuery = (id: string) =>
+  queryOptions({ queryKey: ["history", id], queryFn: () => api.documentHistory(id) });
+
 export const revisionDetailQuery = (id: string, revisionId: string) =>
   queryOptions({
     queryKey: ["revision", id, revisionId],

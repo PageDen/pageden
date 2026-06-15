@@ -78,6 +78,9 @@ type RevisionListRow = {
   changeSource: ChangeSource;
   message: string | null;
   revisionGroupId: string | null;
+  contributorIds: string[];
+  isPinned: boolean;
+  label: string | null;
 };
 
 async function siblingSlugTaken(tx: Tx, folderId: string, slug: string, exceptId?: string): Promise<boolean> {
@@ -102,9 +105,11 @@ async function revisionGroupIdForWrite(tx: Tx, doc: { id: string }, opts: { user
       changeSource: true,
       message: true,
       revisionGroupId: true,
+      isPinned: true,
+      label: true,
     },
   });
-  if (!previous || previous.versionNumber <= 1 || previous.message) return null;
+  if (!previous || previous.versionNumber <= 1 || previous.message || previous.isPinned || previous.label) return null;
   if (previous.createdById !== opts.userId || previous.changeSource !== opts.changeSource) return null;
   if (Date.now() - previous.createdAt.getTime() > REVISION_BURST_WINDOW_MS) return null;
   return previous.revisionGroupId ?? previous.id;
@@ -119,6 +124,9 @@ function revisionListItem(revision: RevisionListRow) {
     createdAt: revision.createdAt.toISOString(),
     changeSource: revision.changeSource,
     message: revision.message,
+    contributorIds: revision.contributorIds,
+    isPinned: revision.isPinned,
+    label: revision.label,
   };
 }
 
@@ -145,6 +153,36 @@ function groupedRevisionList(revisions: RevisionListRow[]) {
     };
   });
 }
+
+function historyActorFor(action: string, metadata: unknown, userId: string | null): "user" | "agent" | "system" | "obsidian_plugin" | "unknown" {
+  if (action.endsWith("_by_agent") || action === "mcp_tool_called") return "agent";
+  if (action === "document_pushed") return "obsidian_plugin";
+  if (
+    metadata &&
+    typeof metadata === "object" &&
+    "tokenKind" in metadata &&
+    typeof (metadata as { tokenKind?: unknown }).tokenKind === "string"
+  ) {
+    const kind = (metadata as { tokenKind: string }).tokenKind;
+    if (kind === "agent") return "agent";
+    if (kind === "obsidian") return "obsidian_plugin";
+  }
+  if (userId) return "user";
+  return "system";
+}
+
+const HISTORY_EVENT_ACTIONS = [
+  "document_created",
+  "document_updated",
+  "document_pushed",
+  "document_renamed",
+  "document_moved",
+  "document_restored",
+  "document_created_by_agent",
+  "document_updated_by_agent",
+  "document_appended_by_agent",
+  "document_revision_metadata_updated",
+] as const;
 
 interface WriteOutcome {
   ok: boolean;
@@ -252,6 +290,7 @@ export async function applyDocumentWrite(opts: {
         createdById: opts.userId,
         changeSource: opts.changeSource,
         revisionGroupId,
+        contributorIds: [opts.userId],
       },
     });
     const metadata = await metadataFromContent(tx, doc.workspaceId, opts.content, doc.id);
@@ -685,6 +724,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
             checksum: sum,
             createdById: auth.userId,
             changeSource: "web_app",
+            contributorIds: [auth.userId],
           },
         });
         const metadata = await metadataFromContent(tx, workspaceId!, content, doc.id);
@@ -929,11 +969,53 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     if (!(await resolveDocumentRole(auth.userId, doc.id))) return notFound(reply, "Document not found.");
 
     const revisions = await prisma.documentRevision.findMany({
-      where: { documentId: doc.id },
+      where: { documentId: doc.id, prunedAt: null },
       orderBy: { versionNumber: "desc" },
     });
     return { revisions: groupedRevisionList(revisions) };
   });
+
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/history",
+    { config: { rateLimit: { max: Number(process.env.DOCUMENT_HISTORY_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true } });
+      if (!doc) return notFound(reply, "Document not found.");
+      if (!(await resolveDocumentRole(auth.userId, doc.id))) return notFound(reply, "Document not found.");
+
+      const revisions = groupedRevisionList(
+        await prisma.documentRevision.findMany({
+          where: { documentId: doc.id, prunedAt: null },
+          orderBy: { versionNumber: "desc" },
+        }),
+      );
+      const events = await prisma.auditEvent.findMany({
+        where: { targetType: "document", targetId: doc.id, action: { in: [...HISTORY_EVENT_ACTIONS] } },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+      });
+      const timeline = [
+        ...revisions.map((revision) => ({ type: "revision" as const, id: `revision:${revision.id}`, createdAt: revision.createdAt, revision })),
+        ...events.map((event) => ({
+          type: "event" as const,
+          id: `event:${event.id}`,
+          createdAt: event.createdAt.toISOString(),
+          event: {
+            action: event.action,
+            actor: historyActorFor(event.action, event.metadata, event.userId),
+            userId: event.userId,
+            targetType: event.targetType,
+            targetId: event.targetId,
+            metadata: event.metadata ?? null,
+          },
+        })),
+      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return { revisions, timeline };
+    },
+  );
 
   // Single revision preview (viewer). The list endpoint stays metadata-only; this endpoint returns
   // the selected snapshot body. Revision titles are not snapshotted today, so return the current
@@ -952,7 +1034,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       if (!(await resolveDocumentRole(auth.userId, doc.id))) return notFound(reply, "Document not found.");
 
       const revision = await prisma.documentRevision.findFirst({
-        where: { id: request.params.revisionId, documentId: doc.id },
+        where: { id: request.params.revisionId, documentId: doc.id, prunedAt: null },
         include: { createdBy: { select: { id: true, name: true, email: true } } },
       });
       if (!revision) return notFound(reply, "Revision not found.");
@@ -967,6 +1049,9 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
           checksum: revision.checksum,
           changeSource: revision.changeSource,
           message: revision.message,
+          contributorIds: revision.contributorIds,
+          isPinned: revision.isPinned,
+          label: revision.label,
           createdAt: revision.createdAt.toISOString(),
           createdBy: {
             id: revision.createdBy.id,
@@ -977,6 +1062,44 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         },
         document: { id: doc.id, currentTitle: doc.title },
       };
+    },
+  );
+
+  app.patch<{ Params: { id: string; revisionId: string }; Body: { label?: string | null; isPinned?: boolean } }>(
+    "/api/documents/:id/revisions/:revisionId",
+    { config: { rateLimit: { max: Number(process.env.REVISION_METADATA_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!doc) return notFound(reply, "Document not found.");
+      const role = await resolveDocumentRole(auth.userId, doc.id);
+      if (role === null) return notFound(reply, "Document not found.");
+      if (!atLeast(role, "manager")) return forbidden(reply);
+
+      const label = request.body.label === null ? null : typeof request.body.label === "string" ? request.body.label.trim().slice(0, 80) : undefined;
+      const data: { label?: string | null; isPinned?: boolean } = {};
+      if (label !== undefined) data.label = label || null;
+      if (typeof request.body.isPinned === "boolean") data.isPinned = request.body.isPinned;
+      if (!("label" in data) && !("isPinned" in data)) return validationError(reply, { metadata: "label or isPinned is required." });
+
+      const revision = await prisma.documentRevision.updateMany({
+        where: { id: request.params.revisionId, documentId: doc.id, prunedAt: null },
+        data,
+      });
+      if (revision.count === 0) return notFound(reply, "Revision not found.");
+      await writeAuditEvent({
+        workspaceId: doc.workspaceId,
+        userId: auth.userId,
+        action: "document_revision_metadata_updated",
+        targetType: "document",
+        targetId: doc.id,
+        metadata: { revisionId: request.params.revisionId, ...data },
+      });
+      return { ok: true };
     },
   );
 
@@ -993,7 +1116,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       if (!atLeast(role, "manager")) return forbidden(reply);
 
       const source = await prisma.documentRevision.findFirst({
-        where: { id: request.params.revisionId, documentId: doc.id },
+        where: { id: request.params.revisionId, documentId: doc.id, prunedAt: null },
       });
       if (!source) return notFound(reply, "Revision not found.");
 
@@ -1013,6 +1136,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
             createdById: auth.userId,
             changeSource: "system",
             message: `Restored from revision ${source.versionNumber}`,
+            contributorIds: [auth.userId],
           },
         });
         const restoredText = await readContent(source.storageKey);

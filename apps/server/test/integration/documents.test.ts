@@ -2,6 +2,7 @@ import { beforeAll, afterAll, beforeEach, describe, it, expect } from "vitest";
 import { getApp, closeApp, req } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario, member, createWorkspace, createUser, addMember } from "../fixtures/seed.js";
+import { pruneCollapsedRevisions } from "../../src/documents/revision-retention.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
@@ -218,12 +219,127 @@ describe("documents — endpoints & validation", () => {
       groupStartVersionNumber: 2,
       groupEndVersionNumber: 3,
     });
-    expect(revisions[0]!.collapsedRevisions).toEqual([{ id: v2.json().version, versionNumber: 2, checksum: expect.any(String), createdBy: s.admin.id, createdAt: expect.any(String), changeSource: "web_app", message: null }]);
+    expect(revisions[0]!.collapsedRevisions).toEqual([
+      {
+        id: v2.json().version,
+        versionNumber: 2,
+        checksum: expect.any(String),
+        createdBy: s.admin.id,
+        createdAt: expect.any(String),
+        changeSource: "web_app",
+        message: null,
+        contributorIds: [s.admin.id],
+        isPinned: false,
+        label: null,
+      },
+    ]);
     expect(revisions[1]).toMatchObject({ versionNumber: 1, groupCount: 1, collapsedRevisions: [] });
 
     const collapsedDetail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${v2.json().version}`, cookies: s.adminCookie });
     expect(collapsedDetail.statusCode).toBe(200);
     expect(collapsedDetail.json().revision.content).toBe("# v2\n");
+  });
+
+  it("shows revisions and audit events in one document history timeline", async () => {
+    const s = await baseScenario();
+    const v2 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# v2\n" },
+    });
+    expect(v2.statusCode).toBe(200);
+
+    const renamed = await req({
+      method: "PATCH",
+      url: `/api/documents/${s.docId}/revisions/${v2.json().version}`,
+      cookies: s.adminCookie,
+      payload: { label: "Release candidate", isPinned: true },
+    });
+    expect(renamed.statusCode).toBe(200);
+
+    const history = await req({ method: "GET", url: `/api/documents/${s.docId}/history`, cookies: s.adminCookie });
+    expect(history.statusCode).toBe(200);
+    const body = history.json() as {
+      revisions: Array<{ id: string; label: string | null; isPinned: boolean; contributorIds: string[] }>;
+      timeline: Array<{ type: "revision" | "event"; revision?: { id: string; label: string | null; isPinned: boolean }; event?: { action: string; actor: string } }>;
+    };
+    expect(body.revisions[0]).toMatchObject({
+      id: v2.json().version,
+      label: "Release candidate",
+      isPinned: true,
+      contributorIds: [s.admin.id],
+    });
+    expect(body.timeline.some((item) => item.type === "revision" && item.revision?.id === v2.json().version && item.revision.isPinned)).toBe(true);
+    expect(body.timeline.some((item) => item.type === "event" && item.event?.action === "document_revision_metadata_updated" && item.event.actor === "user")).toBe(true);
+
+    const detail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${v2.json().version}`, cookies: s.adminCookie });
+    expect(detail.json().revision).toMatchObject({
+      label: "Release candidate",
+      isPinned: true,
+      contributorIds: [s.admin.id],
+    });
+  });
+
+  it("prunes old unprotected collapsed revisions and keeps named or pinned revisions", async () => {
+    const s = await baseScenario();
+    const v2 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# v2\n" },
+    });
+    const v3 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: v2.json().version, content: "# v3\n" },
+    });
+    expect(v3.statusCode).toBe(200);
+
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    await prisma.documentRevision.updateMany({ where: { id: { in: [v2.json().version, v3.json().version] } }, data: { createdAt: old } });
+
+    const pruned = await pruneCollapsedRevisions(prisma, { olderThanMs: 1, now: new Date("2026-01-02T00:00:00.000Z") });
+    expect(pruned.pruned).toBe(1);
+
+    const prunedDetail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${v2.json().version}`, cookies: s.adminCookie });
+    expect(prunedDetail.statusCode).toBe(404);
+    const liveDetail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${v3.json().version}`, cookies: s.adminCookie });
+    expect(liveDetail.statusCode).toBe(200);
+
+  });
+
+  it("does not prune named or pinned collapsed revisions", async () => {
+    const s = await baseScenario();
+    const v2 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: "# v2\n" },
+    });
+    const v3 = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: v2.json().version, content: "# v3\n" },
+    });
+    expect(v3.statusCode).toBe(200);
+
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    await prisma.documentRevision.updateMany({ where: { id: { in: [v2.json().version, v3.json().version] } }, data: { createdAt: old } });
+    const label = await req({
+      method: "PATCH",
+      url: `/api/documents/${s.docId}/revisions/${v2.json().version}`,
+      cookies: s.adminCookie,
+      payload: { label: "Keep this" },
+    });
+    expect(label.statusCode).toBe(200);
+
+    const protectedResult = await pruneCollapsedRevisions(prisma, { olderThanMs: 1, now: new Date("2026-01-02T00:00:00.000Z") });
+    expect(protectedResult.pruned).toBe(0);
+    const protectedDetail = await req({ method: "GET", url: `/api/documents/${s.docId}/revisions/${v2.json().version}`, cookies: s.adminCookie });
+    expect(protectedDetail.statusCode).toBe(200);
   });
 
   it("hides documents the user cannot see (404 on read, absent from list)", async () => {

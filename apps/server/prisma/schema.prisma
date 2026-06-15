@@ -293,12 +293,17 @@ model DocumentRevision {
   changeSource  ChangeSource
   message       String?
   revisionGroupId String?
+  contributorIds String[]      @default([])
+  isPinned      Boolean      @default(false)
+  label         String?
+  prunedAt      DateTime?
   document      Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
   createdBy     User         @relation(fields: [createdById], references: [id])
 
   @@unique([documentId, versionNumber])
   @@index([documentId, createdAt])
   @@index([documentId, revisionGroupId, versionNumber])
+  @@index([documentId, prunedAt])
 }
 
 model Permission {
