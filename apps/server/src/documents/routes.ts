@@ -24,7 +24,7 @@ import { readContent, writeContent } from "../storage.js";
 import { buildDownloadMarkdown, contentDisposition, downloadFilename } from "./download.js";
 import { buildDocumentPath, isValidSlug } from "../paths.js";
 import { conflict, forbidden, isUniqueViolation, notFound, validationError } from "../errors.js";
-import { atLeast, authorizeDocumentRole, authorizeFolderRole, canManageWorkspace, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
+import { atLeast, authorizeDocumentRole, authorizeFolderRole, canManageWorkspace, capabilitiesFor, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { lockFolderTree } from "../db.js";
 import { clampSearchLimit, searchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
@@ -529,6 +529,15 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       for (const id of resolver.ancestorFolderIds(doc.folderId)) visibleFolderIds.add(id);
     }
 
+    const folderDefaultRoles = new Map<string, "viewer" | "editor" | "manager" | null>();
+    if (resolver.folders.length) {
+      const rows = await prisma.folder.findMany({
+        where: { id: { in: resolver.folders.map((f) => f.id) } },
+        select: { id: true, defaultRole: true },
+      });
+      for (const row of rows) folderDefaultRoles.set(row.id, row.defaultRole);
+    }
+
     const folders = resolver.folders
       .filter((folder) => visibleFolderIds.has(folder.id))
       .map((folder) => ({
@@ -538,6 +547,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         slug: folder.slug,
         path: folder.path,
         permission: resolver.folderRole(folder.id),
+        defaultRole: folderDefaultRoles.get(folder.id) ?? null,
       }));
 
     const documents = visibleDocs.map(({ doc, role }) => ({
@@ -546,6 +556,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       title: doc.title,
       path: doc.path,
       permission: role,
+      capabilities: capabilitiesFor(role),
       version: doc.currentVersionId,
       checksum: doc.currentChecksum,
       status: doc.status,
@@ -593,6 +604,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       path: doc.path,
       title: doc.title,
       permission: role,
+      capabilities: capabilitiesFor(role),
       version: doc.currentVersionId,
       checksum: doc.currentChecksum,
       status: doc.status,

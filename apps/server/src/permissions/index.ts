@@ -51,6 +51,31 @@ async function inheritedFolderIds(
   return ids;
 }
 
+// Walk the folder chain returning the strongest non-null defaultRole — the floor
+// every workspace member gets on docs in this folder (and descendants). Null means
+// "private", which is the historical behavior. Note we keep walking past the
+// nearest set value because a deeper folder's defaultRole could be MORE permissive
+// than an ancestor's (e.g. ancestor=viewer, descendant=editor → editor wins). The
+// `strongest()` at the call site does the final reconciliation.
+async function inheritedDefaultRoles(
+  folderId: string,
+  client: DbClient = defaultPrisma,
+): Promise<Role[]> {
+  const roles: Role[] = [];
+  let currentId: string | null = folderId;
+  while (currentId) {
+    const folder: { id: string; parentFolderId: string | null; defaultRole: Role | null } | null =
+      await client.folder.findFirst({
+        where: { id: currentId, deletedAt: null },
+        select: { id: true, parentFolderId: true, defaultRole: true },
+      });
+    if (!folder) break;
+    if (folder.defaultRole) roles.push(folder.defaultRole);
+    currentId = folder.parentFolderId;
+  }
+  return roles;
+}
+
 export async function canManageWorkspace(
   userId: string,
   workspaceId: string,
@@ -84,8 +109,10 @@ export async function resolveDocumentRole(
 
   const groupIds = await groupIdsForUser(userId, document.workspaceId, client);
   const folderIds = await inheritedFolderIds(document.folderId, client);
+  // Default-role floor for any workspace member from the folder chain.
+  const inheritedFloors = await inheritedDefaultRoles(document.folderId, client);
 
-  const roles: Role[] = [];
+  const roles: Role[] = [...inheritedFloors];
   const collectSubjectFilters = [
     { subjectType: "user" as const, subjectId: userId },
     ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
@@ -163,6 +190,7 @@ export async function resolveFolderRole(
 
   const groupIds = await groupIdsForUser(userId, folder.workspaceId, client);
   const folderIds = await inheritedFolderIds(folderId, client);
+  const inheritedFloors = await inheritedDefaultRoles(folderId, client);
   const subjectFilters = [
     { subjectType: "user" as const, subjectId: userId },
     ...groupIds.map((groupId) => ({ subjectType: "group" as const, subjectId: groupId })),
@@ -177,7 +205,39 @@ export async function resolveFolderRole(
     },
     select: { role: true },
   });
-  return strongest(permissions.map((permission) => roleName(permission.role)));
+  return strongest([...inheritedFloors, ...permissions.map((permission) => roleName(permission.role))]);
+}
+
+// ---------------------------------------------------------------------------
+// Capability map — the per-doc { canEdit, canDelete, canShare, ... } block the
+// API serializes so the frontend can hide actions without re-deriving the role
+// → action matrix. Keeping the rules here means a permission policy change
+// flips both server enforcement and UI affordances in lockstep.
+// ---------------------------------------------------------------------------
+
+export interface Capabilities {
+  canView: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canManage: boolean;
+  canComment: boolean;
+  canShare: boolean;
+}
+
+export function capabilitiesFor(role: Role | null): Capabilities {
+  if (!role) {
+    return { canView: false, canEdit: false, canDelete: false, canManage: false, canComment: false, canShare: false };
+  }
+  // Comments are open to any reader (see documents/comments.ts: create requires
+  // any role, resolve/delete requires author-or-manager).
+  return {
+    canView: true,
+    canEdit: atLeast(role, "editor"),
+    canDelete: atLeast(role, "manager"),
+    canManage: atLeast(role, "manager"),
+    canComment: true,
+    canShare: atLeast(role, "manager"),
+  };
 }
 
 export async function canEditFolder(

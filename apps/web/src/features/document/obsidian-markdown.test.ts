@@ -13,6 +13,7 @@ describe("Obsidian markdown compatibility", () => {
         version: "rev1",
         checksum: "sha256:x",
         status: "canonical" as const,
+        capabilities: { canView: true, canEdit: true, canDelete: false, canManage: false, canComment: true, canShare: false } as const,
         updatedAt: "2026-06-10T00:00:00.000Z",
       },
     ],

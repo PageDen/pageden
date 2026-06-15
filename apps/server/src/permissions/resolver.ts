@@ -60,12 +60,14 @@ export async function buildWorkspaceResolver(
 
   const folders = await prisma.folder.findMany({
     where: { workspaceId, deletedAt: null },
-    select: { id: true, parentFolderId: true, name: true, slug: true, path: true },
+    select: { id: true, parentFolderId: true, name: true, slug: true, path: true, defaultRole: true },
   });
   const parentOf = new Map<string, string | null>();
+  const defaultRoleOf = new Map<string, Role | null>();
   const activeFolderIds = new Set<string>();
   for (const folder of folders) {
     parentOf.set(folder.id, folder.parentFolderId);
+    defaultRoleOf.set(folder.id, folder.defaultRole);
     activeFolderIds.add(folder.id);
   }
 
@@ -88,6 +90,9 @@ export async function buildWorkspaceResolver(
     if (isAdmin) return "manager";
     const roles: Role[] = [];
     for (const id of ancestorFolderIds(folderId)) {
+      // Workspace-member default-role floor from any ancestor folder.
+      const floor = defaultRoleOf.get(id);
+      if (floor) roles.push(floor);
       const grants = folderGrants.get(id);
       if (grants) roles.push(...grants);
     }

@@ -124,7 +124,20 @@ async function replacePermissions(
     await tx.permission.deleteMany({ where: { workspaceId, resourceType, resourceId } });
     if (rows.length > 0) {
       await tx.permission.createMany({
-        data: rows.map((row) => ({ workspaceId, resourceType, resourceId, subjectType: row.subjectType, subjectId: row.subjectId, role: row.role })),
+        // Expand-contract per Phase A3: write both the legacy (subjectType,
+        // subjectId) discriminator and the new (userId, groupId) XOR columns
+        // so the DB-level CHECK constraint passes on every new row. The read
+        // path stays on subjectType/subjectId until A3's app-side cutover.
+        data: rows.map((row) => ({
+          workspaceId,
+          resourceType,
+          resourceId,
+          subjectType: row.subjectType,
+          subjectId: row.subjectId,
+          userId: row.subjectType === "user" ? row.subjectId : null,
+          groupId: row.subjectType === "group" ? row.subjectId : null,
+          role: row.role,
+        })),
       });
     }
     await writeAuditEvent(
