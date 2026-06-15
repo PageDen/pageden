@@ -53,6 +53,7 @@ async function assertWorkspaceMember(userId: string, workspaceId: string): Promi
 export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { workspaceId: string }; Querystring: { limit?: string; before?: string } }>(
     "/api/workspaces/:workspaceId/activity",
+    { config: { rateLimit: { max: Number(process.env.WORKSPACE_INSIGHTS_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
     async (request, reply) => {
       const auth = await requireAuth(request);
       requireTokenScope(auth, "read");
@@ -118,6 +119,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
   app.get<{ Params: { workspaceId: string } }>(
     "/api/workspaces/:workspaceId/dashboard",
+    { config: { rateLimit: { max: Number(process.env.WORKSPACE_INSIGHTS_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
     async (request, reply) => {
       const auth = await requireAuth(request);
       requireTokenScope(auth, "read");
