@@ -11,6 +11,7 @@ import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./ha
 // searchText denormalizes current content for FTS. Cap the indexed text so a pathological
 // document cannot bloat the row or exceed Postgres's tsvector size limit (~1MB of lexemes).
 const SEARCH_TEXT_MAX = 200_000;
+const REVISION_BURST_WINDOW_MS = Number(process.env.REVISION_BURST_WINDOW_MS ?? 5 * 60 * 1000);
 export function searchTextFor(content: string): string {
   // Strip the private-use highlight markers so they can only ever come from ts_headline, never
   // from document content (prevents a control/data collision in snippets).
@@ -68,12 +69,81 @@ export async function metadataFromContent(
   return { status, supersededById };
 }
 
+type RevisionListRow = {
+  id: string;
+  versionNumber: number;
+  checksum: string;
+  createdById: string;
+  createdAt: Date;
+  changeSource: ChangeSource;
+  message: string | null;
+  revisionGroupId: string | null;
+};
+
 async function siblingSlugTaken(tx: Tx, folderId: string, slug: string, exceptId?: string): Promise<boolean> {
   const existing = await tx.document.findFirst({
     where: { folderId, slug, deletedAt: null, ...(exceptId ? { id: { not: exceptId } } : {}) },
     select: { id: true },
   });
   return existing !== null;
+}
+
+async function revisionGroupIdForWrite(tx: Tx, doc: { id: string }, opts: { userId: string; changeSource: ChangeSource }): Promise<string | null> {
+  if (opts.changeSource === "import" || opts.changeSource === "system" || REVISION_BURST_WINDOW_MS <= 0) return null;
+
+  const previous = await tx.documentRevision.findFirst({
+    where: { documentId: doc.id },
+    orderBy: { versionNumber: "desc" },
+    select: {
+      id: true,
+      versionNumber: true,
+      createdById: true,
+      createdAt: true,
+      changeSource: true,
+      message: true,
+      revisionGroupId: true,
+    },
+  });
+  if (!previous || previous.versionNumber <= 1 || previous.message) return null;
+  if (previous.createdById !== opts.userId || previous.changeSource !== opts.changeSource) return null;
+  if (Date.now() - previous.createdAt.getTime() > REVISION_BURST_WINDOW_MS) return null;
+  return previous.revisionGroupId ?? previous.id;
+}
+
+function revisionListItem(revision: RevisionListRow) {
+  return {
+    id: revision.id,
+    versionNumber: revision.versionNumber,
+    checksum: revision.checksum,
+    createdBy: revision.createdById,
+    createdAt: revision.createdAt.toISOString(),
+    changeSource: revision.changeSource,
+    message: revision.message,
+  };
+}
+
+function groupedRevisionList(revisions: RevisionListRow[]) {
+  const groups = new Map<string, RevisionListRow[]>();
+  for (const revision of revisions) {
+    const key = revision.revisionGroupId ?? revision.id;
+    const group = groups.get(key);
+    if (group) group.push(revision);
+    else groups.set(key, [revision]);
+  }
+
+  return Array.from(groups.values()).map((group) => {
+    const sorted = [...group].sort((a, b) => b.versionNumber - a.versionNumber);
+    const head = sorted[0]!;
+    const versionNumbers = sorted.map((revision) => revision.versionNumber);
+    return {
+      ...revisionListItem(head),
+      groupId: head.revisionGroupId ?? head.id,
+      groupCount: sorted.length,
+      groupStartVersionNumber: Math.min(...versionNumbers),
+      groupEndVersionNumber: Math.max(...versionNumbers),
+      collapsedRevisions: sorted.slice(1).map(revisionListItem),
+    };
+  });
 }
 
 interface WriteOutcome {
@@ -172,6 +242,7 @@ export async function applyDocumentWrite(opts: {
       where: { documentId: doc.id },
       _max: { versionNumber: true },
     });
+    const revisionGroupId = await revisionGroupIdForWrite(tx, doc, { userId: opts.userId, changeSource: opts.changeSource });
     const revision = await tx.documentRevision.create({
       data: {
         documentId: doc.id,
@@ -180,6 +251,7 @@ export async function applyDocumentWrite(opts: {
         checksum: sum,
         createdById: opts.userId,
         changeSource: opts.changeSource,
+        revisionGroupId,
       },
     });
     const metadata = await metadataFromContent(tx, doc.workspaceId, opts.content, doc.id);
@@ -812,17 +884,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       where: { documentId: doc.id },
       orderBy: { versionNumber: "desc" },
     });
-    return {
-      revisions: revisions.map((revision) => ({
-        id: revision.id,
-        versionNumber: revision.versionNumber,
-        checksum: revision.checksum,
-        createdBy: revision.createdById,
-        createdAt: revision.createdAt.toISOString(),
-        changeSource: revision.changeSource,
-        message: revision.message,
-      })),
-    };
+    return { revisions: groupedRevisionList(revisions) };
   });
 
   // Single revision preview (viewer). The list endpoint stays metadata-only; this endpoint returns

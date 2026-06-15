@@ -292,11 +292,13 @@ model DocumentRevision {
   createdAt     DateTime     @default(now())
   changeSource  ChangeSource
   message       String?
+  revisionGroupId String?
   document      Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
   createdBy     User         @relation(fields: [createdById], references: [id])
 
   @@unique([documentId, versionNumber])
   @@index([documentId, createdAt])
+  @@index([documentId, revisionGroupId, versionNumber])
 }
 
 model Permission {

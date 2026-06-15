@@ -376,6 +376,23 @@ export const revisionsSchema = z
           createdAt: iso,
           changeSource: changeSourceSchema,
           message: z.string().nullable(),
+          groupId: z.string(),
+          groupCount: z.number(),
+          groupStartVersionNumber: z.number(),
+          groupEndVersionNumber: z.number(),
+          collapsedRevisions: z.array(
+            z
+              .object({
+                id: z.string(),
+                versionNumber: z.number(),
+                checksum: z.string(),
+                createdBy: z.string(),
+                createdAt: iso,
+                changeSource: changeSourceSchema,
+                message: z.string().nullable(),
+              })
+              .strict(),
+          ),
         })
         .strict(),
     ),
