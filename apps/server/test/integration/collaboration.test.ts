@@ -86,7 +86,7 @@ describe("inline comments (REST)", () => {
     const other = await member(s.ws.id, "viewer@t.co", "member");
     // Grant the other user viewer access to the document so they can read but not manage it.
     await prisma.permission.create({
-      data: { workspaceId: s.ws.id, subjectType: "user", subjectId: other.user.id, resourceType: "document", resourceId: s.docId, role: "viewer" },
+      data: { workspaceId: s.ws.id, subjectType: "user", subjectId: other.user.id, userId: other.user.id, resourceType: "document", resourceId: s.docId, role: "viewer" },
     });
     const create = await req({
       method: "POST",
@@ -100,7 +100,7 @@ describe("inline comments (REST)", () => {
     // Another viewer who is also a workspace member but not the author and not a manager can't resolve.
     const peer = await member(s.ws.id, "peer@t.co", "member");
     await prisma.permission.create({
-      data: { workspaceId: s.ws.id, subjectType: "user", subjectId: peer.user.id, resourceType: "document", resourceId: s.docId, role: "viewer" },
+      data: { workspaceId: s.ws.id, subjectType: "user", subjectId: peer.user.id, userId: peer.user.id, resourceType: "document", resourceId: s.docId, role: "viewer" },
     });
     const forbidden = await req({ method: "POST", url: `/api/comments/${commentId}/resolve`, cookies: peer.cookie });
     expect(forbidden.statusCode).toBe(403);
