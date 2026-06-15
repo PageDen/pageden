@@ -1,13 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../prisma.js";
-import { env } from "../env.js";
 import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
+import { hashPassword, verifyPassword } from "../passwords.js";
 import { readContent } from "../storage.js";
-import { hashToken } from "../tokens.js";
 
 // Public share links: a manager creates a slug-URL anyone can read, optionally
 // password-protected and/or time-bombed. Writes go through the existing role
@@ -79,7 +78,11 @@ export async function createShare(
   if (password && password.length > MAX_NOTE_PASSWORD) {
     return { status: "validation", field: "password", message: `password must be ${MAX_NOTE_PASSWORD} characters or fewer.` };
   }
-  const passwordHash = password ? hashToken(password, env.tokenHashSecret) : null;
+  // Argon2id for shared-link passwords: users may pick low-entropy values, so
+  // we need slow/memory-hard hashing to make offline brute-force impractical
+  // (CodeQL js/insufficient-password-hash). Token lookups elsewhere stay on
+  // HMAC because they're high-entropy server-issued strings.
+  const passwordHash = password ? await hashPassword(password) : null;
   const expiresAt = parseTtl(opts.ttlDays);
 
   // Collision-safe slug generation: retry once if the random slug already exists.
@@ -185,8 +188,8 @@ export async function readPublicShare(slug: string, password: string | null): Pr
   if (share.expiresAt && share.expiresAt.getTime() <= Date.now()) return { status: "not_found" };
   if (share.passwordHash) {
     if (!password) return { status: "password_required" };
-    const provided = hashToken(password, env.tokenHashSecret);
-    if (provided !== share.passwordHash) return { status: "wrong_password" };
+    const ok = await verifyPassword(share.passwordHash, password);
+    if (!ok) return { status: "wrong_password" };
   }
   const doc = await prisma.document.findFirst({
     where: { id: share.documentId, deletedAt: null },
