@@ -17,6 +17,7 @@ import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../sear
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
 import { documentRelationships } from "../documents/relationships.js";
 import { replaceSection, suggestAnchors } from "../documents/sections.js";
+import { brokenLinkExplanation, lintWikilinks, rewriteWikilinks, type RewriteReplacement } from "../documents/wikilinks.js";
 import { documentStatsFor } from "../documents/stats.js";
 import { documentDiffFor } from "../documents/diff.js";
 import { workspaceActivityFor } from "../workspaces/insights.js";
@@ -140,6 +141,38 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: { workspaceId: { type: "string" }, limit: { type: "number", minimum: 1, maximum: 20 } },
+    },
+  },
+  {
+    name: "pageden_lint_wikilinks",
+    description: "Workspace-wide broken-wikilink inventory. Returns each broken link with the resolution attempts made (title / path / slug / fuzzy) and a suggested target the resolver thinks is closest. Use as the first call when an agent is asked to clean up a vault.",
+    inputSchema: {
+      type: "object",
+      properties: { workspaceId: { type: "string" } },
+    },
+  },
+  {
+    name: "pageden_rewrite_wikilinks",
+    description: "Workspace-wide find-and-replace on wikilink targets. Pass an array of {from,to} pairs; dryRun=true returns the proposed diff without writing. Cleanup writes go through applyDocumentWrite with allowNonCanonical=true so superseded docs can be touched.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        dryRun: { type: "boolean", description: "When true, return the per-doc occurrence counts without writing. Default true." },
+        replacements: {
+          type: "array",
+          description: "Exact-match replacements applied to the text between [[…]] brackets.",
+          items: {
+            type: "object",
+            properties: {
+              from: { type: "string" },
+              to: { type: "string" },
+            },
+            required: ["from", "to"],
+          },
+        },
+      },
+      required: ["replacements"],
     },
   },
   {
@@ -769,6 +802,8 @@ async function callTool(
   else if (name === "pageden_answer_from_docs") data = await answerFromDocs(auth, args, request);
   else if (name === "pageden_find_related_docs") data = await findRelatedDocs(auth, args, request);
   else if (name === "pageden_workspace_summary") data = await workspaceSummary(auth, args, request);
+  else if (name === "pageden_lint_wikilinks") data = await lintWikilinksByMcp(auth, args, request);
+  else if (name === "pageden_rewrite_wikilinks") data = await rewriteWikilinksByMcp(auth, args, request);
   else if (name === "pageden_create_document") data = await createDocument(auth, args, request);
   else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
   else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
@@ -1449,6 +1484,42 @@ async function findRelatedDocs(auth: AuthContext, args: Record<string, unknown>,
     query: seedQuery,
     related: search.results.filter((doc) => doc.id !== source?.id).slice(0, limit),
   };
+}
+
+async function lintWikilinksByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const broken = await lintWikilinks(workspaceId, auth.userId);
+  return {
+    workspaceId,
+    brokenCount: broken.length,
+    broken: broken.map((entry) => ({
+      ...entry,
+      explanation: brokenLinkExplanation(entry),
+    })),
+  };
+}
+
+async function rewriteWikilinksByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const rawReplacements = Array.isArray(args.replacements) ? args.replacements : null;
+  if (!rawReplacements || rawReplacements.length === 0) {
+    throw new Error("At least one replacement is required.");
+  }
+  const replacements: RewriteReplacement[] = [];
+  for (const item of rawReplacements) {
+    if (!item || typeof item !== "object") throw new Error("Each replacement must be an object with from/to fields.");
+    const from = (item as { from?: unknown }).from;
+    const to = (item as { to?: unknown }).to;
+    if (typeof from !== "string" || typeof to !== "string" || !from.trim()) {
+      throw new Error("Each replacement must have non-empty from and to strings.");
+    }
+    replacements.push({ from, to });
+  }
+  // Default to dryRun=true so an unguarded call cannot accidentally write.
+  const dryRun = args.dryRun === undefined ? true : args.dryRun === true || args.dryRun === "true";
+  return rewriteWikilinks(workspaceId, replacements, dryRun, auth);
 }
 
 async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
