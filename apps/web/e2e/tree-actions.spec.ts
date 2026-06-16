@@ -65,7 +65,7 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
 
   // Permissions dialog opens.
   await openMenu(renamed, "Permissions");
-  await expect(page.getByRole("dialog").getByText("Permissions")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Share")).toBeVisible();
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 

@@ -18,6 +18,7 @@ import {
   groupCreateSchema,
   groupsListSchema,
   permissionsListSchema,
+  permissionGrantSchema,
   permissionsWriteSchema,
   folderDefaultRoleSchema,
   documentShareResponseSchema,
@@ -363,10 +364,14 @@ export const api = {
   },
   documentPermissions: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/permissions`, { schema: permissionsListSchema }),
+  grantDocumentPermission: (id: string, body: { email: string; role: PermissionInput["role"] }) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/permissions/grant`, { body, schema: permissionGrantSchema }),
   setDocumentPermissions: (id: string, permissions: PermissionInput[], version?: string) =>
     request("PUT", `/documents/${encodeURIComponent(id)}/permissions`, { body: { permissions, version }, schema: permissionsWriteSchema }),
   folderPermissions: (id: string) =>
     request("GET", `/folders/${encodeURIComponent(id)}/permissions`, { schema: permissionsListSchema }),
+  grantFolderPermission: (id: string, body: { email: string; role: PermissionInput["role"] }) =>
+    request("POST", `/folders/${encodeURIComponent(id)}/permissions/grant`, { body, schema: permissionGrantSchema }),
   setFolderPermissions: (id: string, permissions: PermissionInput[], version?: string) =>
     request("PUT", `/folders/${encodeURIComponent(id)}/permissions`, { body: { permissions, version }, schema: permissionsWriteSchema }),
   setFolderDefaultRole: (id: string, defaultRole: "viewer" | "editor" | "manager" | null) =>

@@ -1,7 +1,8 @@
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from "vitest";
 import { getApp, closeApp, req } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
-import { baseScenario, createUser, addMember, createWorkspace } from "../fixtures/seed.js";
+import { baseScenario, createUser, addMember, createWorkspace, grant } from "../fixtures/seed.js";
+import { sessionFor } from "../helpers/app.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
@@ -69,5 +70,83 @@ describe("permission endpoints", () => {
     });
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: "conflict", currentVersion: first.json().version });
+  });
+
+  it("grants document access to an existing user by email and adds them as a guest", async () => {
+    const s = await baseScenario();
+    const u = await createUser("shared.person@t.co", "Shared Person");
+
+    const res = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions/grant`,
+      cookies: s.adminCookie,
+      payload: { email: " shared.person@t.co ", role: "viewer" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      ok: true,
+      membershipCreated: true,
+      user: { id: u.id, email: "shared.person@t.co" },
+      permission: { subjectType: "user", subjectId: u.id, role: "viewer" },
+    });
+
+    const membership = await prisma.workspaceMembership.findUnique({
+      where: { workspaceId_userId: { workspaceId: s.ws.id, userId: u.id } },
+      select: { role: true },
+    });
+    expect(membership?.role).toBe("guest");
+
+    const doc = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: sessionFor(u.id) });
+    expect(doc.statusCode).toBe(200);
+    expect(doc.json().permission).toBe("viewer");
+  });
+
+  it("grants folder access to an existing user by email for child documents", async () => {
+    const s = await baseScenario();
+    const u = await createUser("folder-share@t.co");
+
+    const res = await req({
+      method: "POST",
+      url: `/api/folders/${s.folderId}/permissions/grant`,
+      cookies: s.adminCookie,
+      payload: { email: u.email, role: "editor" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ membershipCreated: true, permission: { subjectId: u.id, role: "editor" } });
+
+    const doc = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: sessionFor(u.id) });
+    expect(doc.statusCode).toBe(200);
+    expect(doc.json().permission).toBe("editor");
+  });
+
+  it("returns a friendly validation error when sharing to an unknown email", async () => {
+    const s = await baseScenario();
+    const res = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions/grant`,
+      cookies: s.adminCookie,
+      payload: { email: "nobody@t.co", role: "viewer" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({
+      error: "validation_error",
+      fields: { email: expect.stringContaining("No PageDen user exists") },
+    });
+  });
+
+  it("does not allow non-managers to grant permissions", async () => {
+    const s = await baseScenario();
+    const editor = await createUser("editor@t.co");
+    const target = await createUser("target@t.co");
+    await addMember(s.ws.id, editor.id, "member");
+    await grant(s.ws.id, "user", editor.id, "document", s.docId, "editor");
+
+    const res = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions/grant`,
+      cookies: sessionFor(editor.id),
+      payload: { email: target.email, role: "viewer" },
+    });
+    expect(res.statusCode).toBe(403);
   });
 });
