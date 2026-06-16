@@ -7,6 +7,7 @@ import { writeAuditEvent } from "../audit.js";
 import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
+import { documentRelationships } from "./relationships.js";
 
 // searchText denormalizes current content for FTS. Cap the indexed text so a pathological
 // document cannot bloat the row or exceed Postgres's tsvector size limit (~1MB of lexemes).
@@ -668,6 +669,24 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       const packet = await buildHandoffPacket(auth.userId, request.params.id);
       if (packet.status === "not_found") return notFound(reply, "Document not found.");
       return packet.value;
+    },
+  );
+
+  // Typed related-docs panel: supersedes / supersededBy / references / referencedBy
+  // / prLinks. Each list is filtered through the workspace resolver so private
+  // docs the caller can't read never appear. Rate-limited because it does an
+  // O(workspace) body scan to compute backlinks.
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/related-docs",
+    { config: { rateLimit: { max: Number(process.env.RELATED_DOCS_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const az = await authorizeDocumentRole(auth, request.params.id, "viewer");
+      if (!az.ok) return az.status === "not_found" ? notFound(reply, "Document not found.") : forbidden(reply);
+      const result = await documentRelationships(auth.userId, request.params.id);
+      if (!result) return notFound(reply, "Document not found.");
+      return result;
     },
   );
 

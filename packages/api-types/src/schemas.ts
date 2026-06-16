@@ -203,6 +203,21 @@ export const publicShareSchema = z
 
 export const documentRefSchema = z.object({ id: z.string(), title: z.string(), path: z.string() }).strict();
 
+// Typed related-docs panel. Each list is filtered through the workspace
+// resolver server-side, so private docs the caller cannot read never appear.
+const relatedDocRefSchema = documentRefSchema.extend({ status: z.string() }).strict();
+export const relatedDocsSchema = z
+  .object({
+    documentId: z.string(),
+    workspaceId: z.string(),
+    supersedes: z.array(relatedDocRefSchema),
+    supersededBy: relatedDocRefSchema.nullable(),
+    references: z.array(relatedDocRefSchema),
+    referencedBy: z.array(relatedDocRefSchema),
+    prLinks: z.array(z.string()),
+  })
+  .strict();
+
 export const aiReadinessIssueSchema = z
   .object({
     code: z.string(),

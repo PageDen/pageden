@@ -25,6 +25,14 @@ export const documentQuery = (id: string) =>
 export const documentHandoffQuery = (id: string) =>
   queryOptions({ queryKey: ["document", id, "handoff"], queryFn: () => api.documentHandoff(id) });
 
+export const documentRelatedDocsQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["document", id, "related-docs"],
+    queryFn: () => api.documentRelatedDocs(id),
+    // Backlink scans touch the whole workspace, so cache longer than handoff.
+    staleTime: 60_000,
+  });
+
 export const workspaceActivityQuery = (workspaceId: string) =>
   queryOptions({ queryKey: ["activity", workspaceId], queryFn: () => api.workspaceActivity(workspaceId) });
 
