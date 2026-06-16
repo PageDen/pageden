@@ -8,6 +8,7 @@ import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
 import { documentRelationships } from "./relationships.js";
+import { replaceSection, suggestAnchors } from "./sections.js";
 
 // searchText denormalizes current content for FTS. Cap the indexed text so a pathological
 // document cannot bloat the row or exceed Postgres's tsvector size limit (~1MB of lexemes).
@@ -841,6 +842,80 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         changeSource: "obsidian_plugin",
       });
       return sendWriteOutcome(reply, outcome);
+    },
+  );
+
+  // Section-level write (Feature 11 from ai-agent-workspace-improvements.md).
+  // Replaces the content of one section identified by heading anchor without
+  // round-tripping the full doc body. Heading stays put — renames belong to
+  // /rename, not here. Optimistic concurrency rides on the existing
+  // baseVersion model so this is just a thin wrapper around applyDocumentWrite.
+  app.post<{
+    Params: { id: string };
+    Body: { anchor?: string; content?: string; baseVersion?: string; mode?: string };
+  }>(
+    "/api/documents/:id/sections",
+    { config: { rateLimit: { max: Number(process.env.SECTION_WRITE_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const anchor = request.body.anchor?.trim();
+    const newContent = request.body.content;
+    const baseVersion = request.body.baseVersion;
+    const mode: "strict" | "lenient" = request.body.mode === "strict" ? "strict" : "lenient";
+    const fields: Record<string, string> = {};
+    if (!anchor) fields.anchor = "anchor is required.";
+    if (newContent === undefined) fields.content = "content is required.";
+    if (!baseVersion) fields.baseVersion = "baseVersion is required.";
+    if (Object.keys(fields).length > 0) return validationError(reply, fields);
+
+    // Pre-read so we can resolve the anchor before any storage write happens.
+    const doc = await prisma.document.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, currentVersionId: true, currentChecksum: true, workspaceId: true, status: true },
+    });
+    if (!doc) return notFound(reply, "Document not found.");
+    let body = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) body = await readContent(revision.storageKey);
+    }
+    const spliced = replaceSection(body, anchor!, newContent!);
+    if (!spliced) {
+      return reply.code(404).send({
+        error: "anchor_not_found",
+        anchor,
+        suggested: suggestAnchors(body, anchor!),
+      });
+    }
+    // strict mode: if the underlying body checksum drifted from baseVersion,
+    // we want applyDocumentWrite's conflict path to fire — the current write
+    // model already does that (baseVersion vs currentVersionId mismatch
+    // returns 409). lenient mode behaves the same way; the conflict model is
+    // global, not per-section. The "strict" flag is documented for future
+    // refinement (per-section drift detection) but no-ops today.
+    void mode;
+
+    const outcome = await applyDocumentWrite({
+      documentId: doc.id,
+      auth,
+      baseVersion: baseVersion!,
+      content: spliced.body,
+      changeSource: "agent",
+    });
+    if (outcome.ok) {
+      return reply.send({
+        id: outcome.documentId,
+        version: outcome.version,
+        checksum: outcome.checksum,
+        updatedAt: outcome.updatedAt?.toISOString(),
+        latestChangedSection: { anchor: spliced.anchor },
+      });
+    }
+    return sendWriteOutcome(reply, outcome);
     },
   );
 
