@@ -95,6 +95,28 @@ describe("google oauth", () => {
     expect((await prisma.user.findUniqueOrThrow({ where: { id: existing.id }, select: { emailVerified: true } })).emailVerified).toBe(true);
   });
 
+  it("links Google to an existing invited account when signup is disabled and Google returns mixed-case email", async () => {
+    useGoogle();
+    const prev = process.env.AUTH_ALLOW_SIGNUP;
+    process.env.AUTH_ALLOW_SIGNUP = "false";
+    try {
+      const existing = await createUser("rtfiel@gmail.com", "Rachel");
+      const cb = await googleCallback(profile({ sub: "google-sub-invited", email: "RTFiel@gmail.com", name: "Rachel" }));
+      expect(cb.statusCode).toBe(302);
+      expect(cb.headers.location).toContain("localhost:3000");
+      expect(cb.cookies.find((c) => c.name === "pm_session")).toBeTruthy();
+      const link = await prisma.oAuthAccount.findUnique({
+        where: { provider_providerAccountId: { provider: "google", providerAccountId: "google-sub-invited" } },
+        select: { userId: true },
+      });
+      expect(link?.userId).toBe(existing.id);
+      expect(await prisma.user.count({ where: { email: "rtfiel@gmail.com" } })).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.AUTH_ALLOW_SIGNUP;
+      else process.env.AUTH_ALLOW_SIGNUP = prev;
+    }
+  });
+
   it("does NOT link to an existing account when Google's email is unverified", async () => {
     useGoogle();
     await createUser("person@gmail.com", "Person");
