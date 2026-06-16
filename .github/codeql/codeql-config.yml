@@ -2,3 +2,18 @@ name: PageDen CodeQL config
 
 paths-ignore:
   - apps/obsidian-plugin/main.js
+
+# Per-rule suppressions. Each entry should explain *why* the rule is dropped
+# and what the compensating control is, so future maintainers can re-enable
+# the rule (or replace the compensating control) deliberately.
+query-filters:
+  # The Fastify server registers @fastify/rate-limit globally at
+  # apps/server/src/app.ts (default RATE_LIMIT_MAX=100/min), so every route
+  # is rate-limited even without an explicit `config: { rateLimit: ... }`
+  # block. Endpoints that need a stricter ceiling (login, password reset,
+  # signup, OAuth start, etc.) already add their own override. CodeQL's
+  # js/missing-rate-limiting rule only sees per-route opt-ins and produced
+  # 40+ false positives that masked the real findings; the compensating
+  # control is the global registration.
+  - exclude:
+      id: js/missing-rate-limiting
