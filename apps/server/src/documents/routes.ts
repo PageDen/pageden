@@ -853,7 +853,10 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   app.post<{
     Params: { id: string };
     Body: { anchor?: string; content?: string; baseVersion?: string; mode?: string };
-  }>("/api/documents/:id/sections", async (request, reply) => {
+  }>(
+    "/api/documents/:id/sections",
+    { config: { rateLimit: { max: Number(process.env.SECTION_WRITE_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "update");
     const anchor = request.body.anchor?.trim();
@@ -913,7 +916,8 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       });
     }
     return sendWriteOutcome(reply, outcome);
-  });
+    },
+  );
 
   // Rename (manager): change title/slug, recompute path.
   app.post<{ Params: { id: string }; Body: { title?: string; slug?: string } }>(

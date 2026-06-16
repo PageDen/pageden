@@ -98,10 +98,14 @@ export function replaceSection(body: string, anchor: string, newContent: string)
   const lines = body.split("\n");
   const before = lines.slice(0, target.contentStart);
   const after = lines.slice(target.contentEnd);
-  // Normalize the new content: trim trailing newlines so consecutive splices
-  // don't accumulate blank lines, but preserve a leading blank line so the
-  // section keeps the conventional "heading\n\nbody" spacing.
-  const normalized = newContent.replace(/^\n+/, "").replace(/\n+$/, "");
+  // Trim leading + trailing newlines so consecutive splices don't accumulate
+  // blank lines. Done char-by-char to stay strictly linear on adversarial
+  // input (CodeQL js/polynomial-redos flags /^\n+/ + /\n+$/).
+  let startIdx = 0;
+  while (startIdx < newContent.length && newContent.charCodeAt(startIdx) === 10) startIdx += 1;
+  let endIdx = newContent.length;
+  while (endIdx > startIdx && newContent.charCodeAt(endIdx - 1) === 10) endIdx -= 1;
+  const normalized = newContent.slice(startIdx, endIdx);
   const spliced = [...before, normalized, ...after];
   return {
     body: spliced.join("\n"),
