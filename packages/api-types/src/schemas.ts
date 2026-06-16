@@ -567,6 +567,17 @@ export const permissionsListSchema = z
   .strict();
 
 export const permissionsWriteSchema = z.object({ ok: z.literal(true), version: z.string() }).strict();
+export const permissionGrantSchema = z
+  .object({
+    ok: z.literal(true),
+    version: z.string(),
+    membershipCreated: z.boolean(),
+    permission: z
+      .object({ subjectType: z.literal("user"), subjectId: z.string(), role: roleSchema })
+      .strict(),
+    user: userDtoSchema,
+  })
+  .strict();
 
 // Admin
 export const workspacesSchema = z.object({ workspaces: z.array(workspaceDtoSchema) }).strict();

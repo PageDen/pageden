@@ -19,6 +19,15 @@ type ReplacePermissionsOutcome =
   | { ok: true; version: string }
   | { ok: false; status: "not_found" | "forbidden" }
   | { ok: false; status: "conflict"; currentVersion: string };
+type GrantPermissionOutcome =
+  | {
+      ok: true;
+      version: string;
+      membershipCreated: boolean;
+      permission: { subjectType: "user"; subjectId: string; role: PermissionRole };
+      user: { id: string; email: string; name: string };
+    }
+  | { ok: false; status: "not_found" | "forbidden" | "unknown_user" };
 
 // Reject subjects that do not belong to the target workspace (BLOCKER 2): a user must be a
 // workspace member and a group must belong to the workspace.
@@ -50,6 +59,24 @@ interface PermissionInput {
   role?: string;
 }
 
+interface GrantPermissionInput {
+  email?: string;
+  role?: string;
+}
+
+function normaliseEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isValidEmail(value: string): boolean {
+  if (value.length > 254 || value.includes(" ") || value.includes("\t") || value.includes("\n")) return false;
+  const at = value.indexOf("@");
+  if (at <= 0 || at !== value.lastIndexOf("@") || at === value.length - 1) return false;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  return local.length <= 64 && domain.includes(".") && !domain.startsWith(".") && !domain.endsWith(".");
+}
+
 function validatePermissions(input: unknown): { ok: true; value: Array<{ subjectType: PermissionSubjectType; subjectId: string; role: PermissionRole }>; version: string | null } | { ok: false; message: string } {
   if (!input || typeof input !== "object" || !Array.isArray((input as { permissions?: unknown }).permissions)) {
     return { ok: false, message: "permissions must be an array." };
@@ -70,6 +97,20 @@ function validatePermissions(input: unknown): { ok: true; value: Array<{ subject
     });
   }
   return { ok: true, value: [...bySubject.values()], version: version ?? null };
+}
+
+function validateGrant(input: unknown): { ok: true; value: { email: string; role: PermissionRole } } | { ok: false; fields: Record<string, string> } {
+  if (!input || typeof input !== "object") {
+    return { ok: false, fields: { email: "Email is required.", role: "Role is required." } };
+  }
+  const row = input as GrantPermissionInput;
+  const fields: Record<string, string> = {};
+  const email = typeof row.email === "string" ? normaliseEmail(row.email) : "";
+  if (!email) fields.email = "Email is required.";
+  else if (!isValidEmail(email)) fields.email = "Enter a valid email address.";
+  if (!ROLES.includes(row.role as PermissionRole)) fields.role = "Role must be viewer, editor, or manager.";
+  if (Object.keys(fields).length > 0) return { ok: false, fields };
+  return { ok: true, value: { email, role: row.role as PermissionRole } };
 }
 
 function permissionVersion(
@@ -170,6 +211,75 @@ async function replacePermissions(
   });
 }
 
+async function grantPermissionByEmail(
+  workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+  email: string,
+  role: PermissionRole,
+  auth: AuthContext,
+): Promise<GrantPermissionOutcome> {
+  return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<GrantPermissionOutcome> => {
+    const az =
+      resourceType === "document"
+        ? await authorizeDocumentRole(auth, resourceId, "manager", tx)
+        : await authorizeFolderRole(auth, resourceId, "manager", tx);
+    if (!az.ok) return az;
+
+    const user = await tx.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, name: true },
+    });
+    if (!user) return { ok: false, status: "unknown_user" };
+
+    const membership = await tx.workspaceMembership.findUnique({
+      where: { workspaceId_userId: { workspaceId, userId: user.id } },
+      select: { id: true },
+    });
+    let membershipCreated = false;
+    if (!membership) {
+      await tx.workspaceMembership.create({
+        data: { workspaceId, userId: user.id, role: "guest" },
+      });
+      membershipCreated = true;
+    }
+
+    const existing = await tx.permission.findFirst({
+      where: { workspaceId, resourceType, resourceId, userId: user.id },
+      select: { id: true },
+    });
+    if (existing) {
+      await tx.permission.update({ where: { id: existing.id }, data: { role } });
+    } else {
+      await tx.permission.create({
+        data: { workspaceId, resourceType, resourceId, userId: user.id, groupId: null, role },
+      });
+    }
+
+    await writeAuditEvent(
+      {
+        workspaceId,
+        userId: auth.userId,
+        action: "permission_granted",
+        targetType: resourceType,
+        targetId: resourceId,
+        metadata: { email, role, membershipCreated },
+      },
+      tx,
+    );
+
+    const current = await currentPermissionRows(tx, workspaceId, resourceType, resourceId);
+    const withSubject = current.map((p) => ({ ...rowSubject(p), role: p.role }));
+    return {
+      ok: true,
+      version: permissionVersion(withSubject),
+      membershipCreated,
+      permission: { subjectType: "user", subjectId: user.id, role },
+      user,
+    };
+  });
+}
+
 export async function registerPermissionRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/api/documents/:id/permissions", async (request, reply) => {
     const auth = await requireAuth(request);
@@ -205,6 +315,26 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
     return { ok: true, version: outcome.version };
   });
 
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/api/documents/:id/permissions/grant",
+    { config: { rateLimit: { max: Number(process.env.PERMISSION_GRANT_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const parsed = validateGrant(request.body);
+      if (!parsed.ok) return validationError(reply, parsed.fields);
+      const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+      if (!doc) return notFound(reply, "Document not found.");
+      const outcome = await grantPermissionByEmail(doc.workspaceId, "document", doc.id, parsed.value.email, parsed.value.role, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Document not found.");
+        if (outcome.status === "unknown_user") return validationError(reply, { email: "No PageDen user exists with this email yet. Ask them to sign up first, then share again." });
+        return forbidden(reply);
+      }
+      return outcome;
+    },
+  );
+
   app.get<{ Params: { id: string } }>("/api/folders/:id/permissions", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
@@ -238,4 +368,24 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
     }
     return { ok: true, version: outcome.version };
   });
+
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/api/folders/:id/permissions/grant",
+    { config: { rateLimit: { max: Number(process.env.PERMISSION_GRANT_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const parsed = validateGrant(request.body);
+      if (!parsed.ok) return validationError(reply, parsed.fields);
+      const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+      if (!folder) return notFound(reply, "Folder not found.");
+      const outcome = await grantPermissionByEmail(folder.workspaceId, "folder", folder.id, parsed.value.email, parsed.value.role, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Folder not found.");
+        if (outcome.status === "unknown_user") return validationError(reply, { email: "No PageDen user exists with this email yet. Ask them to sign up first, then share again." });
+        return forbidden(reply);
+      }
+      return outcome;
+    },
+  );
 }

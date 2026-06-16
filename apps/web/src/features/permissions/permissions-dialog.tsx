@@ -35,6 +35,9 @@ export function PermissionsDialog({
 
   const [rows, setRows] = useState<PermissionInput[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareRole, setShareRole] = useState<PermissionInput["role"]>("viewer");
 
   // Initialise the editable list from the server once loaded.
   const editable: PermissionInput[] =
@@ -61,6 +64,27 @@ export function PermissionsDialog({
     },
   });
 
+  const share = useMutation({
+    mutationFn: () =>
+      kind === "document"
+        ? api.grantDocumentPermission(id, { email: shareEmail, role: shareRole })
+        : api.grantFolderPermission(id, { email: shareEmail, role: shareRole }),
+    onSuccess: (result) => {
+      setRows(null);
+      setError(null);
+      setNotice(`Shared with ${result.user.email}.`);
+      setShareEmail("");
+      void queryClient.invalidateQueries({ queryKey: ["permissions", kind, id] });
+      void queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey });
+      void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "tree" || q.queryKey[0] === "document" });
+      void current.refetch();
+    },
+    onError: (e) => {
+      setNotice(null);
+      setError(crudErrorMessage(e));
+    },
+  });
+
   function update(next: PermissionInput[]) {
     setRows(next);
   }
@@ -69,7 +93,7 @@ export function PermissionsDialog({
     <Dialog
       title={
         <span className="block min-w-0">
-          <span className="block">Permissions</span>
+          <span className="block">Share</span>
           <span className="block truncate text-sm font-normal text-slate-500" title={name}>
             {kind === "document" ? "Document" : "Folder"}: {name}
           </span>
@@ -84,29 +108,75 @@ export function PermissionsDialog({
         <p className="text-sm text-slate-500">{crudErrorMessage(current.error)}</p>
       ) : (
         <div className="space-y-3">
-          <ul className="space-y-2">
-            {editable.length === 0 ? <li className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-400">No explicit grants.</li> : null}
-            {editable.map((r, i) => (
-              <li key={`${r.subjectType}:${r.subjectId}`} className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center">
-                <span className="min-w-0 truncate">{subjectLabel(r)}</span>
-                <select
-                  aria-label="Role"
-                  className="rounded-md border border-slate-300 px-2 py-2 text-sm"
-                  value={r.role}
-                  onChange={(e) => {
-                    const next = [...editable];
-                    next[i] = { ...r, role: e.target.value as PermissionInput["role"] };
-                    update(next);
-                  }}
-                >
-                  <option value="viewer">Viewer</option>
-                  <option value="editor">Editor</option>
-                  <option value="manager">Manager</option>
-                </select>
-                <Button variant="ghost" className="justify-self-start sm:justify-self-end" onClick={() => update(editable.filter((_, j) => j !== i))}>Remove</Button>
-              </li>
-            ))}
-          </ul>
+          <form
+            className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              share.mutate();
+            }}
+          >
+            <div>
+              <label className="text-sm font-medium text-slate-700" htmlFor="share-email">
+                Share with an existing user
+              </label>
+              <p className="mt-1 text-xs text-slate-500">
+                Enter their PageDen email. If they are not in this workspace yet, they will be added as a guest with access only to this {kind}.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[minmax(14rem,1fr)_8rem_auto]">
+              <input
+                id="share-email"
+                type="email"
+                className="min-w-0 rounded-md border border-slate-300 px-3 py-2 text-sm"
+                placeholder="person@example.com"
+                value={shareEmail}
+                onChange={(e) => setShareEmail(e.target.value)}
+              />
+              <select
+                aria-label="Share role"
+                className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+                value={shareRole}
+                onChange={(e) => setShareRole(e.target.value as PermissionInput["role"])}
+              >
+                <option value="viewer">Viewer</option>
+                <option value="editor">Editor</option>
+                <option value="manager">Manager</option>
+              </select>
+              <Button disabled={share.isPending || !shareEmail.trim()}>
+                {share.isPending ? "Sharing…" : "Share"}
+              </Button>
+            </div>
+          </form>
+
+          <div className="space-y-2">
+            <div>
+              <h3 className="text-sm font-medium text-slate-700">People and groups with access</h3>
+              <p className="mt-1 text-xs text-slate-500">Managers can update or remove explicit grants below.</p>
+            </div>
+            <ul className="space-y-2">
+              {editable.length === 0 ? <li className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-400">No explicit grants.</li> : null}
+              {editable.map((r, i) => (
+                <li key={`${r.subjectType}:${r.subjectId}`} className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center">
+                  <span className="min-w-0 truncate">{subjectLabel(r)}</span>
+                  <select
+                    aria-label="Role"
+                    className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+                    value={r.role}
+                    onChange={(e) => {
+                      const next = [...editable];
+                      next[i] = { ...r, role: e.target.value as PermissionInput["role"] };
+                      update(next);
+                    }}
+                  >
+                    <option value="viewer">Viewer</option>
+                    <option value="editor">Editor</option>
+                    <option value="manager">Manager</option>
+                  </select>
+                  <Button variant="ghost" className="justify-self-start sm:justify-self-end" onClick={() => update(editable.filter((_, j) => j !== i))}>Remove</Button>
+                </li>
+              ))}
+            </ul>
+          </div>
 
           <AddGrant
             users={users.data?.users ?? []}
@@ -119,6 +189,7 @@ export function PermissionsDialog({
             <FolderDefaultRoleSection folderId={id} workspaceId={workspaceId} />
           ) : null}
 
+          {notice ? <p className="text-sm text-emerald-700">{notice}</p> : null}
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
           <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
             <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -213,10 +284,9 @@ function FolderDefaultRoleSection({ folderId, workspaceId }: { folderId: string;
   return (
     <div className="space-y-2 border-t border-slate-200 pt-3 text-sm">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-slate-700">Default role for workspace members</span>
+        <span className="text-sm font-medium text-slate-700">Workspace member access</span>
         <span className="text-xs text-slate-500">
-          Every member sees documents in this folder as at least this role, even without an explicit grant.
-          Guests are not affected.
+          Choose whether all workspace members can access this folder. Guests still need explicit grants.
         </span>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
