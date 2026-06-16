@@ -15,6 +15,7 @@ import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { documentRelationships } from "../documents/relationships.js";
 import { workspaceActivityFor } from "../workspaces/insights.js";
 import { createComment, listComments, resolveCommentRecord } from "../documents/comments.js";
 import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
@@ -268,6 +269,18 @@ const tools = [
   {
     name: "pageden_list_decisions",
     description: "List structured `:::decision id status owner ... :::` blocks parsed from a document so agents can act on the final calls without re-reading prose.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "pageden_document_relationships",
+    description: "Typed related-document panel for a single document: who supersedes whom, outbound wikilink/markdown references, inbound backlinks, and any PR links parsed from frontmatter. Use when an agent needs to know what touches a doc beyond semantic similarity.",
     inputSchema: {
       type: "object",
       properties: {
@@ -719,6 +732,7 @@ async function callTool(
   else if (name === "pageden_read_section") data = await readSection(auth, args);
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
+  else if (name === "pageden_document_relationships") data = await documentRelationshipsHandler(auth, args);
   else if (name === "pageden_find_decisions") data = await findDecisions(auth, args, request);
   else if (name === "pageden_activity_timeline") data = await activityTimeline(auth, args, request);
   else if (name === "pageden_add_section_comment") data = await addSectionComment(auth, args, request);
@@ -1104,6 +1118,19 @@ async function findDecisions(auth: AuthContext, args: Record<string, unknown>, r
     if (results.length >= limit) break;
   }
   return { workspaceId, decisions: results, scannedDocuments: Math.min(readable.length, DOC_SCAN_CAP) };
+}
+
+async function documentRelationshipsHandler(auth: AuthContext, args: Record<string, unknown>) {
+  // Resolve the target the same way list_decisions / read_section do, so an
+  // agent can pass either documentId or path.
+  const doc = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  const result = await documentRelationships(auth.userId, doc.id);
+  if (!result) throw new Error("Document not found.");
+  return result;
 }
 
 async function activityTimeline(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {

@@ -9,9 +9,12 @@ import {
   CheckCircle2,
   CircleDashed,
   ClipboardList,
+  CornerDownLeft,
+  CornerDownRight,
   ExternalLink,
   FileText,
   GitPullRequest,
+  Link2,
   ListChecks,
   MessageSquare,
   Network,
@@ -26,9 +29,10 @@ import type {
   handoffPacketSchema,
   implementationReadinessSchema,
   implementationReadinessStatusSchema,
+  relatedDocsSchema,
 } from "@pageden/api-types";
 import { ApiError, api } from "../../lib/api";
-import { documentCommentsQuery, documentHandoffQuery } from "../../lib/queries";
+import { documentCommentsQuery, documentHandoffQuery, documentRelatedDocsQuery } from "../../lib/queries";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 import { Button } from "../../components/ui/button";
 
@@ -81,6 +85,7 @@ export function DocumentHandoff() {
 
 function HandoffView({ h, workspaceId }: { h: Handoff; workspaceId: string }) {
   const { packet } = h;
+  const relatedDocs = useQuery({ ...documentRelatedDocsQuery(h.documentId), enabled: h.documentId !== "" });
   return (
     <main className="mx-auto max-w-4xl space-y-6 px-6 py-8 text-slate-950 dark:text-slate-100">
       <div className="flex items-center justify-between gap-4">
@@ -154,6 +159,8 @@ function HandoffView({ h, workspaceId }: { h: Handoff; workspaceId: string }) {
           </ul>
         </Card>
       ) : null}
+
+      <RelatedDocsCard workspaceId={workspaceId} data={relatedDocs.data} isLoading={relatedDocs.isLoading} isError={relatedDocs.isError} />
 
       {packet.relatedFiles.length ? (
         <Card icon={<Network className="h-5 w-5" aria-hidden="true" />} title="Likely source files">
@@ -340,6 +347,91 @@ function DecisionsCard({ decisions }: { decisions: Handoff["packet"]["decisions"
           ))}
         </ul>
       )}
+    </Card>
+  );
+}
+
+type RelatedDocs = z.infer<typeof relatedDocsSchema>;
+type RelatedDocRef = RelatedDocs["references"][number];
+
+function RelatedDocsCard({
+  workspaceId,
+  data,
+  isLoading,
+  isError,
+}: {
+  workspaceId: string;
+  data: RelatedDocs | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <Card icon={<Network className="h-5 w-5" aria-hidden="true" />} title="Related documents">
+        <p className="text-sm text-slate-400">Loading…</p>
+      </Card>
+    );
+  }
+  if (isError || !data) return null;
+  const sections: Array<{
+    key: string;
+    label: string;
+    icon: React.ReactNode;
+    items: RelatedDocRef[];
+  }> = [
+    { key: "supersedes", label: "Supersedes", icon: <CornerDownRight size={13} aria-hidden="true" />, items: data.supersedes },
+    { key: "supersededBy", label: "Superseded by", icon: <CornerDownLeft size={13} aria-hidden="true" />, items: data.supersededBy ? [data.supersededBy] : [] },
+    { key: "references", label: "References (outbound)", icon: <ArrowRight size={13} aria-hidden="true" />, items: data.references },
+    { key: "referencedBy", label: "Referenced by (backlinks)", icon: <Link2 size={13} aria-hidden="true" />, items: data.referencedBy },
+  ];
+  const visible = sections.filter((section) => section.items.length > 0);
+  if (visible.length === 0) {
+    return (
+      <Card icon={<Network className="h-5 w-5" aria-hidden="true" />} title="Related documents">
+        <p className="text-sm italic text-slate-400 dark:text-slate-500">
+          No supersedes / references / backlinks detected. Use{" "}
+          <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            [[doc-path]]
+          </code>{" "}
+          wikilinks to start building the graph.
+        </p>
+      </Card>
+    );
+  }
+  return (
+    <Card icon={<Network className="h-5 w-5" aria-hidden="true" />} title="Related documents">
+      <div className="grid gap-4 md:grid-cols-2">
+        {visible.map((section) => (
+          <div key={section.key}>
+            <header className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              <span className="text-orange-600 dark:text-orange-300">{section.icon}</span>
+              {section.label}
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                {section.items.length}
+              </span>
+            </header>
+            <ul className="space-y-1">
+              {section.items.map((doc) => (
+                <li key={doc.id}>
+                  <Link
+                    to="/w/$workspaceId/d/$documentId"
+                    params={{ workspaceId, documentId: doc.id }}
+                    className="block truncate rounded-md border border-transparent px-2 py-1 text-sm text-slate-700 hover:border-slate-200 hover:bg-slate-50 dark:text-slate-200 dark:hover:border-slate-700 dark:hover:bg-slate-800/60"
+                  >
+                    <span className="truncate">{doc.title}</span>
+                    {doc.status !== "canonical" ? (
+                      <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-500/15 dark:text-amber-200">
+                        {doc.status}
+                      </span>
+                    ) : null}
+                    <span className="block truncate text-xs text-slate-400 dark:text-slate-500">{doc.path}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
     </Card>
   );
 }

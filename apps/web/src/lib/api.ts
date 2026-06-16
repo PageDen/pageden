@@ -19,6 +19,7 @@ import {
   groupsListSchema,
   permissionsListSchema,
   permissionsWriteSchema,
+  relatedDocsSchema,
   folderDefaultRoleSchema,
   documentShareResponseSchema,
   documentShareListSchema,
@@ -170,6 +171,8 @@ export const api = {
   },
   documentHandoff: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/handoff`, { schema: handoffPacketSchema }),
+  documentRelatedDocs: (id: string) =>
+    request("GET", `/documents/${encodeURIComponent(id)}/related-docs`, { schema: relatedDocsSchema }),
   workspaceActivity: (workspaceId: string, before?: string) =>
     request(
       "GET",
