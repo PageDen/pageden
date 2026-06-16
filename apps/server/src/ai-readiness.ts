@@ -17,11 +17,15 @@ export function documentContext(content: string) {
 
 export async function aiReadinessForDocument({
   workspaceId,
+  documentId,
+  status,
   title,
   updatedAt,
   context,
 }: {
   workspaceId: string;
+  documentId?: string;
+  status?: string;
   title: string;
   updatedAt: Date;
   context: DocumentContext;
@@ -56,6 +60,22 @@ export async function aiReadinessForDocument({
     issues.push({ code: "stale_document", severity: "info", message: `This document has not changed in ${daysSinceUpdate} days.` });
   }
 
+  // Only canonical docs are checked for overlap — superseded/draft/archived
+  // docs are expected to share topics with their canonical counterparts.
+  if (status === "canonical" || status === undefined) {
+    const overlaps = await overlappingCanonicalDocs(workspaceId, documentId ?? null, title);
+    if (overlaps.length) {
+      issues.push({
+        code: "overlapping_canonical_docs",
+        severity: "info",
+        message: `Other canonical documents may cover the same topic: ${overlaps
+          .slice(0, 3)
+          .map((doc) => doc.path)
+          .join(", ")}${overlaps.length > 3 ? "…" : ""}. Consider marking one superseded.`,
+      });
+    }
+  }
+
   const warningCount = issues.filter((issue) => issue.severity === "warning").length;
   const infoCount = issues.length - warningCount;
   const score = Math.max(0, 100 - warningCount * 22 - infoCount * 8);
@@ -64,6 +84,56 @@ export async function aiReadinessForDocument({
     score,
     issues,
   };
+}
+
+// Title-token Jaccard heuristic for "two canonical docs likely cover the same
+// topic". Cheap (one query + in-memory compare) and intentionally conservative:
+// only fires above 0.6 overlap so two docs with the same domain keyword don't
+// trip it (e.g. "Backup Strategy" vs "Backup Drill" share one token only).
+// Surfaces up to 3 candidates with the highest overlap.
+const STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has",
+  "have", "in", "is", "it", "its", "of", "on", "or", "that", "the", "to", "with",
+  "doc", "docs", "document", "documents", "plan", "notes", "guide", "readme",
+]);
+
+function titleTokens(title: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const word of title.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (word.length < 3 || STOPWORDS.has(word)) continue;
+    tokens.add(word);
+  }
+  return tokens;
+}
+
+async function overlappingCanonicalDocs(
+  workspaceId: string,
+  documentId: string | null,
+  title: string,
+): Promise<Array<{ id: string; title: string; path: string; overlap: number }>> {
+  const mine = titleTokens(title);
+  if (mine.size < 2) return []; // a one-word title is too noisy to compare against
+  const siblings = await prisma.document.findMany({
+    where: {
+      workspaceId,
+      deletedAt: null,
+      status: "canonical",
+      ...(documentId ? { id: { not: documentId } } : {}),
+    },
+    select: { id: true, title: true, path: true },
+  });
+  const scored: Array<{ id: string; title: string; path: string; overlap: number }> = [];
+  for (const sibling of siblings) {
+    const theirs = titleTokens(sibling.title);
+    if (theirs.size < 2) continue;
+    const intersection = [...mine].filter((token) => theirs.has(token)).length;
+    if (intersection < 2) continue;
+    const union = new Set([...mine, ...theirs]).size;
+    const overlap = intersection / union;
+    if (overlap >= 0.6) scored.push({ ...sibling, overlap });
+  }
+  scored.sort((a, b) => b.overlap - a.overlap);
+  return scored;
 }
 
 async function brokenWikiLinks(workspaceId: string, wikilinks: string[]): Promise<string[]> {

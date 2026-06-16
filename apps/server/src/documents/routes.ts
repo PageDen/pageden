@@ -587,6 +587,8 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     const context = documentContext(content);
     const aiReadiness = await aiReadinessForDocument({
       workspaceId: doc.workspaceId,
+      documentId: doc.id,
+      status: doc.status,
       title: doc.title,
       updatedAt: doc.updatedAt,
       context,

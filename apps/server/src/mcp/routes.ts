@@ -278,6 +278,20 @@ const tools = [
     },
   },
   {
+    name: "pageden_find_decisions",
+    description: "Search structured `:::decision` blocks across every readable document in the workspace. Useful for finding a specific decision by id, status, owner, or free-text keywords without knowing which document holds it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        query: { type: "string", description: "Free-text match against decision id, decision text, and reason." },
+        status: { type: "string", description: "Filter by decision status (e.g. accepted, proposed, rejected)." },
+        owner: { type: "string", description: "Filter by decision owner." },
+        limit: { type: "number", minimum: 1, maximum: 100, description: "Max decisions to return; default 25." },
+      },
+    },
+  },
+  {
     name: "pageden_activity_timeline",
     description: "Recent document-related activity in a workspace (create/update/push/agent/restore). Each event has an `actor` field (user|agent|obsidian_plugin|system) so an agent can avoid duplicating work already done.",
     inputSchema: {
@@ -705,6 +719,7 @@ async function callTool(
   else if (name === "pageden_read_section") data = await readSection(auth, args);
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
+  else if (name === "pageden_find_decisions") data = await findDecisions(auth, args, request);
   else if (name === "pageden_activity_timeline") data = await activityTimeline(auth, args, request);
   else if (name === "pageden_add_section_comment") data = await addSectionComment(auth, args, request);
   else if (name === "pageden_list_comments") data = await listSectionComments(auth, args, request);
@@ -811,6 +826,8 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>, op
   const context = documentContext(content);
   const readiness = await aiReadinessForDocument({
     workspaceId: doc.workspaceId,
+    documentId: doc.id,
+    status: doc.status,
     title: doc.title,
     updatedAt: doc.updatedAt,
     context,
@@ -1021,6 +1038,72 @@ async function listDecisions(auth: AuthContext, args: Record<string, unknown>) {
     path: doc.path,
     decisions,
   };
+}
+
+async function findDecisions(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const query = (maybeString(args.query) ?? "").trim().toLowerCase();
+  const statusFilter = (maybeString(args.status) ?? "").trim().toLowerCase();
+  const ownerFilter = (maybeString(args.owner) ?? "").trim().toLowerCase();
+  const limit = Math.min(clampLimit(args.limit) || 25, 100);
+
+  const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
+  const docs = await prisma.document.findMany({
+    where: { workspaceId, deletedAt: null },
+    select: { id: true, title: true, path: true, status: true, folderId: true, currentVersionId: true, updatedAt: true },
+    orderBy: { updatedAt: "desc" },
+  });
+  const readable = docs.filter((doc) => resolver.documentRole(doc) !== null);
+
+  // Cap how many docs we crack open: the parser is cheap, but each doc still
+  // does one storage read. 200 docs is plenty for a "where was this decided?"
+  // lookup and bounds the worst-case latency on huge workspaces.
+  const DOC_SCAN_CAP = 200;
+  const results: Array<{
+    documentId: string;
+    documentTitle: string;
+    documentPath: string;
+    documentStatus: string;
+    documentUpdatedAt: string;
+    decision: ReturnType<typeof extractDecisions>[number];
+  }> = [];
+
+  for (const doc of readable.slice(0, DOC_SCAN_CAP)) {
+    if (!doc.currentVersionId) continue;
+    const revision = await prisma.documentRevision.findUnique({
+      where: { id: doc.currentVersionId },
+      select: { storageKey: true },
+    });
+    if (!revision) continue;
+    let content: string;
+    try {
+      content = await readContent(revision.storageKey);
+    } catch {
+      continue;
+    }
+    const context = documentContext(content);
+    const decisions = extractDecisions(context.body);
+    for (const decision of decisions) {
+      if (statusFilter && (decision.status ?? "").toLowerCase() !== statusFilter) continue;
+      if (ownerFilter && (decision.owner ?? "").toLowerCase() !== ownerFilter) continue;
+      if (query) {
+        const haystack = `${decision.id} ${decision.decision ?? ""} ${decision.reason ?? ""}`.toLowerCase();
+        if (!haystack.includes(query)) continue;
+      }
+      results.push({
+        documentId: doc.id,
+        documentTitle: doc.title,
+        documentPath: doc.path,
+        documentStatus: doc.status,
+        documentUpdatedAt: doc.updatedAt.toISOString(),
+        decision,
+      });
+      if (results.length >= limit) break;
+    }
+    if (results.length >= limit) break;
+  }
+  return { workspaceId, decisions: results, scannedDocuments: Math.min(readable.length, DOC_SCAN_CAP) };
 }
 
 async function activityTimeline(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
