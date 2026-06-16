@@ -273,10 +273,8 @@ export async function rewriteWikilinks(
       baseVersion: doc.currentVersionId,
       content: next,
       changeSource: "agent",
-      // Once PR #60 (canonical write guard) lands, this option will exist on
-      // applyDocumentWrite. Until then it's silently ignored at the call
-      // site. Cleanup writes deliberately target superseded docs too.
-      // @ts-expect-error pending PR #60 — option is no-op on today's main.
+      // Cleanup writes deliberately target superseded docs too; G8's canonical
+      // write guard would otherwise refuse them.
       allowNonCanonical: true,
     });
     if (outcome.ok) {

@@ -241,6 +241,7 @@ export const implementationReadinessStatusSchema = z.enum([
   "conflicting_guidance",
   "draft_only",
   "superseded",
+  "not_applicable",
 ]);
 
 export const implementationReadinessReasonSchema = z

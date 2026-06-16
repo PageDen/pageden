@@ -15,7 +15,18 @@ export type ImplementationReadinessStatus =
   | "has_blocking_questions"
   | "conflicting_guidance"
   | "draft_only"
-  | "superseded";
+  | "superseded"
+  | "not_applicable";
+
+// F15: doc types that opt OUT of implementation-readiness scoring. Operational
+// runbooks, reference material, decision logs and the like don't have an
+// "acceptance criteria" surface — scoring them on those checks yields noisy
+// 45/100 results that erode trust in the signal where it does matter.
+const IMPLEMENTATION_DOC_TYPES = new Set(["implementation", "plan"]);
+function isImplementationDocType(docType: string | undefined): boolean {
+  if (!docType) return true; // Default behavior (no frontmatter) stays as today.
+  return IMPLEMENTATION_DOC_TYPES.has(docType.trim().toLowerCase());
+}
 
 export interface ImplementationReadinessReason {
   code: string;
@@ -218,6 +229,24 @@ export function implementationReadinessFor({
   comments?: ReadinessComment[];
 }): ImplementationReadiness {
   const reasons: ImplementationReadinessReason[] = [];
+  // F15: skip implementation-flavoured checks when the doc isn't an
+  // implementation plan. We still surface the status (superseded/archived)
+  // so a downstream filter can warn — just no missing_acceptance_criteria
+  // noise on a financial plan.
+  const docType = typeof context.frontmatter.docType === "string" ? context.frontmatter.docType : undefined;
+  if (!isImplementationDocType(docType)) {
+    return {
+      status: "not_applicable",
+      score: 100,
+      reasons: [
+        {
+          code: "doctype_not_applicable",
+          severity: "info",
+          message: `Implementation-readiness checks do not apply to docType=${docType ?? "unknown"}.`,
+        },
+      ],
+    };
+  }
   if (status === "superseded") {
     return {
       status: "superseded",

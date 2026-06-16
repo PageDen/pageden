@@ -18,6 +18,8 @@ import { extractDecisions, extractSections, findSection, implementationReadiness
 import { documentRelationships } from "../documents/relationships.js";
 import { replaceSection, suggestAnchors } from "../documents/sections.js";
 import { brokenLinkExplanation, lintWikilinks, rewriteWikilinks, type RewriteReplacement } from "../documents/wikilinks.js";
+import { documentStatsFor } from "../documents/stats.js";
+import { documentDiffFor } from "../documents/diff.js";
 import { workspaceActivityFor } from "../workspaces/insights.js";
 import { createComment, listComments, resolveCommentRecord } from "../documents/comments.js";
 import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
@@ -339,6 +341,32 @@ const tools = [
         documentId: { type: "string" },
         path: { type: "string" },
       },
+    },
+  },
+  {
+    name: "pageden_doc_stats",
+    description: "Cheap shape-of-this-doc view (chars, tokenEstimate, chunkRecommendation, wikilinkCount, brokenWikilinkCount, decisionCount, openCommentCount, resolvedCommentCount) so an agent can choose a read strategy before committing tool calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves by path within the workspace." },
+      },
+    },
+  },
+  {
+    name: "pageden_diff",
+    description: "Unified diff between two revisions of the same document. Use for self-verification (did my last write do what I intended?) and review workflows. Both versions must belong to the same document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves by path within the workspace." },
+        fromVersion: { type: "string", description: "Older DocumentRevision id." },
+        toVersion: { type: "string", description: "Newer DocumentRevision id." },
+      },
+      required: ["fromVersion", "toVersion"],
     },
   },
   {
@@ -787,6 +815,8 @@ async function callTool(
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
   else if (name === "pageden_document_relationships") data = await documentRelationshipsHandler(auth, args);
+  else if (name === "pageden_doc_stats") data = await docStatsHandler(auth, args);
+  else if (name === "pageden_diff") data = await docDiffHandler(auth, args);
   else if (name === "pageden_find_decisions") data = await findDecisions(auth, args, request);
   else if (name === "pageden_activity_timeline") data = await activityTimeline(auth, args, request);
   else if (name === "pageden_add_section_comment") data = await addSectionComment(auth, args, request);
@@ -1184,6 +1214,39 @@ async function documentRelationshipsHandler(auth: AuthContext, args: Record<stri
   });
   const result = await documentRelationships(auth.userId, doc.id);
   if (!result) throw new Error("Document not found.");
+  return result;
+}
+
+async function docStatsHandler(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "read");
+  const doc = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  const result = await documentStatsFor(doc.id);
+  if (!result) throw new Error("Document not found.");
+  return result;
+}
+
+async function docDiffHandler(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "read");
+  const fromVersion = stringParam(args, "fromVersion");
+  const toVersion = stringParam(args, "toVersion");
+  // Allow either documentId or path; readDocument handles the resolution.
+  const doc = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  const result = await documentDiffFor(doc.id, fromVersion, toVersion);
+  if ("error" in result) {
+    throw new Error(
+      result.error === "same_version"
+        ? "fromVersion and toVersion must differ."
+        : "Revision not found, or it belongs to another document.",
+    );
+  }
   return result;
 }
 
