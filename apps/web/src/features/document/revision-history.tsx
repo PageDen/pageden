@@ -11,6 +11,7 @@ import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/ui/dialog";
 import { ApiError } from "../../lib/api";
 import { formatDateTime } from "../../lib/format";
+import { documentReadablePath } from "../../lib/document-links";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 
 type HistoryEntry = (RevisionSummary | CollapsedRevisionSummary) & { groupCount?: number };
@@ -70,7 +71,7 @@ export function RevisionHistory() {
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: documentQuery(documentId).queryKey });
       queryClient.removeQueries({ queryKey: documentHistoryQuery(documentId).queryKey });
-      void navigate({ to: "/w/$workspaceId/d/$documentId", params: { workspaceId, documentId } });
+      void navigate({ to: doc.data?.path ? documentReadablePath(workspaceId, doc.data.path) : `/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(documentId)}` });
     },
   });
   const metadata = useMutation({
@@ -128,8 +129,7 @@ export function RevisionHistory() {
             <p className="truncate text-sm text-slate-500 dark:text-slate-400">{doc.data?.path}</p>
           </div>
           <Link
-            to="/w/$workspaceId/d/$documentId"
-            params={{ workspaceId, documentId }}
+            to={doc.data?.path ? documentReadablePath(workspaceId, doc.data.path) : `/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(documentId)}`}
             className="text-sm font-medium text-orange-700 underline decoration-orange-300 underline-offset-4 hover:text-orange-800 dark:text-orange-300"
           >
             Back to document

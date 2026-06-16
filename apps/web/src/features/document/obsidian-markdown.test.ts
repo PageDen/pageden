@@ -21,7 +21,7 @@ describe("Obsidian markdown compatibility", () => {
 
   it("turns wiki links into workspace document links", () => {
     expect(resolveWikiLinks("See [[Runbook|the runbook]].", "ws1", tree)).toBe(
-      "See [the runbook](/w/ws1/d/doc1).",
+      "See [the runbook](/w/ws1/p/engineering/runbook).",
     );
   });
 
@@ -33,7 +33,7 @@ describe("Obsidian markdown compatibility", () => {
 
   it("preserves document links with section anchors", () => {
     expect(resolveWikiLinks("See [[Runbook#Deploy Steps|deploy steps]].", "ws1", tree)).toBe(
-      "See [deploy steps](/w/ws1/d/doc1#deploy-steps).",
+      "See [deploy steps](/w/ws1/p/engineering/runbook#deploy-steps).",
     );
   });
 

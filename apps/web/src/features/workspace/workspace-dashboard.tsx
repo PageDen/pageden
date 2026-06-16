@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, ArrowRight, ClipboardList, FileText, FolderTre
 import type { z } from "zod";
 import type { documentStatusSchema } from "@pageden/api-types";
 import { ApiError } from "../../lib/api";
+import { documentReadablePath } from "../../lib/document-links";
 import { workspaceDashboardQuery } from "../../lib/queries";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 import { ActivityRow } from "./activity-row";
@@ -66,8 +67,7 @@ export function WorkspaceDashboard() {
                 {d.supersededDocs.map((doc) => (
                   <li key={doc.id} className="flex flex-wrap items-center gap-1.5">
                     <Link
-                      to="/w/$workspaceId/d/$documentId"
-                      params={{ workspaceId, documentId: doc.id }}
+                      to={documentReadablePath(workspaceId, doc.path)}
                       className="font-medium text-slate-700 hover:text-orange-700 dark:text-slate-200 dark:hover:text-orange-300"
                     >
                       {doc.title}
@@ -77,8 +77,7 @@ export function WorkspaceDashboard() {
                       <>
                         <ArrowRight size={13} className="text-amber-600" aria-hidden="true" />
                         <Link
-                          to="/w/$workspaceId/d/$documentId"
-                          params={{ workspaceId, documentId: doc.supersededBy.id }}
+                          to={documentReadablePath(workspaceId, doc.supersededBy.path)}
                           className="font-semibold text-amber-800 hover:underline dark:text-amber-200"
                         >
                           {doc.supersededBy.title}
@@ -116,8 +115,7 @@ export function WorkspaceDashboard() {
                 {d.recentChanges.map((doc) => (
                   <li key={doc.id} className="flex flex-wrap items-center gap-2">
                     <Link
-                      to="/w/$workspaceId/d/$documentId"
-                      params={{ workspaceId, documentId: doc.id }}
+                      to={documentReadablePath(workspaceId, doc.path)}
                       className="truncate font-medium text-slate-700 hover:text-orange-700 dark:text-slate-200 dark:hover:text-orange-300"
                     >
                       {doc.title}
@@ -139,8 +137,7 @@ export function WorkspaceDashboard() {
                 {d.activeClaims.map((claim) => (
                   <li key={claim.id} className="flex flex-wrap items-center gap-2">
                     <Link
-                      to="/w/$workspaceId/d/$documentId"
-                      params={{ workspaceId, documentId: claim.document.id }}
+                      to={documentReadablePath(workspaceId, claim.document.path)}
                       className="truncate font-medium text-slate-700 hover:text-orange-700 dark:text-slate-200 dark:hover:text-orange-300"
                     >
                       {claim.document.title}

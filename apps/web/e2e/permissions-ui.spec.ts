@@ -21,7 +21,7 @@ test("permissions UI: viewer is read-only, editor can save", async ({ page, brow
 
   await login(page, email, password);
 
-  // Folder + document; capture workspaceId + documentId from the URL.
+  // Folder + document; capture workspaceId from the URL and documentId from the tree API.
   await page.getByRole("button", { name: "+ New top-level folder" }).click();
   let dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Name" }).fill(folderName);
@@ -34,9 +34,16 @@ test("permissions UI: viewer is read-only, editor can save", async ({ page, brow
   await dialog.getByRole("button", { name: "Save" }).click();
   await page.locator("nav").getByRole("link", { name: docTitle }).click();
   await expect(page.getByRole("heading", { name: docTitle })).toBeVisible();
-  const m = page.url().match(/\/w\/([^/]+)\/d\/([^/?#]+)/);
+  const m = page.url().match(/\/w\/([^/]+)/);
   expect(m).toBeTruthy();
-  const [, workspaceId, documentId] = m as RegExpMatchArray;
+  const [, workspaceId] = m as RegExpMatchArray;
+  const treeRes = await page.request.get(`${ORIGIN}/api/documents/tree?workspaceId=${encodeURIComponent(workspaceId)}`, {
+    headers: { origin: ORIGIN },
+  });
+  expect(treeRes.ok()).toBeTruthy();
+  const tree = await treeRes.json() as { documents: Array<{ id: string; title: string }> };
+  const documentId = tree.documents.find((doc) => doc.title === docTitle)?.id;
+  if (!documentId) throw new Error("Created document was not found in the tree response.");
 
   // Create a second workspace member via the API (Origin set for the CSRF guard).
   const created = await page.request.post(`${ORIGIN}/api/users`, {

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { z } from "zod";
 import type { activityEventSchema } from "@pageden/api-types";
+import { documentReadablePath } from "../../lib/document-links";
 
 type Event = z.infer<typeof activityEventSchema>;
 
@@ -92,8 +93,7 @@ export function ActivityRow({ event, workspaceId, compact }: { event: Event; wor
           {event.targetId && event.documentTitle ? (
             event.documentTitle ? (
               <Link
-                to="/w/$workspaceId/d/$documentId"
-                params={{ workspaceId, documentId: event.targetId }}
+                to={event.documentPath ? documentReadablePath(workspaceId, event.documentPath) : `/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(event.targetId)}`}
                 className="font-semibold text-slate-900 hover:text-orange-700 dark:text-slate-100 dark:hover:text-orange-300"
               >
                 {event.documentTitle}

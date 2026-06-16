@@ -19,6 +19,7 @@ import { isAllowedEmbedSrc } from "./media";
 import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
+import { documentReadablePath } from "../../lib/document-links";
 
 type Doc = z.infer<typeof documentWithContentSchema>;
 type Tree = z.infer<typeof treeSchema>;
@@ -470,8 +471,7 @@ function DocumentStatusBanner({
           <>
             <span>Use</span>
             <Link
-              to="/w/$workspaceId/d/$documentId"
-              params={{ workspaceId, documentId: supersededBy.id }}
+              to={documentReadablePath(workspaceId, supersededBy.path)}
               className="inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
             >
               {supersededBy.title}
@@ -617,7 +617,7 @@ export function resolveWikiLinks(content: string, workspaceId: string, tree?: Pi
       const doc = docs.find((d) => d.title === target || d.path.replace(/^\/+/, "") === target.replace(/^\/+/, ""));
       if (!doc) return label;
       const hash = heading ? `#${headingId(heading)}` : "";
-      return `[${label}](/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(doc.id)}${hash})`;
+      return `[${label}](${documentReadablePath(workspaceId, doc.path)}${hash})`;
     });
 }
 

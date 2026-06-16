@@ -12,11 +12,12 @@ import { CommandPalette } from "./command-palette";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import { highlightSnippet } from "../../lib/search-highlight";
+import { documentReadablePath, normalizeReadableDocumentPath } from "../../lib/document-links";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { type ThemeMode, useTheme } from "../../lib/theme";
 
 export function WorkspaceShell() {
-  const params = useParams({ strict: false });
+  const params = useParams({ strict: false }) as { workspaceId?: string; documentId?: string; _splat?: string };
   const workspaceId = params.workspaceId ?? "";
   const [searchText, setSearchText] = useState("");
   const SIDEBAR_MIN = 180;
@@ -107,7 +108,8 @@ export function WorkspaceShell() {
 
   const workspace = me.data?.workspaces.find((w) => w.id === workspaceId);
   const workspaceInitial = getWorkspaceInitial(workspace?.name);
-  const currentDocument = tree.data?.documents.find((doc) => doc.id === params.documentId);
+  const currentDocumentPath = params._splat ? normalizeReadableDocumentPath(params._splat) : "";
+  const currentDocument = tree.data?.documents.find((doc) => doc.id === params.documentId || doc.path === currentDocumentPath);
   const isMobileShell = useMediaQuery("(max-width: 1023px)");
   const toggleSidebar = () => {
     setIsSidebarCollapsed((current) => {
@@ -792,8 +794,7 @@ function SearchResults({
       {results.map((result) => (
         <li key={result.id}>
           <Link
-            to="/w/$workspaceId/d/$documentId"
-            params={{ workspaceId, documentId: result.id }}
+            to={documentReadablePath(workspaceId, result.path)}
             onClick={onNavigate}
             className="block rounded px-2 py-1.5 hover:bg-slate-100 [&.active]:bg-slate-200"
           >
@@ -1022,8 +1023,7 @@ function HomeDocumentRow({ workspaceId, doc, folderName }: { workspaceId: string
   return (
     <li>
       <Link
-        to="/w/$workspaceId/d/$documentId"
-        params={{ workspaceId, documentId: doc.id }}
+        to={documentReadablePath(workspaceId, doc.path)}
         onClick={() => rememberViewedDocument(doc.id)}
         className="group flex items-start gap-3 rounded-lg px-2 py-3 transition hover:bg-slate-50"
       >

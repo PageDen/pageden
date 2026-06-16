@@ -175,6 +175,16 @@ const documentRoute = createRoute({
   ),
 });
 
+const documentPathRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "p/$",
+  component: () => (
+    <Lazy>
+      <DocumentView />
+    </Lazy>
+  ),
+});
+
 const documentHistoryRoute = createRoute({
   getParentRoute: () => workspaceRoute,
   path: "d/$documentId/history",
@@ -335,6 +345,7 @@ const routeTree = rootRoute.addChildren([
     workspaceRoute.addChildren([
       workspaceIndexRoute,
       documentRoute,
+      documentPathRoute,
       documentHistoryRoute,
       documentHandoffRoute,
       dashboardRoute,

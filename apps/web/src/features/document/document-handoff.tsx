@@ -33,6 +33,7 @@ import type {
 } from "@pageden/api-types";
 import { ApiError, api } from "../../lib/api";
 import { documentCommentsQuery, documentHandoffQuery, documentRelatedDocsQuery } from "../../lib/queries";
+import { documentReadablePath } from "../../lib/document-links";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 import { Button } from "../../components/ui/button";
 
@@ -94,8 +95,7 @@ function HandoffView({ h, workspaceId }: { h: Handoff; workspaceId: string }) {
     <main className="mx-auto max-w-4xl space-y-6 px-6 py-8 text-slate-950 dark:text-slate-100">
       <div className="flex items-center justify-between gap-4">
         <Link
-          to="/w/$workspaceId/d/$documentId"
-          params={{ workspaceId, documentId: h.documentId }}
+          to={documentReadablePath(workspaceId, h.path)}
           className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
         >
           <ArrowLeft size={14} aria-hidden="true" />
@@ -116,8 +116,7 @@ function HandoffView({ h, workspaceId }: { h: Handoff; workspaceId: string }) {
           <span className="font-medium">Superseded.</span>
           <span>Use</span>
           <Link
-            to="/w/$workspaceId/d/$documentId"
-            params={{ workspaceId, documentId: packet.supersededBy.id }}
+            to={documentReadablePath(workspaceId, packet.supersededBy.path)}
             className="inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
           >
             {packet.supersededBy.title}
@@ -418,8 +417,7 @@ function RelatedDocsCard({
               {section.items.map((doc) => (
                 <li key={doc.id}>
                   <Link
-                    to="/w/$workspaceId/d/$documentId"
-                    params={{ workspaceId, documentId: doc.id }}
+                    to={documentReadablePath(workspaceId, doc.path)}
                     className="block truncate rounded-md border border-transparent px-2 py-1 text-sm text-slate-700 hover:border-slate-200 hover:bg-slate-50 dark:text-slate-200 dark:hover:border-slate-700 dark:hover:bg-slate-800/60"
                   >
                     <span className="truncate">{doc.title}</span>

@@ -3,6 +3,7 @@ import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import type { z } from "zod";
 import { treeSchema } from "@pageden/api-types";
 import { Link } from "@tanstack/react-router";
+import { documentReadablePath } from "../../lib/document-links";
 import {
   ChevronRight,
   FilePlus,
@@ -212,8 +213,7 @@ function DocRow({
   return (
     <li className="group relative flex items-center justify-between gap-1 pr-1">
       <Link
-        to="/w/$workspaceId/d/$documentId"
-        params={{ workspaceId, documentId: doc.id }}
+        to={documentReadablePath(workspaceId, doc.path)}
         onClick={onNavigate}
         className="relative flex min-w-0 flex-1 items-center gap-2 truncate rounded-md border border-transparent py-1.5 pl-2 pr-2 text-slate-600 transition hover:bg-white hover:text-slate-900 [&.active]:border-slate-200 [&.active]:bg-white [&.active]:font-medium [&.active]:text-slate-950 [&.active]:shadow-sm"
       >
