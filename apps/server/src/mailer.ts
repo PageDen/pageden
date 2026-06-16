@@ -4,6 +4,17 @@
 export interface Mailer {
   sendPasswordReset(to: string, resetUrl: string): Promise<void>;
   sendEmailVerification(to: string, verifyUrl: string): Promise<void>;
+  sendPermissionGranted(to: string, input: PermissionGrantedEmail): Promise<void>;
+}
+
+export interface PermissionGrantedEmail {
+  actorName: string;
+  actorEmail?: string;
+  workspaceName: string;
+  resourceType: "document" | "folder";
+  resourceName: string;
+  role: "viewer" | "editor" | "manager";
+  openUrl: string;
 }
 
 function escapeHtml(value: string): string {
@@ -15,6 +26,33 @@ function parseSender(from: string): { name?: string; email: string } {
   if (!match) return { email: from.trim() };
   const name = match[1]?.trim();
   return { name: name || undefined, email: match[2]!.trim() };
+}
+
+function roleLabel(role: PermissionGrantedEmail["role"]): string {
+  if (role === "viewer") return "Viewer";
+  if (role === "editor") return "Editor";
+  return "Manager";
+}
+
+function permissionGrantedMessage(input: PermissionGrantedEmail): { subject: string; text: string; html: string } {
+  const actor = input.actorName || input.actorEmail || "A workspace manager";
+  const role = roleLabel(input.role);
+  const resourceLabel = input.resourceType === "folder" ? "folder" : "document";
+  const subject = `${actor} shared a ${resourceLabel} with you in Pageden`;
+  const text = [
+    `${actor} shared "${input.resourceName}" with you as ${role} in ${input.workspaceName}.`,
+    "",
+    "Open it in Pageden:",
+    input.openUrl,
+    "",
+    "If you were not expecting this, you can ignore this email.",
+  ].join("\n");
+  const html = [
+    `<p>${escapeHtml(actor)} shared <strong>${escapeHtml(input.resourceName)}</strong> with you as <strong>${escapeHtml(role)}</strong> in ${escapeHtml(input.workspaceName)}.</p>`,
+    `<p><a href="${escapeHtml(input.openUrl)}">Open in Pageden</a></p>`,
+    "<p>If you were not expecting this, you can ignore this email.</p>",
+  ].join("");
+  return { subject, text, html };
 }
 
 async function sendResend(apiKey: string, from: string, to: string, subject: string, text: string, html: string): Promise<void> {
@@ -63,6 +101,9 @@ export function createMailer(): Mailer {
       async sendEmailVerification(to, verifyUrl) {
         console.log(`[mailer:dev] verify email for ${to}: ${verifyUrl}`);
       },
+      async sendPermissionGranted(to, input) {
+        console.log(`[mailer:dev] permission grant for ${to}: ${input.openUrl}`);
+      },
     };
   }
   return {
@@ -81,6 +122,10 @@ export function createMailer(): Mailer {
         `Confirm your email address using this link:\n\n${verifyUrl}`,
         `<p>Confirm your Pageden email address:</p><p><a href="${escapeHtml(verifyUrl)}">Verify email</a></p>`,
       );
+    },
+    async sendPermissionGranted(to, input) {
+      const message = permissionGrantedMessage(input);
+      await send(to, message.subject, message.text, message.html);
     },
   };
 }

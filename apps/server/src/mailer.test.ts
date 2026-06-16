@@ -26,8 +26,17 @@ describe("createMailer", () => {
     const mailer = createMailer();
     await mailer.sendPasswordReset("a@t.co", "https://app/reset?token=x");
     await mailer.sendEmailVerification("a@t.co", "https://app/verify?token=y");
-    expect(log).toHaveBeenCalledTimes(2);
+    await mailer.sendPermissionGranted("a@t.co", {
+      actorName: "Chris",
+      workspaceName: "Pageden workspace",
+      resourceType: "document",
+      resourceName: "Roadmap",
+      role: "editor",
+      openUrl: "https://app/w/ws/p/Roadmap",
+    });
+    expect(log).toHaveBeenCalledTimes(3);
     expect(log.mock.calls[0]![0]).toContain("https://app/reset?token=x");
+    expect(log.mock.calls[2]![0]).toContain("https://app/w/ws/p/Roadmap");
   });
 
   it("uses the Resend API when RESEND_API_KEY is set", async () => {
@@ -36,12 +45,23 @@ describe("createMailer", () => {
     const mailer = createMailer();
     await mailer.sendPasswordReset("a@t.co", "https://app/reset?token=x");
     await mailer.sendEmailVerification("a@t.co", "https://app/verify?token=y");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await mailer.sendPermissionGranted("a@t.co", {
+      actorName: "Chris",
+      workspaceName: "Pageden workspace",
+      resourceType: "folder",
+      resourceName: "Plans",
+      role: "viewer",
+      openUrl: "https://app/w/ws",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.resend.com/emails");
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect((init.headers as Record<string, string>)["user-agent"]).toBe("Pageden/1.0");
     const body = JSON.parse(init.body as string);
     expect(body.to).toBe("a@t.co");
+    const permissionBody = JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string);
+    expect(permissionBody.subject).toContain("shared a folder");
+    expect(permissionBody.html).toContain("https://app/w/ws");
   });
 
   it("uses the Brevo API when BREVO_API_KEY is set", async () => {

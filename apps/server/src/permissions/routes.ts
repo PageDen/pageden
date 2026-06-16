@@ -10,13 +10,15 @@ type PermissionSubjectType = "user" | "group";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
+import { env } from "../env.js";
 import { forbidden, notFound, validationError } from "../errors.js";
+import { getMailer } from "../mailer.js";
 import { atLeast, authorizeDocumentRole, authorizeFolderRole, resolveDocumentRole, resolveFolderRole } from "./index.js";
 
 const ROLES: PermissionRole[] = ["viewer", "editor", "manager"];
 const SUBJECT_TYPES: PermissionSubjectType[] = ["user", "group"];
 type ReplacePermissionsOutcome =
-  | { ok: true; version: string }
+  | { ok: true; version: string; notifications: PermissionGrantNotification[] }
   | { ok: false; status: "not_found" | "forbidden" }
   | { ok: false; status: "conflict"; currentVersion: string };
 type GrantPermissionOutcome =
@@ -28,6 +30,11 @@ type GrantPermissionOutcome =
       user: { id: string; email: string; name: string };
     }
   | { ok: false; status: "not_found" | "forbidden" | "unknown_user" };
+
+interface PermissionGrantNotification {
+  user: { id: string; email: string; name: string };
+  role: PermissionRole;
+}
 
 // Reject subjects that do not belong to the target workspace (BLOCKER 2): a user must be a
 // workspace member and a group must belong to the workspace.
@@ -113,6 +120,54 @@ function validateGrant(input: unknown): { ok: true; value: { email: string; role
   return { ok: true, value: { email, role: row.role as PermissionRole } };
 }
 
+function stripDocumentExtension(path: string): string {
+  return path.replace(/\.md$/i, "");
+}
+
+function documentUrl(workspaceId: string, path: string): string {
+  const readablePath = stripDocumentExtension(path)
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `${env.appUrl}/w/${encodeURIComponent(workspaceId)}/p/${readablePath}`;
+}
+
+function folderUrl(workspaceId: string): string {
+  return `${env.appUrl}/w/${encodeURIComponent(workspaceId)}`;
+}
+
+async function sendPermissionGrantNotification(input: {
+  recipientEmail: string;
+  workspaceName: string;
+  workspaceId: string;
+  resourceType: PermissionResourceType;
+  resourceName: string;
+  resourcePath: string;
+  role: PermissionRole;
+  auth: AuthContext;
+  log: { warn: (payload: object, message?: string) => void };
+}): Promise<void> {
+  const actor = await prisma.user.findUnique({ where: { id: input.auth.userId }, select: { email: true, name: true } });
+  const openUrl =
+    input.resourceType === "document"
+      ? documentUrl(input.workspaceId, input.resourcePath)
+      : folderUrl(input.workspaceId);
+  try {
+    await getMailer().sendPermissionGranted(input.recipientEmail, {
+      actorName: actor?.name || actor?.email || "A workspace manager",
+      actorEmail: actor?.email,
+      workspaceName: input.workspaceName,
+      resourceType: input.resourceType,
+      resourceName: input.resourceName,
+      role: input.role,
+      openUrl,
+    });
+  } catch (err) {
+    input.log.warn({ err, recipientEmail: input.recipientEmail, resourceType: input.resourceType }, "permission grant email failed");
+  }
+}
+
 function permissionVersion(
   permissions: Array<{ subjectType: PermissionSubjectType; subjectId: string; role: PermissionRole }>,
 ): string {
@@ -187,6 +242,12 @@ async function replacePermissions(
     if (baseVersion && baseVersion !== currentVersion) {
       return { ok: false, status: "conflict", currentVersion };
     }
+    const currentDirectUserRoles = new Map(
+      current.flatMap((permission) => (permission.userId ? [[permission.userId, permission.role] as const] : [])),
+    );
+    const directUserRowsToNotify = rows.filter(
+      (row) => row.subjectType === "user" && currentDirectUserRoles.get(row.subjectId) !== row.role,
+    );
     await tx.permission.deleteMany({ where: { workspaceId, resourceType, resourceId } });
     if (rows.length > 0) {
       // A3 cutover: write only userId/groupId — the legacy subjectType/subjectId
@@ -207,7 +268,22 @@ async function replacePermissions(
       { workspaceId, userId: auth.userId, action: "permissions_replaced", targetType: resourceType, targetId: resourceId, metadata: { count: rows.length } },
       tx,
     );
-    return { ok: true, version: permissionVersion(rows) };
+    const usersToNotify =
+      directUserRowsToNotify.length > 0
+        ? await tx.user.findMany({
+            where: { id: { in: directUserRowsToNotify.map((row) => row.subjectId) } },
+            select: { id: true, email: true, name: true },
+          })
+        : [];
+    const usersById = new Map(usersToNotify.map((user) => [user.id, user]));
+    return {
+      ok: true,
+      version: permissionVersion(rows),
+      notifications: directUserRowsToNotify.flatMap((row) => {
+        const user = usersById.get(row.subjectId);
+        return user ? [{ user, role: row.role }] : [];
+      }),
+    };
   });
 }
 
@@ -284,7 +360,10 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
   app.get<{ Params: { id: string } }>("/api/documents/:id/permissions", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
-    const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+    const doc = await prisma.document.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, workspaceId: true, title: true, path: true, workspace: { select: { name: true } } },
+    });
     if (!doc) return notFound(reply, "Document not found.");
     const role = await resolveDocumentRole(auth.userId, doc.id);
     if (role === null) return notFound(reply, "Document not found.");
@@ -295,7 +374,10 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
   app.put<{ Params: { id: string }; Body: unknown }>("/api/documents/:id/permissions", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "update");
-    const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+    const doc = await prisma.document.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, workspaceId: true, title: true, path: true, workspace: { select: { name: true } } },
+    });
     if (!doc) return notFound(reply, "Document not found.");
     const role = await resolveDocumentRole(auth.userId, doc.id);
     if (role === null) return notFound(reply, "Document not found.");
@@ -312,6 +394,19 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
       }
       return forbidden(reply);
     }
+    for (const notification of outcome.notifications) {
+      await sendPermissionGrantNotification({
+        recipientEmail: notification.user.email,
+        workspaceName: doc.workspace.name,
+        workspaceId: doc.workspaceId,
+        resourceType: "document",
+        resourceName: doc.title,
+        resourcePath: doc.path,
+        role: notification.role,
+        auth,
+        log: request.log,
+      });
+    }
     return { ok: true, version: outcome.version };
   });
 
@@ -323,7 +418,10 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
       requireTokenScope(auth, "update");
       const parsed = validateGrant(request.body);
       if (!parsed.ok) return validationError(reply, parsed.fields);
-      const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true, title: true, path: true, workspace: { select: { name: true } } },
+      });
       if (!doc) return notFound(reply, "Document not found.");
       const outcome = await grantPermissionByEmail(doc.workspaceId, "document", doc.id, parsed.value.email, parsed.value.role, auth);
       if (!outcome.ok) {
@@ -331,6 +429,17 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
         if (outcome.status === "unknown_user") return validationError(reply, { email: "No PageDen user exists with this email yet. Ask them to sign up first, then share again." });
         return forbidden(reply);
       }
+      await sendPermissionGrantNotification({
+        recipientEmail: outcome.user.email,
+        workspaceName: doc.workspace.name,
+        workspaceId: doc.workspaceId,
+        resourceType: "document",
+        resourceName: doc.title,
+        resourcePath: doc.path,
+        role: parsed.value.role,
+        auth,
+        log: request.log,
+      });
       return outcome;
     },
   );
@@ -338,7 +447,10 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
   app.get<{ Params: { id: string } }>("/api/folders/:id/permissions", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
-    const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+    const folder = await prisma.folder.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, workspaceId: true, name: true, path: true, workspace: { select: { name: true } } },
+    });
     if (!folder) return notFound(reply, "Folder not found.");
     const role = await resolveFolderRole(auth.userId, folder.id);
     if (role === null) return notFound(reply, "Folder not found.");
@@ -349,7 +461,10 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
   app.put<{ Params: { id: string }; Body: unknown }>("/api/folders/:id/permissions", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "update");
-    const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+    const folder = await prisma.folder.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, workspaceId: true, name: true, path: true, workspace: { select: { name: true } } },
+    });
     if (!folder) return notFound(reply, "Folder not found.");
     const role = await resolveFolderRole(auth.userId, folder.id);
     if (role === null) return notFound(reply, "Folder not found.");
@@ -366,6 +481,19 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
       }
       return forbidden(reply);
     }
+    for (const notification of outcome.notifications) {
+      await sendPermissionGrantNotification({
+        recipientEmail: notification.user.email,
+        workspaceName: folder.workspace.name,
+        workspaceId: folder.workspaceId,
+        resourceType: "folder",
+        resourceName: folder.name,
+        resourcePath: folder.path,
+        role: notification.role,
+        auth,
+        log: request.log,
+      });
+    }
     return { ok: true, version: outcome.version };
   });
 
@@ -377,7 +505,10 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
       requireTokenScope(auth, "update");
       const parsed = validateGrant(request.body);
       if (!parsed.ok) return validationError(reply, parsed.fields);
-      const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { id: true, workspaceId: true } });
+      const folder = await prisma.folder.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true, name: true, path: true, workspace: { select: { name: true } } },
+      });
       if (!folder) return notFound(reply, "Folder not found.");
       const outcome = await grantPermissionByEmail(folder.workspaceId, "folder", folder.id, parsed.value.email, parsed.value.role, auth);
       if (!outcome.ok) {
@@ -385,6 +516,17 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
         if (outcome.status === "unknown_user") return validationError(reply, { email: "No PageDen user exists with this email yet. Ask them to sign up first, then share again." });
         return forbidden(reply);
       }
+      await sendPermissionGrantNotification({
+        recipientEmail: outcome.user.email,
+        workspaceName: folder.workspace.name,
+        workspaceId: folder.workspaceId,
+        resourceType: "folder",
+        resourceName: folder.name,
+        resourcePath: folder.path,
+        role: parsed.value.role,
+        auth,
+        log: request.log,
+      });
       return outcome;
     },
   );
