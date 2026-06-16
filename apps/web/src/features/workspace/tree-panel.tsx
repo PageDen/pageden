@@ -1,13 +1,13 @@
-import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ApiError, api, crudErrorMessage } from "../../lib/api";
-import { meQuery, treeQuery } from "../../lib/queries";
+import { meQuery, treeQuery, workspaceClaimsQuery } from "../../lib/queries";
 import { slugify } from "../../lib/slug";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/ui/dialog";
-import { DocumentTree, type Doc, type Folder, type TreeActions } from "./document-tree";
+import { DocumentTree, type Doc, type DocClaimSummary, type Folder, type TreeActions } from "./document-tree";
 import { PermissionsDialog } from "../permissions/permissions-dialog";
 
 type DialogState =
@@ -43,6 +43,17 @@ export function TreePanel({
   const [dialog, setDialog] = useState<DialogState>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Surface active document claims as small pips next to each affected row so
+  // multiple agents can see "Codex is already on this one" before duplicating work.
+  const claimsResult = useQuery({ ...workspaceClaimsQuery(workspaceId), retry: false });
+  const claimsByDoc = useMemo(() => {
+    const map = new Map<string, DocClaimSummary>();
+    for (const claim of claimsResult.data?.claims ?? []) {
+      if (!claim.active) continue;
+      map.set(claim.documentId, { actorLabel: claim.actorLabel, expiresAt: claim.expiresAt });
+    }
+    return map;
+  }, [claimsResult.data]);
 
   function close() {
     if (busy) return;
@@ -104,7 +115,7 @@ export function TreePanel({
           </Button>
         </div>
       ) : null}
-      <DocumentTree workspaceId={workspaceId} folders={folders} documents={documents} actions={actions} onNavigate={onNavigate} />
+      <DocumentTree workspaceId={workspaceId} folders={folders} documents={documents} actions={actions} onNavigate={onNavigate} claims={claimsByDoc} />
 
       {dialog?.kind === "newDoc" ? (
         <NameDialog

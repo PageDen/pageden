@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Download, Eye, History, Info, Radio, Save, Share2, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Download, Eye, Gavel, History, Info, Radio, Save, Share2, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -18,6 +18,7 @@ import { ShareDialog } from "./share-dialog";
 import { isAllowedEmbedSrc } from "./media";
 import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
+import { renderDecisionBlocks } from "./decision-blocks";
 
 type Doc = z.infer<typeof documentWithContentSchema>;
 type Tree = z.infer<typeof treeSchema>;
@@ -35,6 +36,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   const [reloading, setReloading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [decisionsOnly, setDecisionsOnly] = useState(false);
   const canShare = doc.capabilities?.canShare ?? doc.permission === "manager";
   const tree = useQuery({ ...treeQuery(workspaceId), enabled: preview || !canEdit });
   const attachments = useQuery({
@@ -43,9 +45,14 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     enabled: preview || !canEdit,
   });
   const parsedPreview = useMemo(() => parseFrontmatter(canEdit ? draft.content : doc.content), [canEdit, doc.content, draft.content]);
+  const decisionRender = useMemo(
+    () => renderDecisionBlocks(parsedPreview.body, { decisionsOnly }),
+    [parsedPreview.body, decisionsOnly],
+  );
+  const decisionCount = decisionRender.count;
   const previewContent = useMemo(
-    () => resolveWikiLinks(parsedPreview.body, workspaceId, tree.data),
-    [parsedPreview.body, tree.data, workspaceId],
+    () => resolveWikiLinks(decisionRender.body, workspaceId, tree.data),
+    [decisionRender.body, tree.data, workspaceId],
   );
   const attachmentUrls = useMemo(() => buildAttachmentUrlMap(attachments.data), [attachments.data]);
   const liveConfig = useMemo(
@@ -201,6 +208,17 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
               <Button variant={live ? "primary" : "ghost"} className="h-9 gap-1.5 px-2.5" onClick={() => setLive((enabled) => !enabled)}>
                 <Radio size={15} />
                 {live ? `Live ${liveStatus === "connected" ? "on" : "connecting"}` : "Live"}
+              </Button>
+            ) : null}
+            {preview && decisionCount > 0 ? (
+              <Button
+                variant={decisionsOnly ? "primary" : "ghost"}
+                className="h-9 gap-1.5 px-2.5"
+                onClick={() => setDecisionsOnly((d) => !d)}
+                title={decisionsOnly ? "Show full document" : "Show only structured decisions"}
+              >
+                <Gavel size={15} />
+                {decisionsOnly ? "All sections" : `Decisions (${decisionCount})`}
               </Button>
             ) : null}
             {canShare ? (
