@@ -79,13 +79,15 @@ async function mePayload(userId: string) {
 // Resolve a Google profile to a user id: an existing linked account logs in; a verified email
 // matching an existing user links Google to it; otherwise a new user + workspace is created.
 async function resolveGoogleUser(profile: GoogleProfile, ip: string): Promise<string | null> {
+  const email = profile.email.trim().toLowerCase();
+  if (!email) return null;
   const linked = await prisma.oAuthAccount.findUnique({
     where: { provider_providerAccountId: { provider: "google", providerAccountId: profile.sub } },
     select: { userId: true },
   });
   if (linked) return linked.userId;
 
-  const existing = await prisma.user.findUnique({ where: { email: profile.email }, select: { id: true } });
+  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
   if (existing) {
     // Only auto-link to a pre-existing account when Google asserts the email is verified, so an
     // unverified Google email can't hijack someone else's account.
@@ -101,18 +103,18 @@ async function resolveGoogleUser(profile: GoogleProfile, ip: string): Promise<st
   // Google signups skip CAPTCHA (the OAuth callback carries no CAPTCHA token, and completing a
   // Google login is itself a bot barrier) but still get the deployment's domain/quota checks.
   const guarded = await runSignupGuard({
-    email: profile.email,
-    emailDomain: profile.email.split("@")[1] ?? "",
+    email,
+    emailDomain: email.split("@")[1] ?? "",
     ip,
     kind: "register",
     source: "google",
   });
   if (!guarded.allow) return null;
-  const name = profile.name || profile.email.split("@")[0] || "User";
+  const name = profile.name || email.split("@")[0] || "User";
   const base = slugify(name) || "workspace";
   const created = await prisma.$transaction(async (tx) => {
     const user = await tx.user.create({
-      data: { email: profile.email, name, passwordHash: null, emailVerified: profile.emailVerified },
+      data: { email, name, passwordHash: null, emailVerified: profile.emailVerified },
     });
     const workspace = await tx.workspace.create({
       data: { name: `${name}'s workspace`, slug: `${base}-${randomBytes(6).toString("hex")}` },
@@ -601,7 +603,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!profile.email) return fail();
 
     const userId = await resolveGoogleUser(profile, request.ip);
-    if (!userId) return fail();
+    if (!userId) {
+      request.log.warn({ email: profile.email.trim().toLowerCase(), emailVerified: profile.emailVerified }, "google sign-in rejected");
+      return fail();
+    }
 
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { sessionVersion: true } });
     await writeAuditEvent({
