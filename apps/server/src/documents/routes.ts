@@ -9,6 +9,8 @@ import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
 import { documentRelationships } from "./relationships.js";
 import { replaceSection, suggestAnchors } from "./sections.js";
+import { documentStatsFor } from "./stats.js";
+import { documentDiffFor } from "./diff.js";
 
 // searchText denormalizes current content for FTS. Cap the indexed text so a pathological
 // document cannot bloat the row or exceed Postgres's tsvector size limit (~1MB of lexemes).
@@ -188,8 +190,10 @@ const HISTORY_EVENT_ACTIONS = [
 
 interface WriteOutcome {
   ok: boolean;
-  status?: "not_found" | "forbidden" | "conflict";
+  status?: "not_found" | "forbidden" | "conflict" | "not_canonical";
   currentVersion?: string;
+  /** Set when status === "not_canonical" so the caller can audit-log it. */
+  currentStatus?: string;
   documentId?: string;
   version?: string;
   checksum?: string;
@@ -205,17 +209,28 @@ export async function applyDocumentWrite(opts: {
   content: string;
   title?: string;
   changeSource: ChangeSource;
+  /**
+   * G8 from ai-agent-workspace-improvements.md: refuse writes to non-canonical
+   * docs by default. The caller can opt in (e.g. when intentionally amending a
+   * superseded plan during cleanup) by passing allowNonCanonical=true. The
+   * frontmatter parse on the new content can still demote a doc to superseded
+   * — that's a content-driven transition, not a write the guard should block.
+   */
+  allowNonCanonical?: boolean;
 }): Promise<WriteOutcome> {
   const userId = opts.auth.userId;
   // Cheap preflight (re-checked authoritatively under the lock below) so a forbidden or stale
   // write does not perform storage work. Avoids a storage/CPU abuse vector.
   const pre = await prisma.document.findFirst({
     where: { id: opts.documentId, deletedAt: null },
-    select: { currentVersionId: true, currentChecksum: true, title: true, workspaceId: true, folderId: true },
+    select: { currentVersionId: true, currentChecksum: true, title: true, workspaceId: true, folderId: true, status: true },
   });
   if (!pre) return { ok: false, status: "not_found" };
   const preAz = await authorizeDocumentRole(opts.auth, opts.documentId, "editor");
   if (!preAz.ok) return preAz;
+  if (!opts.allowNonCanonical && pre.status !== "canonical") {
+    return { ok: false, status: "not_canonical", currentStatus: pre.status };
+  }
   if ((pre.currentVersionId ?? "") !== opts.baseVersion) {
     return { ok: false, status: "conflict", currentVersion: pre.currentVersionId ?? "" };
   }
@@ -687,6 +702,47 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       if (!az.ok) return az.status === "not_found" ? notFound(reply, "Document not found.") : forbidden(reply);
       const result = await documentRelationships(auth.userId, request.params.id);
       if (!result) return notFound(reply, "Document not found.");
+      return result;
+    },
+  );
+
+  // F16: lightweight per-document stats so an agent can choose a read
+  // strategy (single read vs chunk vs skip) before committing tool calls.
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/stats",
+    { config: { rateLimit: { max: Number(process.env.DOC_STATS_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const az = await authorizeDocumentRole(auth, request.params.id, "viewer");
+      if (!az.ok) return az.status === "not_found" ? notFound(reply, "Document not found.") : forbidden(reply);
+      const result = await documentStatsFor(request.params.id);
+      if (!result) return notFound(reply, "Document not found.");
+      return result;
+    },
+  );
+
+  // F14: unified diff between two revisions so an agent can verify a write
+  // did what it intended without re-reading the whole doc.
+  app.get<{ Params: { id: string }; Querystring: { fromVersion?: string; toVersion?: string } }>(
+    "/api/documents/:id/diff",
+    { config: { rateLimit: { max: Number(process.env.DOC_DIFF_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const az = await authorizeDocumentRole(auth, request.params.id, "viewer");
+      if (!az.ok) return az.status === "not_found" ? notFound(reply, "Document not found.") : forbidden(reply);
+      const fromVersion = request.query.fromVersion?.trim();
+      const toVersion = request.query.toVersion?.trim();
+      const fields: Record<string, string> = {};
+      if (!fromVersion) fields.fromVersion = "fromVersion is required.";
+      if (!toVersion) fields.toVersion = "toVersion is required.";
+      if (Object.keys(fields).length > 0) return validationError(reply, fields);
+      const result = await documentDiffFor(request.params.id, fromVersion!, toVersion!);
+      if ("error" in result) {
+        if (result.error === "not_found") return notFound(reply, "Revision not found, or it belongs to another document.");
+        return reply.code(400).send({ error: "same_version", message: "fromVersion and toVersion must differ." });
+      }
       return result;
     },
   );
@@ -1331,5 +1387,12 @@ function sendWriteOutcome(reply: import("fastify").FastifyReply, outcome: WriteO
   }
   if (outcome.status === "not_found") return notFound(reply, "Document not found.");
   if (outcome.status === "forbidden") return forbidden(reply, "You do not have permission to edit this document.");
+  if (outcome.status === "not_canonical") {
+    return reply.code(409).send({
+      error: "not_canonical",
+      currentStatus: outcome.currentStatus,
+      message: "This document is not canonical; pass allowNonCanonical=true to override.",
+    });
+  }
   return conflict(reply, outcome.currentVersion ?? "", "This document changed on the server after you downloaded it.");
 }
