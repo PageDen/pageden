@@ -19,6 +19,7 @@ describe("permission endpoints", () => {
     expect(typeof get.json().version).toBe("string");
     expect(get.json().permissions).toHaveLength(1);
     expect(get.json().permissions[0].role).toBe("editor");
+    expect(get.json().permissions[0].subject).toMatchObject({ type: "user", id: u.id, email: "fp@t.co" });
   });
 
   it("rejects a subject that is not in the workspace", async () => {
@@ -99,6 +100,14 @@ describe("permission endpoints", () => {
     const doc = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: sessionFor(u.id) });
     expect(doc.statusCode).toBe(200);
     expect(doc.json().permission).toBe("viewer");
+
+    const get = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    expect(get.statusCode).toBe(200);
+    expect(get.json().permissions[0]).toMatchObject({
+      subjectType: "user",
+      subjectId: u.id,
+      subject: { type: "user", id: u.id, email: "shared.person@t.co", name: "Shared Person" },
+    });
   });
 
   it("grants folder access to an existing user by email for child documents", async () => {
