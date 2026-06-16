@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import { searchQuery } from "../../lib/queries";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { highlightSnippet } from "../../lib/search-highlight";
+import { documentReadablePath } from "../../lib/document-links";
 
 // Workspace-wide quick search overlay (⌘K / Ctrl-K): content search with highlighted snippets
 // and keyboard navigation. Backed by the same /api/search endpoint as the sidebar.
@@ -48,11 +49,10 @@ export function CommandPalette({ workspaceId }: { workspaceId: string }) {
 
   if (!open) return null;
 
-  function go(documentId: string) {
+  function go(result: { path: string }) {
     setOpen(false);
     void navigate({
-      to: "/w/$workspaceId/d/$documentId",
-      params: { workspaceId, documentId },
+      to: documentReadablePath(workspaceId, result.path),
       search: debounced ? { q: debounced } : undefined,
     });
   }
@@ -69,7 +69,7 @@ export function CommandPalette({ workspaceId }: { workspaceId: string }) {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const hit = results[selected];
-      if (hit) go(hit.id);
+      if (hit) go(hit);
     }
   }
 
@@ -113,7 +113,7 @@ export function CommandPalette({ workspaceId }: { workspaceId: string }) {
                 <button
                   type="button"
                   onMouseEnter={() => setSelected(i)}
-                  onClick={() => go(result.id)}
+                  onClick={() => go(result)}
                   className={`block w-full cursor-pointer px-4 py-2.5 text-left transition ${i === selected ? "bg-orange-50 ring-1 ring-inset ring-orange-100" : "hover:bg-slate-50"}`}
                 >
                   <span className="block truncate text-sm font-medium text-slate-800">📄 {result.title}</span>
