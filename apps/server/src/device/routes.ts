@@ -12,10 +12,21 @@ const USER_CODE_LEN = 8;
 const EXPIRES_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_SECONDS = 5;
 
+// Rejection sampling to avoid modulo bias when alphabet.length doesn't divide
+// 256 evenly. cutoff is the largest multiple of len that fits in a byte; bytes
+// >= cutoff are discarded and re-drawn so every alphabet letter is equiprobable.
 function randomFrom(alphabet: string, length: number): string {
-  const bytes = randomBytes(length);
+  const len = alphabet.length;
+  if (len === 0 || length <= 0) return "";
+  const cutoff = Math.floor(256 / len) * len;
   let out = "";
-  for (let i = 0; i < length; i++) out += alphabet[bytes[i]! % alphabet.length];
+  while (out.length < length) {
+    const bytes = randomBytes(Math.max(length, (length - out.length) * 2));
+    for (let i = 0; i < bytes.length && out.length < length; i++) {
+      const b = bytes[i]!;
+      if (b < cutoff) out += alphabet[b % len];
+    }
+  }
   return out;
 }
 

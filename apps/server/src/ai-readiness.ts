@@ -212,28 +212,126 @@ function stripYamlQuotes(value: string): string {
   return value;
 }
 
+// Heading extraction. The original regex (/^(#{1,6})\s+(.+)$/gm + a follow-up
+// /\s+#+$/) trips CodeQL's polynomial-redos rule because each `\s+` plus `.+`
+// can backtrack on pathological input. Linear scan per line avoids that.
 function extractHeadings(content: string): Array<{ level: number; title: string; anchor: string }> {
   const headings: Array<{ level: number; title: string; anchor: string }> = [];
-  for (const match of content.matchAll(/^(#{1,6})\s+(.+)$/gm)) {
-    const title = match[2]!.replace(/\s+#+$/, "").trim();
+  for (const rawLine of content.split("\n")) {
+    let i = 0;
+    let level = 0;
+    while (i < rawLine.length && rawLine.charCodeAt(i) === 35 /* # */ && level < 6) {
+      i += 1;
+      level += 1;
+    }
+    if (level === 0) continue;
+    if (i >= rawLine.length) continue;
+    const next = rawLine.charCodeAt(i);
+    if (next !== 32 && next !== 9) continue;
+    while (i < rawLine.length) {
+      const c = rawLine.charCodeAt(i);
+      if (c !== 32 && c !== 9) break;
+      i += 1;
+    }
+    const title = stripTrailingAtxClosing(rawLine.slice(i)).trim();
     if (!title) continue;
-    headings.push({ level: match[1]!.length, title, anchor: anchorFor(title) });
+    headings.push({ level, title, anchor: anchorFor(title) });
   }
   return headings;
 }
 
+// Strip a trailing ATX-style closing run of `#`s and the whitespace separating
+// them. Hand-rolled to avoid the `\s+#+$` regex backtracking on long
+// trailing-whitespace inputs.
+function stripTrailingAtxClosing(s: string): string {
+  let end = s.length;
+  while (end > 0) {
+    const c = s.charCodeAt(end - 1);
+    if (c !== 32 && c !== 9) break;
+    end -= 1;
+  }
+  let hashStart = end;
+  while (hashStart > 0 && s.charCodeAt(hashStart - 1) === 35) hashStart -= 1;
+  if (hashStart === end || hashStart === 0) return s.slice(0, end);
+  const before = s.charCodeAt(hashStart - 1);
+  if (before !== 32 && before !== 9) return s.slice(0, end);
+  let stop = hashStart - 1;
+  while (stop > 0) {
+    const c = s.charCodeAt(stop - 1);
+    if (c !== 32 && c !== 9) break;
+    stop -= 1;
+  }
+  return s.slice(0, stop);
+}
+
+// Wikilink extraction. The original /!?\[\[([^\]#|]+)(?:[#|][^\]]*)?\]\]/g
+// trips polynomial-redos because the unanchored character class `[^\]#|]+`
+// blows up on `[[[[...` inputs. Linear scan with explicit boundary checks.
 function extractWikiLinks(content: string): string[] {
   const links = new Set<string>();
-  for (const match of content.matchAll(/!?\[\[([^\]#|]+)(?:[#|][^\]]*)?\]\]/g)) {
-    if (match[1]) links.add(match[1].trim());
+  let i = 0;
+  while (i < content.length) {
+    const start = i;
+    if (content.charCodeAt(i) === 33 /* ! */) i += 1;
+    if (content.charCodeAt(i) !== 91 /* [ */ || content.charCodeAt(i + 1) !== 91) {
+      i = start + 1;
+      continue;
+    }
+    i += 2;
+    const targetStart = i;
+    while (i < content.length) {
+      const c = content.charCodeAt(i);
+      if (c === 93 /* ] */ || c === 35 /* # */ || c === 124 /* | */) break;
+      i += 1;
+    }
+    if (i === targetStart) {
+      i = start + 1;
+      continue;
+    }
+    const target = content.slice(targetStart, i).trim();
+    if (content.charCodeAt(i) === 35 || content.charCodeAt(i) === 124) {
+      i += 1;
+      while (i < content.length && content.charCodeAt(i) !== 93) i += 1;
+    }
+    if (content.charCodeAt(i) === 93 && content.charCodeAt(i + 1) === 93) {
+      if (target) links.add(target);
+      i += 2;
+    } else {
+      i = start + 1;
+    }
   }
   return [...links].sort((a, b) => a.localeCompare(b));
 }
 
+// Anchor slug for a heading. Both /[^a-z0-9]+/g and /^-+|-+$/g flagged by
+// polynomial-redos, so we drop them in favour of a single linear pass that
+// (a) drops the punctuation set, (b) collapses runs of non-alphanumeric to a
+// single `-`, (c) trims the result of leading/trailing dashes.
 function anchorFor(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[`*_~[\]().,!?;:'"]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const lower = value.toLowerCase();
+  let out = "";
+  let lastWasDash = false;
+  for (let i = 0; i < lower.length; i += 1) {
+    const c = lower.charCodeAt(i);
+    // Drop characters from the original /[`*_~[\]().,!?;:'"]/ set.
+    if (
+      c === 96 || c === 42 || c === 95 || c === 126 || c === 91 || c === 93 ||
+      c === 40 || c === 41 || c === 46 || c === 44 || c === 33 || c === 63 ||
+      c === 59 || c === 58 || c === 39 || c === 34
+    ) {
+      continue;
+    }
+    if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57)) {
+      out += lower[i];
+      lastWasDash = false;
+    } else if (!lastWasDash) {
+      out += "-";
+      lastWasDash = true;
+    }
+  }
+  let s = 0;
+  while (s < out.length && out.charCodeAt(s) === 45 /* - */) s += 1;
+  let e = out.length;
+  while (e > s && out.charCodeAt(e - 1) === 45) e -= 1;
+  return out.slice(s, e);
 }

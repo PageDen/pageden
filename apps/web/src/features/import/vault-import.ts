@@ -456,5 +456,7 @@ function stripRoot(path: string, root: string): string {
 }
 
 function escapeTableCell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  // Escape backslashes first so the pipe escape we add below is preserved as
+  // a markdown escape sequence, not consumed by a literal trailing backslash.
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
