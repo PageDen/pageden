@@ -43,9 +43,15 @@ export function PermissionsDialog({
   const editable: PermissionInput[] =
     rows ?? (current.data?.permissions.map((p) => ({ subjectType: p.subjectType, subjectId: p.subjectId, role: p.role })) ?? []);
 
+  const subjectDetails = new Map(current.data?.permissions.map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const) ?? []);
   const userName = (uid: string) => users.data?.users.find((u) => u.id === uid)?.email ?? uid;
   const groupName = (gid: string) => groups.data?.groups.find((g) => g.id === gid)?.name ?? gid;
-  const subjectLabel = (r: PermissionInput) => (r.subjectType === "user" ? userName(r.subjectId) : `group: ${groupName(r.subjectId)}`);
+  const subjectLabel = (r: PermissionInput) => {
+    const subject = subjectDetails.get(`${r.subjectType}:${r.subjectId}`);
+    if (subject?.type === "user") return subject.name ? `${subject.name} (${subject.email})` : subject.email;
+    if (subject?.type === "group") return `group: ${subject.name}`;
+    return r.subjectType === "user" ? userName(r.subjectId) : `group: ${groupName(r.subjectId)}`;
+  };
 
   const save = useMutation({
     mutationFn: () =>

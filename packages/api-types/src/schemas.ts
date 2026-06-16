@@ -561,7 +561,18 @@ export const permissionsListSchema = z
     version: z.string(),
     permissions: z.array(
       z
-        .object({ id: z.string(), subjectType: z.enum(["user", "group"]), subjectId: z.string(), role: roleSchema })
+        .object({
+          id: z.string(),
+          subjectType: z.enum(["user", "group"]),
+          subjectId: z.string(),
+          role: roleSchema,
+          subject: z
+            .discriminatedUnion("type", [
+              z.object({ type: z.literal("user"), id: z.string(), email: z.string(), name: z.string() }).strict(),
+              z.object({ type: z.literal("group"), id: z.string(), name: z.string(), slug: z.string() }).strict(),
+            ])
+            .nullable(),
+        })
         .strict(),
     ),
   })

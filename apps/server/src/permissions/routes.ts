@@ -211,10 +211,31 @@ async function currentPermissionRows(
 
 async function listPermissions(reply: FastifyReply, workspaceId: string, resourceType: PermissionResourceType, resourceId: string) {
   const permissions = await currentPermissionRows(prisma, workspaceId, resourceType, resourceId);
+  const userIds = permissions.flatMap((permission) => (permission.userId ? [permission.userId] : []));
+  const groupIds = permissions.flatMap((permission) => (permission.groupId ? [permission.groupId] : []));
+  const [users, groups] = await Promise.all([
+    userIds.length > 0
+      ? prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true, name: true } })
+      : Promise.resolve([]),
+    groupIds.length > 0
+      ? prisma.group.findMany({ where: { id: { in: groupIds }, workspaceId }, select: { id: true, name: true, slug: true } })
+      : Promise.resolve([]),
+  ]);
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  const groupsById = new Map(groups.map((group) => [group.id, group]));
   const withSubject = permissions.map((permission) => ({
     id: permission.id,
     ...rowSubject(permission),
     role: permission.role,
+    subject: permission.userId
+      ? usersById.has(permission.userId)
+        ? { type: "user" as const, ...usersById.get(permission.userId)! }
+        : null
+      : permission.groupId
+        ? groupsById.has(permission.groupId)
+          ? { type: "group" as const, ...groupsById.get(permission.groupId)! }
+          : null
+        : null,
   }));
   return reply.send({
     version: permissionVersion(withSubject),
