@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.js";
+import { maskCodeContext } from "./documents/markdown-context.js";
 
 export type AiReadinessIssue = { code: string; severity: "info" | "warning"; message: string };
 
@@ -7,11 +8,16 @@ export type DocumentContext = ReturnType<typeof documentContext>;
 export function documentContext(content: string) {
   const parsed = parseFrontmatter(content);
   const body = parsed ? content.slice(parsed.endIndex).replace(/^\s+/, "") : content;
+  // Feature 17: mask fenced-code-block and inline-code spans before scanning
+  // for wikilinks. Headings stay sourced from the raw body so heading
+  // navigation isn't affected by code-fence content.
+  const masked = maskCodeContext(body);
   return {
     body,
     frontmatter: parsed?.data ?? {},
     headings: extractHeadings(body),
-    wikilinks: extractWikiLinks(body),
+    wikilinks: extractWikiLinks(masked.body),
+    codeContextCounts: masked.counts,
   };
 }
 
@@ -42,7 +48,9 @@ export async function aiReadinessForDocument({
   if (body.length >= 400 && context.headings.length === 0) {
     issues.push({ code: "missing_headings", severity: "warning", message: "Add headings so agents can navigate the document more reliably." });
   }
-  if (/\b(TODO|TBD|FIXME)\b|\[\s\]|\?\?\?/.test(body)) {
+  // Feature 17: scan the code-masked body so TODO/checkbox tokens inside
+  // fenced examples (e.g. ` ```- [ ] something``` `) don't flag the doc.
+  if (/\b(TODO|TBD|FIXME)\b|\[\s\]|\?\?\?/.test(maskCodeContext(body).body)) {
     issues.push({ code: "unresolved_notes", severity: "info", message: "Resolve TODOs, empty checklist items, or placeholders before relying on this document." });
   }
 
