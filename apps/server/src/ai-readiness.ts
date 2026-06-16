@@ -50,7 +50,16 @@ export async function aiReadinessForDocument({
   }
   // Feature 17: scan the code-masked body so TODO/checkbox tokens inside
   // fenced examples (e.g. ` ```- [ ] something``` `) don't flag the doc.
-  if (/\b(TODO|TBD|FIXME)\b|\[\s\]|\?\?\?/.test(maskCodeContext(body).body)) {
+  // F15: when the doc declares `checklistMode: execution`, treat `[ ]` as
+  // intentional execution checklists and skip the checkbox half of the test —
+  // leaves TODO/TBD/FIXME/??? noise still flagged.
+  const checklistMode = typeof context.frontmatter.checklistMode === "string" ? context.frontmatter.checklistMode : undefined;
+  const checklistExecution = checklistMode?.trim().toLowerCase() === "execution";
+  const masked = maskCodeContext(body).body;
+  const unresolved = checklistExecution
+    ? /\b(TODO|TBD|FIXME)\b|\?\?\?/.test(masked)
+    : /\b(TODO|TBD|FIXME)\b|\[\s\]|\?\?\?/.test(masked);
+  if (unresolved) {
     issues.push({ code: "unresolved_notes", severity: "info", message: "Resolve TODOs, empty checklist items, or placeholders before relying on this document." });
   }
 

@@ -84,7 +84,8 @@ export type ImplementationReadinessStatus =
   | "has_blocking_questions"
   | "conflicting_guidance"
   | "draft_only"
-  | "superseded";
+  | "superseded"
+  | "not_applicable";
 
 export interface ImplementationReadinessReason {
   code: string;

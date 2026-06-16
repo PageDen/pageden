@@ -49,6 +49,9 @@ const readinessLabel: Record<ReadinessStatus, string> = {
   conflicting_guidance: "Conflicting guidance",
   draft_only: "Draft only",
   superseded: "Superseded",
+  // F15: docType=reference/decision-log/operational/etc opts out of the
+  // implementation-readiness scoring entirely.
+  not_applicable: "Not an implementation doc",
 };
 
 const readinessTone: Record<ReadinessStatus, string> = {
@@ -58,6 +61,7 @@ const readinessTone: Record<ReadinessStatus, string> = {
   conflicting_guidance: "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-400/30",
   draft_only: "bg-sky-50 text-sky-800 ring-sky-200 dark:bg-sky-500/15 dark:text-sky-200 dark:ring-sky-400/30",
   superseded: "bg-slate-100 text-slate-600 ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700",
+  not_applicable: "bg-slate-50 text-slate-600 ring-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:ring-slate-700",
 };
 
 export function DocumentHandoff() {
