@@ -33,6 +33,26 @@ function slugify(value: string): string {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 }
 
+// Lightweight shape check for an email address. Linear scan to dodge the
+// polynomial-redos backtracking of /^[^@\s]+@[^@\s]+\.[^@\s]+$/ on
+// pathologically long inputs without an '@'. Not a full RFC 5322 validator —
+// just enough to reject obvious typos and short-circuit the registration
+// happy path. Real deliverability is validated by the email-verification flow.
+function isValidEmailShape(email: string): boolean {
+  if (email.length === 0 || email.length > 254) return false;
+  const at = email.indexOf("@");
+  if (at < 1) return false;
+  if (email.indexOf("@", at + 1) !== -1) return false; // must be exactly one @
+  const domain = email.slice(at + 1);
+  const lastDot = domain.lastIndexOf(".");
+  if (lastDot < 1 || lastDot === domain.length - 1) return false;
+  for (let i = 0; i < email.length; i++) {
+    const c = email.charCodeAt(i);
+    if (c <= 32) return false; // any control or whitespace char is invalid
+  }
+  return true;
+}
+
 const COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: "lax" as const,
@@ -421,7 +441,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       const companyName = request.body?.companyName?.trim() ?? "";
       const subdomain = normalizeWorkspaceSubdomain(request.body?.subdomain ?? "");
       const fields: Record<string, string> = {};
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fields.email = "A valid email is required.";
+      if (!isValidEmailShape(email)) fields.email = "A valid email is required.";
       if (!name) fields.name = "Name is required.";
       if (!companyName) fields.companyName = "Company name is required.";
       const subdomainError = validateWorkspaceSubdomain(subdomain);

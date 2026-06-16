@@ -30,9 +30,19 @@ export function requireTokenScope(auth: AuthContext, scope: TokenScope): void {
 
 function bearerToken(request: FastifyRequest): string | null {
   const authorization = request.headers.authorization;
-  if (!authorization) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(authorization);
-  return match?.[1] ?? null;
+  if (!authorization || authorization.length < 7) return null;
+  // Linear scan (no regex with `\s+`) to dodge polynomial backtracking on
+  // pathological Authorization headers with many trailing spaces.
+  if (authorization.slice(0, 6).toLowerCase() !== "bearer") return null;
+  let i = 6;
+  while (i < authorization.length) {
+    const c = authorization.charCodeAt(i);
+    if (c !== 32 && c !== 9) break;
+    i++;
+  }
+  if (i === 6) return null; // no whitespace separator
+  const token = authorization.slice(i);
+  return token.length > 0 ? token : null;
 }
 
 export async function authenticate(request: FastifyRequest): Promise<AuthContext | null> {
