@@ -10,7 +10,7 @@ const base = defaultSchema as Options;
 
 export const previewSanitizeSchema: Options = {
   ...base,
-  tagNames: [...(base.tagNames ?? []), "video", "source", "iframe"],
+  tagNames: [...(base.tagNames ?? []), "video", "source", "iframe", "aside"],
   attributes: {
     ...(base.attributes ?? {}),
     video: ["src", "controls", "preload", "poster", "width", "height", "className"],
@@ -28,6 +28,14 @@ export const previewSanitizeSchema: Options = {
       "className",
     ],
     img: [...((base.attributes ?? {}).img ?? []), "className", "loading", "width", "height", "data-align", "dataAlign"],
+    // Inline decision-block rendering produces small Tailwind-class wrappers
+    // around its own pre-escaped text. Allow `className` on the few tags it
+    // uses; everything else is still subject to the default schema.
+    aside: ["className"],
+    div: [...((base.attributes ?? {}).div ?? []), "className"],
+    span: [...((base.attributes ?? {}).span ?? []), "className"],
+    p: [...((base.attributes ?? {}).p ?? []), "className"],
+    strong: [...((base.attributes ?? {}).strong ?? []), "className"],
   },
   // Only http(s) for media sources (defaultSchema already restricts most; be explicit).
   protocols: {

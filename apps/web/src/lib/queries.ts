@@ -39,6 +39,15 @@ export const workspaceActivityQuery = (workspaceId: string) =>
 export const workspaceDashboardQuery = (workspaceId: string) =>
   queryOptions({ queryKey: ["dashboard", workspaceId], queryFn: () => api.workspaceDashboard(workspaceId) });
 
+export const workspaceClaimsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["claims", workspaceId],
+    queryFn: () => api.workspaceClaims(workspaceId),
+    // Claims expire on a TTL; refetch on focus so a stale pip clears once a
+    // sibling agent releases. A minute of stale data is fine.
+    staleTime: 60_000,
+  });
+
 export const documentCommentsQuery = (documentId: string) =>
   queryOptions({ queryKey: ["document", documentId, "comments"], queryFn: () => api.documentComments(documentId) });
 

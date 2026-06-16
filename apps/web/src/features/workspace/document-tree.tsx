@@ -10,6 +10,7 @@ import {
   FolderClosed,
   FolderOpen,
   FolderPlus,
+  Hand,
   KeyRound,
   MoreHorizontal,
   MoveRight,
@@ -106,9 +107,10 @@ interface FolderNodeProps {
   workspaceId: string;
   actions: TreeActions;
   onNavigate?: () => void;
+  claims?: Map<string, DocClaimSummary>;
 }
 
-function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, onNavigate }: FolderNodeProps) {
+function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, onNavigate, claims }: FolderNodeProps) {
   const [isOpen, setIsOpen] = useState(true);
 
   const subFolders = childFolders.get(folder.id) ?? [];
@@ -167,10 +169,11 @@ function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, 
               workspaceId={workspaceId}
               actions={actions}
               onNavigate={onNavigate}
+              claims={claims}
             />
           ))}
           {docs.map((d) => (
-            <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} />
+            <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} claim={claims?.get(d.id)} />
           ))}
         </ul>
       )}
@@ -185,11 +188,13 @@ function DocRow({
   workspaceId,
   actions,
   onNavigate,
+  claim,
 }: {
   doc: Doc;
   workspaceId: string;
   actions: TreeActions;
   onNavigate?: () => void;
+  claim?: DocClaimSummary;
 }) {
   const menuItems: MenuItem[] = canManage(doc.permission)
     ? [
@@ -199,6 +204,10 @@ function DocRow({
         { label: "Delete", icon: Trash2, destructive: true, onClick: () => actions.onDeleteDoc(doc) },
       ]
     : [];
+
+  const claimTitle = claim
+    ? `Claimed${claim.actorLabel ? ` by ${claim.actorLabel}` : ""} until ${new Date(claim.expiresAt).toLocaleString()}`
+    : undefined;
 
   return (
     <li className="group relative flex items-center justify-between gap-1 pr-1">
@@ -211,6 +220,16 @@ function DocRow({
         <span className="absolute left-0 top-1 bottom-1 w-0.5 rounded-r bg-transparent [.active_&]:bg-orange-600" />
         <FileText size={15} className="shrink-0 text-slate-400 [.active_&]:text-orange-600" />
         <span className="truncate">{doc.title}</span>
+        {claim ? (
+          <span
+            className="shrink-0 text-amber-600 dark:text-amber-400"
+            title={claimTitle}
+            aria-label={claimTitle}
+            data-testid="claim-pip"
+          >
+            <Hand size={12} />
+          </span>
+        ) : null}
       </Link>
       <ActionMenu items={menuItems} />
     </li>
@@ -219,18 +238,25 @@ function DocRow({
 
 // ─── DocumentTree ──────────────────────────────────────────────────────────────
 
+export interface DocClaimSummary {
+  actorLabel: string | null;
+  expiresAt: string;
+}
+
 export function DocumentTree({
   workspaceId,
   folders,
   documents,
   actions,
   onNavigate,
+  claims,
 }: {
   workspaceId: string;
   folders: Folder[];
   documents: Doc[];
   actions: TreeActions;
   onNavigate?: () => void;
+  claims?: Map<string, DocClaimSummary>;
 }) {
   const childFolders = new Map<string | null, Folder[]>();
   for (const f of folders) {
@@ -266,10 +292,11 @@ export function DocumentTree({
           workspaceId={workspaceId}
           actions={actions}
           onNavigate={onNavigate}
+          claims={claims}
         />
       ))}
       {orphanDocs.map((d) => (
-        <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} />
+        <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} claim={claims?.get(d.id)} />
       ))}
     </ul>
   );
