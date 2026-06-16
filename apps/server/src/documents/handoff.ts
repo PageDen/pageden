@@ -7,6 +7,7 @@
 
 import { documentContext, type DocumentContext } from "../ai-readiness.js";
 import type { DocumentStatus } from "@prisma/client";
+import { dedupeDecisions, maskCodeContext } from "./markdown-context.js";
 
 export type ImplementationReadinessStatus =
   | "ready_to_implement"
@@ -78,7 +79,13 @@ const PR_LINK_RE = /https?:\/\/(?:[\w-]+\.)*github\.com\/[\w./-]+\/(?:pull|issue
 // further split into `decision:` and `reason:` lines when present so the
 // agent does not have to do that parsing itself.
 export function extractDecisions(body: string): Decision[] {
-  const lines = body.split("\n");
+  // Feature 17: skip :::decision blocks that appear inside markdown code
+  // fences (illustrative examples); dedupe the survivors by id so a leaked
+  // example cannot overwrite the real list. Pre-masking happens before our
+  // own fence detection so the body view a decision parser sees is "real
+  // content only".
+  const masked = maskCodeContext(body);
+  const lines = masked.body.split("\n");
   const decisions: Decision[] = [];
   let inside = false;
   let buffer: string[] = [];
@@ -99,7 +106,7 @@ export function extractDecisions(body: string): Decision[] {
     }
     buffer.push(line);
   }
-  return decisions;
+  return dedupeDecisions(decisions);
 }
 
 function parseDecisionBlock(lines: string[]): Decision | null {
