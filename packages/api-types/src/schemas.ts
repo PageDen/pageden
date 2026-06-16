@@ -4,7 +4,7 @@ import { z } from "zod";
 // any unexpected/leaked fields (e.g. passwordHash, tokenHash).
 
 export const roleSchema = z.enum(["viewer", "editor", "manager"]);
-export const workspaceRoleSchema = z.enum(["member", "admin"]);
+export const workspaceRoleSchema = z.enum(["guest", "viewer", "member", "admin"]);
 export const workspaceRoutingModeSchema = z.enum(["cloud_subdomain", "custom_domain", "self_hosted", "explicit"]);
 export const customDomainStatusSchema = z.enum(["pending", "verified", "active", "failed"]);
 export const changeSourceSchema = z.enum(["web_app", "obsidian_plugin", "agent", "import", "system"]);
