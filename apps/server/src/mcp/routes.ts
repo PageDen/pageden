@@ -16,6 +16,7 @@ import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchText
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
 import { documentRelationships } from "../documents/relationships.js";
+import { replaceSection, suggestAnchors } from "../documents/sections.js";
 import { workspaceActivityFor } from "../workspaces/insights.js";
 import { createComment, listComments, resolveCommentRecord } from "../documents/comments.js";
 import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
@@ -235,6 +236,23 @@ const tools = [
         content: { type: "string" },
       },
       required: ["documentId", "content"],
+    },
+  },
+  {
+    name: "pageden_replace_section",
+    description: "Replace the body of one section identified by heading anchor without round-tripping the full document. Heading stays put; pass the new section CONTENT only. Returns anchor_not_found with candidate anchors when the heading does not exist.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        workspaceId: { type: "string" },
+        anchor: { type: "string", description: "Heading anchor (e.g. 'acceptance-criteria') or human-readable heading text." },
+        content: { type: "string", description: "New Markdown body for that section. Heading line is preserved by the server." },
+        baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        mode: { type: "string", enum: ["strict", "lenient"], description: "Reserved for future per-section drift detection. Today both behave the same as the global baseVersion check." },
+      },
+      required: ["anchor", "content", "baseVersion"],
     },
   },
   {
@@ -729,6 +747,7 @@ async function callTool(
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
+  else if (name === "pageden_replace_section") data = await replaceSectionByMcp(auth, args, request);
   else if (name === "pageden_read_section") data = await readSection(auth, args);
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
@@ -2038,6 +2057,59 @@ async function appendToDocument(auth: AuthContext, args: Record<string, unknown>
     metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version },
   });
   return { workspaceId, ...outcome, updatedAt: outcome.updatedAt?.toISOString() };
+}
+
+async function replaceSectionByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const anchor = stringParam(args, "anchor");
+  const newContent = stringParam(args, "content");
+  const baseVersion = stringParam(args, "baseVersion");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const spliced = replaceSection(current.content, anchor, newContent);
+  if (!spliced) {
+    const error: Error & { code?: string; data?: unknown } = new Error("anchor_not_found");
+    error.code = "anchor_not_found";
+    error.data = { anchor, suggested: suggestAnchors(current.content, anchor) };
+    throw error;
+  }
+  const outcome = await applyDocumentWrite({
+    documentId: current.id,
+    auth,
+    baseVersion,
+    content: spliced.body,
+    changeSource: "agent",
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      outcome.status === "conflict"
+        ? `Conflict. Current version is ${outcome.currentVersion}.`
+        : outcome.status ?? "Replace failed.",
+    );
+  }
+  const workspaceId = await workspaceIdForDocument(current.id);
+  await writeAuditEvent({
+    workspaceId,
+    userId: auth.userId,
+    action: "document_section_replaced_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version, anchor: spliced.anchor },
+  });
+  return {
+    workspaceId,
+    documentId: outcome.documentId,
+    version: outcome.version,
+    checksum: outcome.checksum,
+    updatedAt: outcome.updatedAt?.toISOString(),
+    latestChangedSection: { anchor: spliced.anchor },
+  };
 }
 
 async function assertTokenOwnsDocument(auth: AuthContext, documentId: string): Promise<void> {
