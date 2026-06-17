@@ -32,6 +32,7 @@ import { atLeast, authorizeDocumentRole, authorizeFolderRole, canManageWorkspace
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { lockFolderTree } from "../db.js";
 import { clampSearchLimit, searchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
+import { trackServerEvent } from "../lib/analytics-bus.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -333,6 +334,13 @@ export async function applyDocumentWrite(opts: {
       },
       tx,
     );
+    if (opts.changeSource === "obsidian_plugin") {
+      trackServerEvent("plugin_push_completed", doc.workspaceId, {
+        doc_id: doc.id,
+        token_id: opts.auth.tokenId ?? null,
+        change_source: "obsidian_plugin",
+      });
+    }
     await writeStatusTransitionAudit(tx, {
       workspaceId: doc.workspaceId,
       userId,
