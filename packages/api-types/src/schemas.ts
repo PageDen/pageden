@@ -590,6 +590,12 @@ export const permissionsListSchema = z
   .strict();
 
 export const permissionsWriteSchema = z.object({ ok: z.literal(true), version: z.string() }).strict();
+
+// Per-row create/update responses for the Phase 3 optimistic mutations.
+export const permissionRowResponseSchema = z
+  .object({ ok: z.literal(true), permission: permissionGranteeSchema })
+  .strict();
+export const permissionDeleteResponseSchema = z.object({ ok: z.literal(true) }).strict();
 export const permissionGrantSchema = z
   .object({
     ok: z.literal(true),

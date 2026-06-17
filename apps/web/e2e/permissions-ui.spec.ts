@@ -59,10 +59,13 @@ test("permissions UI: viewer is read-only, editor can save", async ({ page, brow
   await docRow.getByRole("button", { name: "Permissions" }).click();
   dialog = page.getByRole("dialog");
   // Phase 1 unified picker (#70): type to filter, click the matching row.
-  // Role defaults to viewer; staged-with-Save flow unchanged.
+  // Role defaults to viewer; Phase 3 (#71+): the add fires optimistically, no
+  // Save button to click — just close the dialog with Done.
   await dialog.getByLabel("Add people, groups, or invite by email").fill(memberEmail);
   await dialog.getByRole("option", { name: new RegExp(memberEmail) }).first().click();
-  await dialog.getByRole("button", { name: "Save" }).click();
+  // Wait for the added row to appear in the People with access list.
+  await expect(dialog.getByText(memberEmail).first()).toBeVisible();
+  await dialog.getByRole("button", { name: "Done" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
   // Member context #1: viewer — can open the document but it is read-only.
