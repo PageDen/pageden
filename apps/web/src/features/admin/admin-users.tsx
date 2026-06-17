@@ -6,6 +6,7 @@ import { usersQuery } from "../../lib/queries";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { PasswordInput } from "../../components/ui/password-input";
+import { track } from "../../lib/analytics-bus";
 
 export function AdminUsers() {
   const params = useParams({ strict: false });
@@ -18,9 +19,15 @@ export function AdminUsers() {
   const create = useMutation({
     mutationFn: () => api.createUser({ workspaceId, ...form }),
     onSuccess: () => {
+      const role = form.role;
       setForm({ email: "", name: "", password: "", role: "member" });
       setError(null);
       void queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey });
+      // admin-created accounts are how members come into a workspace in the
+      // current product (no separate invite/accept flow yet); emit as
+      // member_invited so the funnel reports stay forward-compatible if we
+      // add an invite-email path later.
+      track("member_invited", { role });
     },
     onError: (e) => setError(crudErrorMessage(e)),
   });

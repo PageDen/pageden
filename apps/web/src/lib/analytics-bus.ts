@@ -26,11 +26,14 @@ export type EventName =
   | "document_created"
   | "document_read"
   | "document_saved"
+  | "document_restored"
   | "folder_created"
   | "permission_granted"
   | "share_link_created"
   | "share_link_revoked"
   | "search_performed"
+  | "agent_token_created"
+  | "member_invited"
   | "vault_import_completed";
 
 export type EventProperties = Record<string, string | number | boolean | null | undefined>;

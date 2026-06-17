@@ -7,6 +7,7 @@ import { tokensQuery, meQuery } from "../../lib/queries";
 import { formatDateTime } from "../../lib/format";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { track } from "../../lib/analytics-bus";
 
 const readScopes = ["search", "read"];
 const editorScopes = ["search", "read", "create", "update", "append"];
@@ -85,6 +86,7 @@ export function AgentsPage() {
       setRaw(token.token);
       setError(null);
       void queryClient.invalidateQueries({ queryKey: tokensQuery().queryKey });
+      track("agent_token_created", { agent_preset: agent, scope_preset: preset });
     },
     onError: (e) => setError(crudErrorMessage(e)),
   });
