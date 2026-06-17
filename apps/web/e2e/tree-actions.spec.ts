@@ -63,11 +63,9 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator("nav").getByRole("link", { name: renamed })).toBeVisible();
 
-  // Permissions dialog opens. Three elements contain the word "Share" (the
-  // H2 heading, the "Share with an existing user" label that landed in #56,
-  // and the submit button) so scope the assertion to the heading where it's
-  // unambiguous. Without the H2 scope, Playwright's strict mode rejects the
-  // multi-match.
+  // Permissions dialog opens. The H2 heading is "Share" and an action button
+  // can also contain that word; scope the assertion to the heading to avoid
+  // Playwright's strict-mode multi-match rejection.
   await openMenu(renamed, "Permissions");
   await expect(page.getByRole("dialog").locator("h2").getByText("Share")).toBeVisible();
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();

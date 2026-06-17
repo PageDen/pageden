@@ -4,6 +4,7 @@ import { api, crudErrorMessage, type PermissionInput } from "../../lib/api";
 import { groupsQuery, treeQuery, usersQuery } from "../../lib/queries";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
+import { PeopleCombobox, type ComboboxRole } from "../../components/ui/people-combobox";
 
 type DefaultRole = "viewer" | "editor" | "manager" | null;
 
@@ -36,8 +37,9 @@ export function PermissionsDialog({
   const [rows, setRows] = useState<PermissionInput[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [shareEmail, setShareEmail] = useState("");
-  const [shareRole, setShareRole] = useState<PermissionInput["role"]>("viewer");
+  // Shared role for the combobox — covers both "add an existing user/group"
+  // and "invite by email" branches. Reset to viewer after each invite.
+  const [pickerRole, setPickerRole] = useState<ComboboxRole>("viewer");
 
   // Initialise the editable list from the server once loaded.
   const editable: PermissionInput[] =
@@ -71,15 +73,14 @@ export function PermissionsDialog({
   });
 
   const share = useMutation({
-    mutationFn: () =>
+    mutationFn: (vars: { email: string; role: PermissionInput["role"] }) =>
       kind === "document"
-        ? api.grantDocumentPermission(id, { email: shareEmail, role: shareRole })
-        : api.grantFolderPermission(id, { email: shareEmail, role: shareRole }),
+        ? api.grantDocumentPermission(id, vars)
+        : api.grantFolderPermission(id, vars),
     onSuccess: (result) => {
       setRows(null);
       setError(null);
       setNotice(`Shared with ${result.user.email}.`);
-      setShareEmail("");
       void queryClient.invalidateQueries({ queryKey: ["permissions", kind, id] });
       void queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey });
       void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "tree" || q.queryKey[0] === "document" });
@@ -93,6 +94,19 @@ export function PermissionsDialog({
 
   function update(next: PermissionInput[]) {
     setRows(next);
+  }
+
+  function addExistingFromCombobox(subjectType: "user" | "group", subjectId: string) {
+    if (editable.some((r) => r.subjectType === subjectType && r.subjectId === subjectId)) return;
+    update([...editable, { subjectType, subjectId, role: pickerRole }]);
+    setNotice(null);
+    setError(null);
+  }
+
+  function inviteFromCombobox(email: string) {
+    setNotice(null);
+    setError(null);
+    share.mutate({ email, role: pickerRole });
   }
 
   return (
@@ -114,49 +128,21 @@ export function PermissionsDialog({
         <p className="text-sm text-slate-500">{crudErrorMessage(current.error)}</p>
       ) : (
         <div className="space-y-3">
-          <form
-            className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              share.mutate();
-            }}
-          >
-            <div>
-              <label className="text-sm font-medium text-slate-700" htmlFor="share-email">
-                Share with an existing user
-              </label>
-              <p className="mt-1 text-xs text-slate-500">
-                Enter their PageDen email. If they are not in this workspace yet, they will be added as a guest with access only to this {kind}.
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-[minmax(14rem,1fr)_8rem_auto]">
-              <input
-                id="share-email"
-                type="email"
-                className="min-w-0 rounded-md border border-slate-300 px-3 py-2 text-sm"
-                placeholder="person@example.com"
-                value={shareEmail}
-                onChange={(e) => setShareEmail(e.target.value)}
-              />
-              <select
-                aria-label="Share role"
-                className="rounded-md border border-slate-300 px-2 py-2 text-sm"
-                value={shareRole}
-                onChange={(e) => setShareRole(e.target.value as PermissionInput["role"])}
-              >
-                <option value="viewer">Viewer</option>
-                <option value="editor">Editor</option>
-                <option value="manager">Manager</option>
-              </select>
-              <Button disabled={share.isPending || !shareEmail.trim()}>
-                {share.isPending ? "Sharing…" : "Share"}
-              </Button>
-            </div>
-          </form>
+          <PeopleCombobox
+            users={users.data?.users ?? []}
+            groups={groups.data?.groups ?? []}
+            existing={editable}
+            role={pickerRole}
+            onRoleChange={setPickerRole}
+            onAddExisting={addExistingFromCombobox}
+            onInviteEmail={inviteFromCombobox}
+            isInviting={share.isPending}
+            helper={`Type a name to add an existing member, or paste an email to invite a guest of this ${kind}.`}
+          />
 
           <div className="space-y-2">
             <div>
-              <h3 className="text-sm font-medium text-slate-700">People and groups with access</h3>
+              <h3 className="text-sm font-medium text-slate-700">People with access</h3>
               <p className="mt-1 text-xs text-slate-500">Managers can update or remove explicit grants below.</p>
             </div>
             <ul className="space-y-2">
@@ -184,13 +170,6 @@ export function PermissionsDialog({
             </ul>
           </div>
 
-          <AddGrant
-            users={users.data?.users ?? []}
-            groups={groups.data?.groups ?? []}
-            existing={editable}
-            onAdd={(row) => update([...editable, row])}
-          />
-
           {kind === "folder" ? (
             <FolderDefaultRoleSection folderId={id} workspaceId={workspaceId} />
           ) : null}
@@ -204,59 +183,6 @@ export function PermissionsDialog({
         </div>
       )}
     </Dialog>
-  );
-}
-
-function AddGrant({
-  users,
-  groups,
-  existing,
-  onAdd,
-}: {
-  users: { id: string; email: string; name: string }[];
-  groups: { id: string; name: string; slug: string }[];
-  existing: PermissionInput[];
-  onAdd: (row: PermissionInput) => void;
-}) {
-  const [subjectType, setSubjectType] = useState<"user" | "group">("user");
-  const [subjectId, setSubjectId] = useState("");
-  const [role, setRole] = useState<PermissionInput["role"]>("viewer");
-  const options = subjectType === "user" ? users.map((u) => ({ id: u.id, label: u.email })) : groups.map((g) => ({ id: g.id, label: g.name }));
-  const taken = (sid: string) => existing.some((r) => r.subjectType === subjectType && r.subjectId === sid);
-
-  return (
-    <div className="space-y-2 border-t border-slate-200 pt-3 text-sm">
-      <div className="grid gap-2 sm:grid-cols-[8rem_minmax(12rem,1fr)]">
-        <select aria-label="Subject type" className="rounded-md border border-slate-300 px-2 py-2" value={subjectType} onChange={(e) => { setSubjectType(e.target.value as "user" | "group"); setSubjectId(""); }}>
-          <option value="user">User</option>
-          <option value="group">Group</option>
-        </select>
-        <select aria-label="Subject" className="min-w-0 rounded-md border border-slate-300 px-2 py-2" value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
-          <option value="">Select…</option>
-          {options.filter((o) => !taken(o.id)).map((o) => (
-            <option key={o.id} value={o.id}>{o.label}</option>
-          ))}
-        </select>
-      </div>
-      <div className="flex flex-wrap justify-end gap-2">
-        <select aria-label="Role" className="w-32 rounded-md border border-slate-300 px-2 py-2" value={role} onChange={(e) => setRole(e.target.value as PermissionInput["role"])}>
-          <option value="viewer">Viewer</option>
-          <option value="editor">Editor</option>
-          <option value="manager">Manager</option>
-        </select>
-        <Button
-          variant="ghost"
-          disabled={!subjectId}
-          onClick={() => {
-            if (!subjectId) return;
-            onAdd({ subjectType, subjectId, role });
-            setSubjectId("");
-          }}
-        >
-          Add
-        </Button>
-      </div>
-    </div>
   );
 }
 
