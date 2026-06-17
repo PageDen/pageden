@@ -27,6 +27,7 @@ import { claimDocument, listActiveClaims, releaseClaim } from "../documents/clai
 import { createShare, listShares, revokeShare } from "../documents/shares.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
+import { trackServerEvent } from "../lib/analytics-bus.js";
 
 type JsonRpcRequest = {
   jsonrpc?: "2.0";
@@ -831,8 +832,12 @@ async function callTool(
   else if (name === "pageden_list_shares") data = await listSharesByMcp(auth, args, request);
   else throw new Error(`Unknown tool: ${name}`);
 
+  const calledWorkspaceId =
+    typeof data === "object" && data && "workspaceId" in data
+      ? String((data as { workspaceId: unknown }).workspaceId)
+      : undefined;
   await writeAuditEvent({
-    workspaceId: typeof data === "object" && data && "workspaceId" in data ? String((data as { workspaceId: unknown }).workspaceId) : undefined,
+    workspaceId: calledWorkspaceId,
     userId: auth.userId,
     action: "mcp_tool_called",
     targetType: "mcp_tool",
@@ -841,6 +846,14 @@ async function callTool(
     userAgent: request.headers["user-agent"],
     metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, tokenKind: auth.tokenKind },
   });
+  if (calledWorkspaceId) {
+    trackServerEvent("agent_mcp_call", calledWorkspaceId, {
+      tool_name: name,
+      token_id: auth.tokenId ?? null,
+      token_kind: auth.tokenKind,
+      change_source: "agent",
+    });
+  }
 
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: data };
 }
@@ -947,6 +960,12 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>, op
       targetId: doc.id,
       metadata: { version: doc.currentVersionId, path: doc.path, readMode: opts.readMode ?? "document", tokenId: auth.tokenId ?? null },
     }).catch(() => undefined);
+    trackServerEvent("agent_document_read", doc.workspaceId, {
+      doc_id: doc.id,
+      token_id: auth.tokenId ?? null,
+      read_mode: opts.readMode ?? "document",
+      change_source: "agent",
+    });
   }
   return {
     workspaceId: doc.workspaceId,
@@ -1611,6 +1630,11 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
         },
         tx,
       );
+      trackServerEvent("agent_document_created", workspaceId, {
+        doc_id: doc.id,
+        token_id: auth.tokenId ?? null,
+        change_source: "agent",
+      });
       return { workspaceId, id: doc.id, title, path: updated.path, version: revision.id, checksum: sum, updatedAt: updated.updatedAt.toISOString() };
     });
     return result;
@@ -1954,6 +1978,12 @@ async function upsertDocumentAtPath({
         },
         tx,
       );
+      trackServerEvent("agent_document_created", workspaceId, {
+        doc_id: doc.id,
+        token_id: auth.tokenId ?? null,
+        via: "path_upsert",
+        change_source: "agent",
+      });
       return {
         action: "created",
         workspaceId,
@@ -2152,8 +2182,9 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
   await assertTokenOwnsDocument(auth, documentId);
   const outcome = await applyDocumentWrite({ documentId, auth, baseVersion, content, title, changeSource: "agent" });
   if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
+  const updateWorkspaceId = await workspaceIdForDocument(documentId);
   await writeAuditEvent({
-    workspaceId: await workspaceIdForDocument(documentId),
+    workspaceId: updateWorkspaceId,
     userId: auth.userId,
     action: "document_updated_by_agent",
     targetType: "document",
@@ -2162,7 +2193,12 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
     userAgent: request.headers["user-agent"],
     metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version },
   });
-  return { workspaceId: await workspaceIdForDocument(documentId), ...outcome, updatedAt: outcome.updatedAt?.toISOString() };
+  trackServerEvent("agent_document_saved", updateWorkspaceId, {
+    doc_id: documentId,
+    token_id: auth.tokenId ?? null,
+    change_source: "agent",
+  });
+  return { workspaceId: updateWorkspaceId, ...outcome, updatedAt: outcome.updatedAt?.toISOString() };
 }
 
 async function appendToDocument(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {

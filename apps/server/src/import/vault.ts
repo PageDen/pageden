@@ -16,6 +16,7 @@ import { lockFolderTree } from "../db.js";
 import { buildDocumentPath, buildFolderPath } from "../paths.js";
 import { atLeast, canManageWorkspace, resolveFolderRole } from "../permissions/index.js";
 import { writeAuditEvent } from "../audit.js";
+import { trackServerEvent } from "../lib/analytics-bus.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -383,6 +384,12 @@ async function runJob(jobId: string): Promise<void> {
         report: report as object,
         progress: { phase: "done", current: report.documentsCreated, total: report.documentsCreated, label: "Import complete" },
       },
+    });
+    trackServerEvent("import_completed", job.workspaceId, {
+      documents_created: report.documentsCreated,
+      folders_created: report.foldersCreated,
+      attachments_uploaded: report.attachmentsUploaded,
+      change_source: "import",
     });
   } catch (error) {
     await prisma.importJob
