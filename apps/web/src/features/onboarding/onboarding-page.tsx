@@ -9,6 +9,7 @@ import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { track } from "../../lib/analytics-bus";
 
 type Workspace = {
   id: string;
@@ -50,6 +51,7 @@ export function OnboardingPage() {
     onSuccess: async ({ workspace }) => {
       setError(null);
       setSelectedWorkspaceId(workspace.id);
+      track("workspace_created", { source: "onboarding" });
       await queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
     },
     onError: (e) => setError(crudErrorMessage(e)),

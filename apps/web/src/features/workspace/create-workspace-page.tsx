@@ -7,6 +7,7 @@ import { Input } from "../../components/ui/input";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { meQuery } from "../../lib/queries";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
+import { track } from "../../lib/analytics-bus";
 
 function subdomainFromName(value: string): string {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
@@ -30,6 +31,7 @@ export function CreateWorkspacePage() {
     mutationFn: () => api.createWorkspace(name, subdomain),
     onSuccess: async ({ workspace }) => {
       await queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
+      track("workspace_created", { source: "create_page" });
       void navigate({ to: "/w/$workspaceId", params: { workspaceId: workspace.id } });
     },
     onError: (e) => setError(crudErrorMessage(e)),

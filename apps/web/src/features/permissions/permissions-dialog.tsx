@@ -8,6 +8,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { PasswordInput } from "../../components/ui/password-input";
 import { PeopleCombobox, type ComboboxRole } from "../../components/ui/people-combobox";
+import { track } from "../../lib/analytics-bus";
 
 type DefaultRole = "viewer" | "editor" | "manager" | null;
 
@@ -73,6 +74,7 @@ export function PermissionsDialog({
     onSuccess: (result) => {
       setError(null);
       setNotice(`Shared with ${result.user.email}.`);
+      track("permission_granted", { kind, method: "email" });
       void queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey });
       invalidate();
     },
@@ -85,10 +87,11 @@ export function PermissionsDialog({
   const addBySubject = useMutation({
     mutationFn: (vars: { subjectType: "user" | "group"; subjectId: string; role: PermissionInput["role"] }) =>
       kind === "document" ? api.addDocumentPermission(id, vars) : api.addFolderPermission(id, vars),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       setError(null);
       setNotice(null);
       invalidate();
+      track("permission_granted", { kind, method: vars.subjectType });
     },
     onError: (e) => setError(crudErrorMessage(e)),
   });
@@ -420,20 +423,28 @@ function PublicLinkSection({ documentId, workspaceId }: { documentId: string; wo
         allowIndexing,
         ttlDays: ttlDays.trim() ? Number(ttlDays) : undefined,
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setError(null);
       setPassword("");
       setTtlDays("");
       setAllowIndexing(false);
       setCreating(false);
       void queryClient.invalidateQueries({ queryKey: sharesKey });
+      track("share_link_created", {
+        has_password: Boolean(result.share?.hasPassword),
+        allow_indexing: Boolean(result.share?.allowIndexing),
+        has_expiry: Boolean(result.share?.expiresAt),
+      });
     },
     onError: (err) => setError(crudErrorMessage(err)),
   });
 
   const revoke = useMutation({
     mutationFn: (shareId: string) => api.revokeShare(shareId),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: sharesKey }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: sharesKey });
+      track("share_link_revoked");
+    },
     onError: (err) => setError(crudErrorMessage(err)),
   });
 

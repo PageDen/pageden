@@ -7,6 +7,7 @@ import { Input } from "../../components/ui/input";
 import { api, ApiError, crudErrorMessage, type ImportJob } from "../../lib/api";
 import { treeQuery } from "../../lib/queries";
 import { buildImportReportMarkdown, buildWebImportPreview, filesFromFileList, importFilesToWorkspace, type BrowserImportFile, type ImportConflictPolicy, type ImportProgress, type WebImportPreview, type WebImportReport } from "./vault-import";
+import { track } from "../../lib/analytics-bus";
 
 export function ImportPage() {
   const params = useParams({ strict: false });
@@ -48,6 +49,12 @@ export function ImportPage() {
     onSuccess: (nextReport) => {
       setReport(nextReport);
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+      track("vault_import_completed", {
+        source: "folder",
+        documents_created: nextReport.documentsCreated,
+        folders_created: nextReport.foldersCreated,
+        attachments_uploaded: nextReport.attachmentsUploaded,
+      });
     },
   });
   const zipImportMutation = useMutation({
@@ -75,6 +82,12 @@ export function ImportPage() {
       setServerImportJob(job);
       if (job.report) setReport(webReportFromServerJob(job, targetRootName || "Imported from Web"));
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+      track("vault_import_completed", {
+        source: "zip",
+        documents_created: job.report?.documentsCreated ?? 0,
+        folders_created: job.report?.foldersCreated ?? 0,
+        attachments_uploaded: job.report?.attachmentsUploaded ?? 0,
+      });
     },
     onError: () => {
       setZipUploadProgress(null);

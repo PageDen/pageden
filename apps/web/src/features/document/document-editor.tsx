@@ -21,6 +21,7 @@ import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
 import { documentReadablePath } from "../../lib/document-links";
 import { relatedDocLinksForValue, resolveWikiLinks } from "./obsidian-links";
+import { track } from "../../lib/analytics-bus";
 
 type Doc = z.infer<typeof documentWithContentSchema>;
 type Tree = z.infer<typeof treeSchema>;
@@ -96,6 +97,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
       void queryClient.invalidateQueries({ queryKey: documentQuery(doc.id).queryKey });
       void queryClient.invalidateQueries({ queryKey: revisionsQuery(doc.id).queryKey });
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+      track("document_saved", { bytes: vars.content.length });
     },
     onError: (error) => {
       const cv = conflictVersion(error);
