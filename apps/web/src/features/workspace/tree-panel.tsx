@@ -128,7 +128,7 @@ export function TreePanel({
           onSubmit={(name, slug) =>
             run(async () => {
               const result = await api.createDocument({ workspaceId, folderId: dialog.folder.id, title: name, slug });
-              track("document_created", { source: "tree" });
+              track("document_created", { source: "tree", change_source: "web_app", doc_id: result.id });
               return result;
             })
           }

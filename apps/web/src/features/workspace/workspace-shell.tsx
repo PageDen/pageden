@@ -15,7 +15,7 @@ import { highlightSnippet } from "../../lib/search-highlight";
 import { documentReadablePath, normalizeReadableDocumentPath } from "../../lib/document-links";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { type ThemeMode, useTheme } from "../../lib/theme";
-import { identifyUser, resetAnalytics, track } from "../../lib/analytics-bus";
+import { identifyUser, resetAnalytics, setWorkspaceContext, track } from "../../lib/analytics-bus";
 
 export function WorkspaceShell() {
   const params = useParams({ strict: false }) as { workspaceId?: string; documentId?: string; _splat?: string };
@@ -117,6 +117,14 @@ export function WorkspaceShell() {
       workspaceCount: me.data.workspaces.length,
     });
   }, [me.data?.user, me.data?.workspaces.length]);
+
+  useEffect(() => {
+    // Drive the analytics-bus workspace context off the URL param so the
+    // active workspace travels with every track() / identify() call —
+    // including events fired in components that don't take workspaceId
+    // explicitly. Cleared on logout via resetAnalytics().
+    setWorkspaceContext(workspaceId || null);
+  }, [workspaceId]);
 
   const workspace = me.data?.workspaces.find((w) => w.id === workspaceId);
   const workspaceInitial = getWorkspaceInitial(workspace?.name);
