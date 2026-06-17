@@ -20,6 +20,7 @@ import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
 import { documentReadablePath } from "../../lib/document-links";
+import { relatedDocLinksForValue, resolveWikiLinks } from "./obsidian-links";
 
 type Doc = z.infer<typeof documentWithContentSchema>;
 type Tree = z.infer<typeof treeSchema>;
@@ -322,7 +323,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
           {!canEdit || preview ? (
             <div className="mx-auto max-w-[920px] px-4 py-6 sm:px-6 lg:px-8 lg:py-7">
               <div className="pageden-document-view prose prose-slate max-w-none break-words text-[16px] leading-8 sm:text-[15px] sm:leading-7">
-                <FrontmatterSummary attributes={parsedPreview.attributes} />
+                <FrontmatterSummary attributes={parsedPreview.attributes} workspaceId={workspaceId} tree={tree.data} />
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   rehypePlugins={[rehypeRaw, [rehypeSanitize, previewSanitizeSchema], rehypeAllowlistIframes]}
@@ -589,7 +590,15 @@ function AiReadinessPanel({ readiness }: { readiness: Doc["aiReadiness"] }) {
   );
 }
 
-function FrontmatterSummary({ attributes }: { attributes: Record<string, string | string[] | boolean | number> }) {
+function FrontmatterSummary({
+  attributes,
+  workspaceId,
+  tree,
+}: {
+  attributes: Record<string, string | string[] | boolean | number>;
+  workspaceId: string;
+  tree?: Pick<Tree, "documents">;
+}) {
   const entries = Object.entries(attributes).filter(([key]) => key !== "title");
   if (entries.length === 0) return null;
   return (
@@ -597,37 +606,58 @@ function FrontmatterSummary({ attributes }: { attributes: Record<string, string 
       {entries.map(([key, value]) => (
         <div key={key} className="min-w-0">
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{key}</dt>
-          <dd className="mt-0.5 truncate text-slate-700">{Array.isArray(value) ? value.join(", ") : String(value)}</dd>
+          <dd className="mt-0.5 min-w-0 text-slate-700">
+            {isRelatedDocsKey(key) ? (
+              <RelatedDocsFrontmatterValue value={value} workspaceId={workspaceId} tree={tree} />
+            ) : (
+              <span className="block truncate">{Array.isArray(value) ? value.join(", ") : String(value)}</span>
+            )}
+          </dd>
         </div>
       ))}
     </dl>
   );
 }
 
-export function resolveWikiLinks(content: string, workspaceId: string, tree?: Pick<Tree, "documents">): string {
-  const docs = tree?.documents ?? [];
-  return content
-    .replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_match, rawTarget: string, rawLabel?: string) => {
-      const { target, label } = parseWikiTarget(rawTarget, rawLabel);
-      return `![${label}](${target})`;
-    })
-    .replace(/(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_match, rawTarget: string, rawLabel?: string) => {
-      const { target, heading, label } = parseWikiTarget(rawTarget, rawLabel);
-      if (!target && heading) return `[${label}](#${headingId(heading)})`;
-      const doc = docs.find((d) => d.title === target || d.path.replace(/^\/+/, "") === target.replace(/^\/+/, ""));
-      if (!doc) return label;
-      const hash = heading ? `#${headingId(heading)}` : "";
-      return `[${label}](${documentReadablePath(workspaceId, doc.path)}${hash})`;
-    });
+function RelatedDocsFrontmatterValue({
+  value,
+  workspaceId,
+  tree,
+}: {
+  value: string | string[] | boolean | number;
+  workspaceId: string;
+  tree?: Pick<Tree, "documents">;
+}) {
+  const links = relatedDocLinksForValue(value, workspaceId, tree);
+  if (links.length === 0) return <span className="block truncate">{String(value)}</span>;
+  return (
+    <span className="flex flex-wrap gap-1.5">
+      {links.map((link) =>
+        link.href ? (
+          <Link
+            key={`${link.target}-${link.href}`}
+            to={link.href}
+            className="inline-flex max-w-full items-center rounded-md border border-orange-200 bg-white px-2 py-0.5 text-xs font-medium text-orange-700 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-800"
+            title={link.target}
+          >
+            <span className="truncate">{link.label}</span>
+          </Link>
+        ) : (
+          <span
+            key={link.target}
+            className="inline-flex max-w-full items-center rounded-md border border-dashed border-slate-300 bg-white px-2 py-0.5 text-xs font-medium text-slate-500"
+            title={`Unresolved related doc: ${link.target}`}
+          >
+            <span className="truncate">{link.label}</span>
+          </span>
+        ),
+      )}
+    </span>
+  );
 }
 
-function parseWikiTarget(rawTarget: string, rawLabel?: string) {
-  const value = rawTarget.trim();
-  const [targetPart = "", ...headingParts] = value.split("#");
-  const target = targetPart.trim();
-  const heading = headingParts.join("#").trim();
-  const label = (rawLabel ?? (heading || target)).trim();
-  return { target, heading, label };
+function isRelatedDocsKey(key: string): boolean {
+  return key.toLowerCase() === "relateddocs" || key.toLowerCase() === "related_docs";
 }
 
 function markdownText(children: ReactNode): string {

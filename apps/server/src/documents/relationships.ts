@@ -39,11 +39,8 @@ function tokensForDoc(doc: { title: string; path: string }): string[] {
     .map(normalize);
 }
 
-function extractWikiTargets(body: string): string[] {
+function extractMarkdownLinkTargets(body: string): string[] {
   const set = new Set<string>();
-  for (const match of body.matchAll(/!?\[\[([^\]#|]+)(?:[#|][^\]]*)?\]\]/g)) {
-    if (match[1]) set.add(match[1].trim());
-  }
   // Markdown links to internal paths: [title](some/path) or [title](some/path.md).
   for (const match of body.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)) {
     const href = (match[2] ?? "").trim();
@@ -124,7 +121,7 @@ export async function documentRelationships(
   // Outbound references: parse the current body and resolve link targets.
   const body = await readDocBody(doc.id, doc.currentVersionId);
   const ctx = documentContext(body);
-  const targets = extractWikiTargets(ctx.body);
+  const targets = [...ctx.wikilinks, ...extractMarkdownLinkTargets(ctx.body)];
   const references = new Map<string, DocumentRef>();
   for (const target of targets) {
     const hit = targetMap.get(normalize(target));
@@ -141,7 +138,7 @@ export async function documentRelationships(
     const otherBody = await readDocBody(other.id, other.currentVersionId);
     if (!otherBody) continue;
     const otherCtx = documentContext(otherBody);
-    const otherTargets = extractWikiTargets(otherCtx.body).map(normalize);
+    const otherTargets = [...otherCtx.wikilinks, ...extractMarkdownLinkTargets(otherCtx.body)].map(normalize);
     if (otherTargets.some((target) => selfTokens.has(target))) {
       referencedBy.set(other.id, asRef(other));
     }

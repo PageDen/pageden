@@ -70,6 +70,50 @@ describe("GET /api/documents/:id/related-docs", () => {
     expect(body.prLinks).toEqual(["https://github.com/PageDen/pageden/pull/42"]);
   });
 
+  it("treats frontmatter relatedDocs wikilinks as document references", async () => {
+    const s = await baseScenario();
+    const focus = await makeDoc(
+      s.adminCookie,
+      s.ws.id,
+      s.folderId,
+      "share-dialog-ux-redesign",
+      "Share Dialog UX Redesign",
+      `---
+status: canonical
+relatedDocs:
+  - "[[permission-model-review-outline-docmost]]"
+  - "[[ai-agent-workspace-improvements]]"
+---
+
+# Share Dialog UX Redesign
+`,
+    );
+    await makeDoc(
+      s.adminCookie,
+      s.ws.id,
+      s.folderId,
+      "permission-model-review-outline-docmost",
+      "Permission Model Review vs Outline & Docmost",
+      "# Permission Model Review\n",
+    );
+    await makeDoc(
+      s.adminCookie,
+      s.ws.id,
+      s.folderId,
+      "ai-agent-workspace-improvements",
+      "AI Agent Workspace Improvements",
+      "# AI Agent Workspace Improvements\n",
+    );
+
+    const res = await req({ method: "GET", url: `/api/documents/${focus.id}/related-docs`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const paths = res.json().references.map((doc: { path: string }) => doc.path).sort();
+    expect(paths).toEqual([
+      "engineering/ai-agent-workspace-improvements.md",
+      "engineering/permission-model-review-outline-docmost.md",
+    ]);
+  });
+
   it("excludes related documents the caller cannot read", async () => {
     const s = await baseScenario();
     // Public folder (s.folderId) holds the focus document.

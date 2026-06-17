@@ -8,15 +8,16 @@ export type DocumentContext = ReturnType<typeof documentContext>;
 export function documentContext(content: string) {
   const parsed = parseFrontmatter(content);
   const body = parsed ? content.slice(parsed.endIndex).replace(/^\s+/, "") : content;
+  const frontmatter = parsed?.data ?? {};
   // Feature 17: mask fenced-code-block and inline-code spans before scanning
   // for wikilinks. Headings stay sourced from the raw body so heading
   // navigation isn't affected by code-fence content.
   const masked = maskCodeContext(body);
   return {
     body,
-    frontmatter: parsed?.data ?? {},
+    frontmatter,
     headings: extractHeadings(body),
-    wikilinks: extractWikiLinks(masked.body),
+    wikilinks: mergeWikiLinks(extractWikiLinks(masked.body), extractFrontmatterWikiLinks(frontmatter)),
     codeContextCounts: masked.counts,
   };
 }
@@ -189,11 +190,23 @@ function parseFrontmatter(content: string): { data: Record<string, string | stri
   const afterFence = content.indexOf("\n", end + 4);
   const raw = content.slice(4, end);
   const data: Record<string, string | string[]> = {};
+  let currentKey: string | null = null;
   for (const line of raw.split("\n")) {
+    const listItem = line.match(/^\s*-\s+(.+)$/);
+    if (currentKey && listItem) {
+      const existing = data[currentKey];
+      data[currentKey] = [...(Array.isArray(existing) ? existing : []), stripYamlQuotes(listItem[1]!.trim())].filter(Boolean);
+      continue;
+    }
+
     const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (!match) continue;
+    if (!match) {
+      currentKey = null;
+      continue;
+    }
     const key = match[1]!;
     const value = match[2]!.trim();
+    currentKey = key;
     if (value.startsWith("[") && value.endsWith("]")) {
       data[key] = value
         .slice(1, -1)
@@ -299,6 +312,22 @@ function extractWikiLinks(content: string): string[] {
     } else {
       i = start + 1;
     }
+  }
+  return [...links].sort((a, b) => a.localeCompare(b));
+}
+
+function extractFrontmatterWikiLinks(frontmatter: Record<string, string | string[]>): string[] {
+  const text = Object.values(frontmatter)
+    .flatMap((value) => (Array.isArray(value) ? value : [value]))
+    .filter((value): value is string => typeof value === "string" && value.includes("[["))
+    .join("\n");
+  return extractWikiLinks(text);
+}
+
+function mergeWikiLinks(...groups: string[][]): string[] {
+  const links = new Set<string>();
+  for (const group of groups) {
+    for (const link of group) links.add(link);
   }
   return [...links].sort((a, b) => a.localeCompare(b));
 }
