@@ -33,6 +33,7 @@ export function PermissionsDialog({
   });
   const users = useQuery({ ...usersQuery(workspaceId), retry: false });
   const groups = useQuery({ ...groupsQuery(workspaceId), retry: false });
+  const tree = useQuery({ ...treeQuery(workspaceId), staleTime: 30_000 });
 
   const [rows, setRows] = useState<PermissionInput[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,14 +46,18 @@ export function PermissionsDialog({
   const editable: PermissionInput[] =
     rows ?? (current.data?.permissions.map((p) => ({ subjectType: p.subjectType, subjectId: p.subjectId, role: p.role })) ?? []);
 
-  const subjectDetails = new Map(current.data?.permissions.map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const) ?? []);
+  const inherited = current.data?.inheritedPermissions ?? [];
+  const subjectDetails = new Map([
+    ...(current.data?.permissions ?? []).map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const),
+    ...inherited.map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const),
+  ]);
   const userName = (uid: string) => users.data?.users.find((u) => u.id === uid)?.email ?? uid;
   const groupName = (gid: string) => groups.data?.groups.find((g) => g.id === gid)?.name ?? gid;
-  const subjectLabel = (r: PermissionInput) => {
-    const subject = subjectDetails.get(`${r.subjectType}:${r.subjectId}`);
+  const subjectLabel = (subjectType: "user" | "group", subjectId: string) => {
+    const subject = subjectDetails.get(`${subjectType}:${subjectId}`);
     if (subject?.type === "user") return subject.name ? `${subject.name} (${subject.email})` : subject.email;
     if (subject?.type === "group") return `group: ${subject.name}`;
-    return r.subjectType === "user" ? userName(r.subjectId) : `group: ${groupName(r.subjectId)}`;
+    return subjectType === "user" ? userName(subjectId) : `group: ${groupName(subjectId)}`;
   };
 
   const save = useMutation({
@@ -109,6 +114,16 @@ export function PermissionsDialog({
     share.mutate({ email, role: pickerRole });
   }
 
+  // For a document, find the parent folder so we can render
+  // "Inherits access from /Retirement" in the General access slot.
+  const documentParentFolder = kind === "document"
+    ? (() => {
+        const doc = tree.data?.documents.find((d) => d.id === id);
+        if (!doc) return null;
+        return tree.data?.folders.find((f) => f.id === doc.folderId) ?? null;
+      })()
+    : null;
+
   return (
     <Dialog
       title={
@@ -128,6 +143,12 @@ export function PermissionsDialog({
         <p className="text-sm text-slate-500">{crudErrorMessage(current.error)}</p>
       ) : (
         <div className="space-y-3">
+          {kind === "folder" ? (
+            <GeneralAccessSection folderId={id} workspaceId={workspaceId} />
+          ) : documentParentFolder ? (
+            <DocumentInheritsFromSection folderName={documentParentFolder.name} folderPath={documentParentFolder.path} />
+          ) : null}
+
           <PeopleCombobox
             users={users.data?.users ?? []}
             groups={groups.data?.groups ?? []}
@@ -149,7 +170,7 @@ export function PermissionsDialog({
               {editable.length === 0 ? <li className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-400">No explicit grants.</li> : null}
               {editable.map((r, i) => (
                 <li key={`${r.subjectType}:${r.subjectId}`} className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center">
-                  <span className="min-w-0 truncate">{subjectLabel(r)}</span>
+                  <span className="min-w-0 truncate">{subjectLabel(r.subjectType, r.subjectId)}</span>
                   <select
                     aria-label="Role"
                     className="rounded-md border border-slate-300 px-2 py-2 text-sm"
@@ -170,8 +191,11 @@ export function PermissionsDialog({
             </ul>
           </div>
 
-          {kind === "folder" ? (
-            <FolderDefaultRoleSection folderId={id} workspaceId={workspaceId} />
+          {inherited.length > 0 ? (
+            <InheritedSection
+              inherited={inherited}
+              subjectLabel={subjectLabel}
+            />
           ) : null}
 
           {notice ? <p className="text-sm text-emerald-700">{notice}</p> : null}
@@ -186,10 +210,71 @@ export function PermissionsDialog({
   );
 }
 
-// Folder default-role floor — every workspace member sees docs in this folder
-// (and descendants without a closer override) as at least this role. null =
-// private, the historical "explicit grants only" behavior.
-function FolderDefaultRoleSection({ folderId, workspaceId }: { folderId: string; workspaceId: string }) {
+// Read-only subsection rendering grants inherited from an ancestor folder.
+// Grouped by source folder so the path appears once per ancestor instead of
+// once per row. Roles are non-editable: the rule lives upstream.
+function InheritedSection({
+  inherited,
+  subjectLabel,
+}: {
+  inherited: NonNullable<Awaited<ReturnType<typeof api.folderPermissions>>["inheritedPermissions"]>;
+  subjectLabel: (subjectType: "user" | "group", subjectId: string) => string;
+}) {
+  // Stable grouping by folder so rows from the same ancestor sit together.
+  const groups = new Map<string, typeof inherited>();
+  for (const row of inherited) {
+    const key = row.inheritedFrom.folderId;
+    const list = groups.get(key) ?? [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  return (
+    <div className="space-y-2 border-t border-slate-200 pt-3">
+      <div>
+        <h3 className="text-sm font-medium text-slate-700">Inherited access</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          These people see this content because of a grant on an ancestor folder. Change the grant there to revoke.
+        </p>
+      </div>
+      <ul className="space-y-3">
+        {[...groups.entries()].map(([folderId, rows]) => {
+          const first = rows[0]!;
+          return (
+            <li key={folderId} className="space-y-1.5">
+              <p className="text-xs uppercase tracking-wide text-slate-400">
+                Inherited from {first.inheritedFrom.folderPath || first.inheritedFrom.folderName}
+              </p>
+              <ul className="space-y-1.5">
+                {rows.map((row) => (
+                  <li
+                    key={`${row.subjectType}:${row.subjectId}`}
+                    className="grid gap-2 rounded-md border border-dashed border-slate-200 bg-slate-50 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                  >
+                    <span className="min-w-0 truncate text-slate-600">{subjectLabel(row.subjectType, row.subjectId)}</span>
+                    <span className="text-xs text-slate-500">
+                      {roleLabel(row.role)} · inherited
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function roleLabel(role: "viewer" | "editor" | "manager"): string {
+  if (role === "viewer") return "Viewer";
+  if (role === "editor") return "Editor";
+  return "Manager";
+}
+
+// Folder default-role floor lives at the top of the dialog as "General access"
+// because it frames the entire share decision: is this folder private (explicit
+// grants only) or workspace-wide? Guest memberships are still unaffected.
+function GeneralAccessSection({ folderId, workspaceId }: { folderId: string; workspaceId: string }) {
   const queryClient = useQueryClient();
   const tree = useQuery({ ...treeQuery(workspaceId), staleTime: 30_000 });
   const folder = tree.data?.folders.find((f) => f.id === folderId);
@@ -214,11 +299,11 @@ function FolderDefaultRoleSection({ folderId, workspaceId }: { folderId: string;
   const dirty = value !== serverValue;
 
   return (
-    <div className="space-y-2 border-t border-slate-200 pt-3 text-sm">
+    <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-slate-700">Workspace member access</span>
+        <span className="text-sm font-medium text-slate-700">General access</span>
         <span className="text-xs text-slate-500">
-          Choose whether all workspace members can access this folder. Guests still need explicit grants.
+          Set the default role for everyone in the workspace. Guests still need an explicit grant below.
         </span>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -238,6 +323,22 @@ function FolderDefaultRoleSection({ folderId, workspaceId }: { folderId: string;
         </Button>
       </div>
       {error ? <p className="text-xs text-red-600">{error}</p> : null}
+    </div>
+  );
+}
+
+// Documents don't carry a default-role themselves — they inherit from the
+// folder they live in. Surface that explicitly so a manager doesn't wonder
+// where the General access picker went.
+function DocumentInheritsFromSection({ folderName, folderPath }: { folderName: string; folderPath: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm">
+      <span className="block font-medium text-slate-700">General access</span>
+      <p className="mt-1 text-xs text-slate-500">
+        Inherits access from{" "}
+        <span className="font-medium text-slate-700">{folderPath || folderName}</span>
+        . Adjust the parent folder's General access to change it.
+      </p>
     </div>
   );
 }

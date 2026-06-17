@@ -158,4 +158,73 @@ describe("permission endpoints", () => {
     });
     expect(res.statusCode).toBe(403);
   });
+
+  it("returns inherited permissions from ancestor folders for a document", async () => {
+    const s = await baseScenario();
+    const ancestor = await createUser("ancestor@t.co", "Ancestor");
+    await addMember(s.ws.id, ancestor.id, "member");
+    // Grant on the folder that owns the document — the document is the
+    // resource we GET, the grant is on its parent folder.
+    await grant(s.ws.id, "user", ancestor.id, "folder", s.folderId, "editor");
+
+    const res = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // The document itself has no explicit grants, so `permissions` is empty.
+    expect(body.permissions).toEqual([]);
+    // …but `inheritedPermissions` surfaces the ancestor's grant tagged with
+    // the folder it came from.
+    expect(body.inheritedPermissions).toHaveLength(1);
+    expect(body.inheritedPermissions[0]).toMatchObject({
+      subjectType: "user",
+      subjectId: ancestor.id,
+      role: "editor",
+      inheritedFrom: { folderId: s.folderId },
+    });
+    expect(typeof body.inheritedPermissions[0].inheritedFrom.folderPath).toBe("string");
+  });
+
+  it("returns inherited permissions for a nested folder", async () => {
+    const s = await baseScenario();
+    const subFolder = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, parentFolderId: s.folderId, name: "Sub", slug: "sub" },
+    });
+    expect(subFolder.statusCode).toBe(201);
+    const subFolderId = subFolder.json().id as string;
+    const ancestor = await createUser("nested@t.co", "Nested");
+    await addMember(s.ws.id, ancestor.id, "member");
+    await grant(s.ws.id, "user", ancestor.id, "folder", s.folderId, "viewer");
+
+    const res = await req({ method: "GET", url: `/api/folders/${subFolderId}/permissions`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.permissions).toEqual([]);
+    expect(body.inheritedPermissions).toHaveLength(1);
+    expect(body.inheritedPermissions[0]).toMatchObject({
+      subjectType: "user",
+      subjectId: ancestor.id,
+      role: "viewer",
+      inheritedFrom: { folderId: s.folderId },
+    });
+  });
+
+  it("does not double-surface a subject that also has an explicit grant", async () => {
+    const s = await baseScenario();
+    const dual = await createUser("dual@t.co", "Dual");
+    await addMember(s.ws.id, dual.id, "member");
+    // Explicit grant on the document itself
+    await grant(s.ws.id, "user", dual.id, "document", s.docId, "editor");
+    // …and another grant on the parent folder
+    await grant(s.ws.id, "user", dual.id, "folder", s.folderId, "viewer");
+
+    const res = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.permissions).toHaveLength(1);
+    expect(body.permissions[0]).toMatchObject({ subjectId: dual.id, role: "editor" });
+    expect(body.inheritedPermissions).toEqual([]);
+  });
 });
