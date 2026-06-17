@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { X } from "lucide-react";
 
 export function Dialog({
   title,
@@ -29,7 +30,17 @@ export function Dialog({
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="mb-4 min-w-0 break-words text-base font-semibold leading-6 text-slate-950">{title}</h2>
+        <div className="mb-4 flex items-start gap-3">
+          <h2 className="min-w-0 flex-1 break-words text-base font-semibold leading-6 text-slate-950">{title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="-mr-1 -mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200"
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
         {children}
       </div>
     </div>
