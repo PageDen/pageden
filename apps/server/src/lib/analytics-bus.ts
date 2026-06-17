@@ -28,8 +28,27 @@ export type ServerEventName =
 
 export type ServerEventProperties = Record<string, string | number | boolean | null | undefined>;
 
+/**
+ * Who triggered the event. Resolves to Mixpanel's `distinct_id`:
+ * - `userId` is preferred — every agent token is bound to one human owner.
+ * - `tokenId` is the fallback for tokens with no resolvable user (rare).
+ *
+ * If neither is set the listener may drop the event since there's no actor
+ * to attribute it to.
+ */
+export type ServerActor = {
+  userId?: string | null;
+  tokenId?: string | null;
+};
+
+export type ServerEventPayload = {
+  workspaceId: string;
+  actor: ServerActor;
+  properties: ServerEventProperties;
+};
+
 export type ServerAnalyticsListener = {
-  track(event: string, properties: ServerEventProperties): void;
+  track(event: string, payload: ServerEventPayload): void;
   /** Optional graceful shutdown so the SDK can flush its queue. */
   flush?(): Promise<void> | void;
 };
@@ -42,18 +61,29 @@ export function registerServerAnalyticsListener(next: ServerAnalyticsListener | 
 }
 
 /**
- * Emit an analytics event. The workspaceId is required — the bus attaches
- * it as a `workspace_id` property automatically so call sites can't forget.
+ * Emit an analytics event.
+ * - `workspaceId` is required — the bus attaches it as `workspace_id` so
+ *   call sites can't forget. Cloud listeners also use it as the Mixpanel
+ *   group key so events join the per-workspace rollup.
+ * - `actor` carries who triggered the event so Mixpanel can set
+ *   `distinct_id` correctly; without it, agent events would attribute
+ *   anonymously and the per-workspace cohort wouldn't include them.
+ *
  * Never throws.
  */
 export function trackServerEvent(
   event: ServerEventName,
   workspaceId: string,
+  actor: ServerActor,
   properties: ServerEventProperties = {},
 ): void {
   if (!listener || !workspaceId) return;
   try {
-    listener.track(event, { ...properties, workspace_id: workspaceId });
+    listener.track(event, {
+      workspaceId,
+      actor,
+      properties: { ...properties, workspace_id: workspaceId },
+    });
   } catch {
     // never throw from telemetry
   }

@@ -100,7 +100,11 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
       void queryClient.invalidateQueries({ queryKey: documentQuery(doc.id).queryKey });
       void queryClient.invalidateQueries({ queryKey: revisionsQuery(doc.id).queryKey });
       void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
-      track("document_saved", { bytes: vars.content.length, change_source: "web_app", doc_id: doc.id });
+      // Skip the analytics emit for server-deduplicated autosaves so
+      // "active days" / edit volume only count real new revisions.
+      if (!result.noOp) {
+        track("document_saved", { bytes: vars.content.length, change_source: "web_app", doc_id: doc.id });
+      }
     },
     onError: (error) => {
       const cv = conflictVersion(error);

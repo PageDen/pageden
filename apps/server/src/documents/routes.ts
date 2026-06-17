@@ -199,6 +199,14 @@ interface WriteOutcome {
   version?: string;
   checksum?: string;
   updatedAt?: Date;
+  /**
+   * True when the write was deduplicated: identical content → no new
+   * revision was created (only the title may have been touched). Callers
+   * that care about distinguishing "real edit" from "autosave no-op"
+   * — e.g. analytics — should gate on this. Always false for genuine
+   * content writes.
+   */
+  noOp?: boolean;
 }
 
 // Shared write path for PUT (web) and push (plugin): row-locked transaction, baseVersion
@@ -265,6 +273,7 @@ export async function applyDocumentWrite(opts: {
           version: doc.currentVersionId ?? "",
           checksum: doc.currentChecksum,
           updatedAt: doc.updatedAt,
+          noOp: true,
         };
       }
 
@@ -289,6 +298,7 @@ export async function applyDocumentWrite(opts: {
         version: doc.currentVersionId ?? "",
         checksum: doc.currentChecksum,
         updatedAt: updated.updatedAt,
+        noOp: true,
       };
     }
 
@@ -335,11 +345,16 @@ export async function applyDocumentWrite(opts: {
       tx,
     );
     if (opts.changeSource === "obsidian_plugin") {
-      trackServerEvent("plugin_push_completed", doc.workspaceId, {
-        doc_id: doc.id,
-        token_id: opts.auth.tokenId ?? null,
-        change_source: "obsidian_plugin",
-      });
+      trackServerEvent(
+        "plugin_push_completed",
+        doc.workspaceId,
+        { userId: opts.auth.userId, tokenId: opts.auth.tokenId ?? null },
+        {
+          doc_id: doc.id,
+          token_id: opts.auth.tokenId ?? null,
+          change_source: "obsidian_plugin",
+        },
+      );
     }
     await writeStatusTransitionAudit(tx, {
       workspaceId: doc.workspaceId,
@@ -1391,6 +1406,7 @@ function sendWriteOutcome(reply: import("fastify").FastifyReply, outcome: WriteO
       version: outcome.version,
       checksum: outcome.checksum,
       updatedAt: outcome.updatedAt?.toISOString(),
+      noOp: outcome.noOp ?? false,
     });
   }
   if (outcome.status === "not_found") return notFound(reply, "Document not found.");

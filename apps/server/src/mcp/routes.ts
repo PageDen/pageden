@@ -847,12 +847,17 @@ async function callTool(
     metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, tokenKind: auth.tokenKind },
   });
   if (calledWorkspaceId) {
-    trackServerEvent("agent_mcp_call", calledWorkspaceId, {
-      tool_name: name,
-      token_id: auth.tokenId ?? null,
-      token_kind: auth.tokenKind,
-      change_source: "agent",
-    });
+    trackServerEvent(
+      "agent_mcp_call",
+      calledWorkspaceId,
+      { userId: auth.userId, tokenId: auth.tokenId ?? null },
+      {
+        tool_name: name,
+        token_id: auth.tokenId ?? null,
+        token_kind: auth.tokenKind,
+        change_source: "agent",
+      },
+    );
   }
 
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: data };
@@ -960,12 +965,17 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>, op
       targetId: doc.id,
       metadata: { version: doc.currentVersionId, path: doc.path, readMode: opts.readMode ?? "document", tokenId: auth.tokenId ?? null },
     }).catch(() => undefined);
-    trackServerEvent("agent_document_read", doc.workspaceId, {
-      doc_id: doc.id,
-      token_id: auth.tokenId ?? null,
-      read_mode: opts.readMode ?? "document",
-      change_source: "agent",
-    });
+    trackServerEvent(
+      "agent_document_read",
+      doc.workspaceId,
+      { userId: auth.userId, tokenId: auth.tokenId ?? null },
+      {
+        doc_id: doc.id,
+        token_id: auth.tokenId ?? null,
+        read_mode: opts.readMode ?? "document",
+        change_source: "agent",
+      },
+    );
   }
   return {
     workspaceId: doc.workspaceId,
@@ -1630,11 +1640,16 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
         },
         tx,
       );
-      trackServerEvent("agent_document_created", workspaceId, {
-        doc_id: doc.id,
-        token_id: auth.tokenId ?? null,
-        change_source: "agent",
-      });
+      trackServerEvent(
+        "agent_document_created",
+        workspaceId,
+        { userId: auth.userId, tokenId: auth.tokenId ?? null },
+        {
+          doc_id: doc.id,
+          token_id: auth.tokenId ?? null,
+          change_source: "agent",
+        },
+      );
       return { workspaceId, id: doc.id, title, path: updated.path, version: revision.id, checksum: sum, updatedAt: updated.updatedAt.toISOString() };
     });
     return result;
@@ -1978,12 +1993,17 @@ async function upsertDocumentAtPath({
         },
         tx,
       );
-      trackServerEvent("agent_document_created", workspaceId, {
-        doc_id: doc.id,
-        token_id: auth.tokenId ?? null,
-        via: "path_upsert",
-        change_source: "agent",
-      });
+      trackServerEvent(
+        "agent_document_created",
+        workspaceId,
+        { userId: auth.userId, tokenId: auth.tokenId ?? null },
+        {
+          doc_id: doc.id,
+          token_id: auth.tokenId ?? null,
+          via: "path_upsert",
+          change_source: "agent",
+        },
+      );
       return {
         action: "created",
         workspaceId,
@@ -2193,11 +2213,18 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
     userAgent: request.headers["user-agent"],
     metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version },
   });
-  trackServerEvent("agent_document_saved", updateWorkspaceId, {
-    doc_id: documentId,
-    token_id: auth.tokenId ?? null,
-    change_source: "agent",
-  });
+  if (!outcome.noOp) {
+    trackServerEvent(
+      "agent_document_saved",
+      updateWorkspaceId,
+      { userId: auth.userId, tokenId: auth.tokenId ?? null },
+      {
+        doc_id: documentId,
+        token_id: auth.tokenId ?? null,
+        change_source: "agent",
+      },
+    );
+  }
   return { workspaceId: updateWorkspaceId, ...outcome, updatedAt: outcome.updatedAt?.toISOString() };
 }
 
