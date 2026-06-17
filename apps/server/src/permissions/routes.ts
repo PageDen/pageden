@@ -13,7 +13,7 @@ import { writeAuditEvent } from "../audit.js";
 import { env } from "../env.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { getMailer } from "../mailer.js";
-import { atLeast, authorizeDocumentRole, authorizeFolderRole, resolveDocumentRole, resolveFolderRole } from "./index.js";
+import { atLeast, authorizeDocumentRole, authorizeFolderRole, capRole, RANK, resolveDocumentRole, resolveFolderRole, strongest } from "./index.js";
 
 const ROLES: PermissionRole[] = ["viewer", "editor", "manager"];
 const SUBJECT_TYPES: PermissionSubjectType[] = ["user", "group"];
@@ -248,6 +248,8 @@ type SinglePermissionRow = {
   subjectId: string;
   role: PermissionRole;
   subject: ({ type: "user" } & SingleGrantSubject) | ({ type: "group" } & SingleGrantSubject) | null;
+  effectiveRole: PermissionRole;
+  effectiveSource: EffectiveSource;
 };
 type SinglePermissionOutcome =
   | { ok: true; permission: SinglePermissionRow }
@@ -255,6 +257,8 @@ type SinglePermissionOutcome =
 
 async function hydrateSingleRow(
   workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
   row: { id: string; userId: string | null; groupId: string | null; role: PermissionRole },
 ): Promise<SinglePermissionRow> {
   const userRow = row.userId
@@ -263,6 +267,13 @@ async function hydrateSingleRow(
   const groupRow = row.groupId
     ? await prisma.group.findFirst({ where: { id: row.groupId, workspaceId }, select: { id: true, name: true, slug: true } })
     : null;
+  let effective: ExplicitRoleAttribution = { effectiveRole: row.role, effectiveSource: "explicit" };
+  if (row.userId) {
+    const computed = await computeEffectiveRoles(prisma, workspaceId, resourceType, resourceId, [
+      { id: row.id, userId: row.userId, role: row.role },
+    ]);
+    effective = computed.get(row.id) ?? effective;
+  }
   return {
     id: row.id,
     ...rowSubject(row),
@@ -272,6 +283,8 @@ async function hydrateSingleRow(
       : groupRow
         ? { type: "group", id: groupRow.id, name: groupRow.name, slug: groupRow.slug }
         : null,
+    effectiveRole: effective.effectiveRole,
+    effectiveSource: effective.effectiveSource,
   };
 }
 
@@ -326,7 +339,7 @@ async function createSinglePermission(
       },
       tx,
     );
-    return { ok: true as const, permission: await hydrateSingleRow(workspaceId, created) };
+    return { ok: true as const, permission: await hydrateSingleRow(workspaceId, resourceType, resourceId, created) };
   });
 }
 
@@ -350,7 +363,7 @@ async function updateSinglePermission(
     });
     if (!found) return { ok: false, status: "not_found" } as const;
     if (found.role === role) {
-      return { ok: true as const, permission: await hydrateSingleRow(workspaceId, found) };
+      return { ok: true as const, permission: await hydrateSingleRow(workspaceId, resourceType, resourceId, found) };
     }
     const updated = await tx.permission.update({
       where: { id: permissionId },
@@ -368,7 +381,7 @@ async function updateSinglePermission(
       },
       tx,
     );
-    return { ok: true as const, permission: await hydrateSingleRow(workspaceId, updated) };
+    return { ok: true as const, permission: await hydrateSingleRow(workspaceId, resourceType, resourceId, updated) };
   });
 }
 
@@ -411,6 +424,105 @@ async function deleteSinglePermission(
   });
 }
 
+// Phase 4a: per-user explicit-grant effective-role inputs. We surface the
+// effective role plus a single "source" enum that names *what* over-rode the
+// explicit grant. This is the dialog's defence against the "I demoted Alice
+// but she can still edit" failure mode where the folder defaultRole or
+// workspace admin tier silently dominates.
+type EffectiveSource = "explicit" | "admin" | "viewer_tier" | "default_role";
+
+interface ExplicitRoleAttribution {
+  effectiveRole: PermissionRole;
+  effectiveSource: EffectiveSource;
+}
+
+async function computeEffectiveRoles(
+  client: Prisma.TransactionClient | typeof prisma,
+  workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+  explicitUserRows: Array<{ id: string; userId: string; role: PermissionRole }>,
+): Promise<Map<string, ExplicitRoleAttribution>> {
+  if (explicitUserRows.length === 0) return new Map();
+
+  // 1) Collect the ancestor chain of folders + their defaultRoles. The
+  // resolver includes the resource's own folder in this list, so we mirror
+  // that behaviour: for documents we start at doc.folderId; for folders we
+  // start at the folder itself (a folder's own defaultRole DOES affect roles
+  // on grants attached to that folder).
+  let startFolderId: string | null;
+  if (resourceType === "document") {
+    const doc = await client.document.findFirst({
+      where: { id: resourceId, deletedAt: null, workspaceId },
+      select: { folderId: true },
+    });
+    startFolderId = doc?.folderId ?? null;
+  } else {
+    startFolderId = resourceId;
+  }
+
+  const ancestorFolderIds: string[] = [];
+  if (startFolderId) {
+    const seen = new Set<string>();
+    let current: string | null = startFolderId;
+    for (let depth = 0; current && !seen.has(current) && depth < 64; depth += 1) {
+      seen.add(current);
+      const folder: { id: string; parentFolderId: string | null } | null = await client.folder.findFirst({
+        where: { id: current, deletedAt: null, workspaceId },
+        select: { id: true, parentFolderId: true },
+      });
+      if (!folder) break;
+      ancestorFolderIds.push(folder.id);
+      current = folder.parentFolderId;
+    }
+  }
+
+  const defaultRolesOnAncestors: PermissionRole[] = [];
+  if (ancestorFolderIds.length > 0) {
+    const rows = await client.folder.findMany({
+      where: { id: { in: ancestorFolderIds }, deletedAt: null, workspaceId },
+      select: { defaultRole: true },
+    });
+    for (const row of rows) {
+      if (row.defaultRole) defaultRolesOnAncestors.push(row.defaultRole);
+    }
+  }
+
+  // 2) Workspace tier per explicit user — drives admin/viewer-tier outcomes.
+  const userIds = [...new Set(explicitUserRows.map((row) => row.userId))];
+  const memberships = await client.workspaceMembership.findMany({
+    where: { workspaceId, userId: { in: userIds } },
+    select: { userId: true, role: true },
+  });
+  const tierByUser = new Map(memberships.map((row) => [row.userId, row.role]));
+
+  // 3) Per-row computation. Mirrors the resolver's documentRole/folderRole
+  // logic so what the dialog claims is "effective" matches what the resolver
+  // actually returns.
+  const result = new Map<string, ExplicitRoleAttribution>();
+  for (const row of explicitUserRows) {
+    const tier = tierByUser.get(row.userId);
+    if (tier === "admin") {
+      result.set(row.id, { effectiveRole: "manager", effectiveSource: "admin" });
+      continue;
+    }
+    const isViewerTier = tier === "viewer";
+    const isGuest = tier === "guest";
+    const inputs: PermissionRole[] = [row.role];
+    if (!isGuest) inputs.push(...defaultRolesOnAncestors);
+    if (isViewerTier) inputs.push("viewer");
+    const computedRaw = strongest(inputs) ?? row.role;
+    const computed = isViewerTier ? (capRole(computedRaw, "viewer") ?? row.role) : computedRaw;
+
+    let source: EffectiveSource;
+    if (computed === row.role) source = "explicit";
+    else if (isViewerTier && RANK[computed] < RANK[row.role]) source = "viewer_tier";
+    else source = "default_role";
+    result.set(row.id, { effectiveRole: computed, effectiveSource: source });
+  }
+  return result;
+}
+
 async function listPermissions(reply: FastifyReply, workspaceId: string, resourceType: PermissionResourceType, resourceId: string) {
   const [permissions, inheritedRows] = await Promise.all([
     currentPermissionRows(prisma, workspaceId, resourceType, resourceId),
@@ -450,12 +562,23 @@ async function listPermissions(reply: FastifyReply, workspaceId: string, resourc
           : null
         : null;
 
-  const withSubject = permissions.map((permission) => ({
-    id: permission.id,
-    ...rowSubject(permission),
-    role: permission.role,
-    subject: buildSubject(permission),
-  }));
+  const explicitUserRows = permissions
+    .filter((row): row is typeof row & { userId: string } => row.userId !== null)
+    .map((row) => ({ id: row.id, userId: row.userId, role: row.role }));
+  const effectiveByRowId = await computeEffectiveRoles(prisma, workspaceId, resourceType, resourceId, explicitUserRows);
+  const withSubject = permissions.map((permission) => {
+    const eff = effectiveByRowId.get(permission.id);
+    return {
+      id: permission.id,
+      ...rowSubject(permission),
+      role: permission.role,
+      subject: buildSubject(permission),
+      // For group rows we omit effective-role attribution — groups aren't a
+      // subject the resolver computes per-user effective roles for.
+      effectiveRole: eff?.effectiveRole ?? permission.role,
+      effectiveSource: eff?.effectiveSource ?? "explicit",
+    };
+  });
   const inheritedWithSubject = filteredInherited.map((row) => ({
     id: row.id,
     ...rowSubject(row),

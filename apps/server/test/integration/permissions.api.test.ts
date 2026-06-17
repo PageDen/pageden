@@ -304,6 +304,43 @@ describe("permission endpoints", () => {
     expect(post.statusCode).toBe(403);
   });
 
+  it("effectiveSource=explicit when nothing overrides the grant", async () => {
+    const s = await baseScenario();
+    const u = await createUser("eff-explicit@t.co");
+    await addMember(s.ws.id, u.id, "member");
+    await grant(s.ws.id, "user", u.id, "document", s.docId, "viewer");
+    const res = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    const row = res.json().permissions[0];
+    expect(row).toMatchObject({ role: "viewer", effectiveRole: "viewer", effectiveSource: "explicit" });
+  });
+
+  it("effectiveSource=default_role when ancestor folder defaultRole bumps the role up", async () => {
+    const s = await baseScenario();
+    // Folder defaultRole=editor overrides Alice's explicit viewer.
+    await req({
+      method: "PUT",
+      url: `/api/folders/${s.folderId}/default-role`,
+      cookies: s.adminCookie,
+      payload: { defaultRole: "editor" },
+    });
+    const u = await createUser("eff-default@t.co");
+    await addMember(s.ws.id, u.id, "member");
+    await grant(s.ws.id, "user", u.id, "document", s.docId, "viewer");
+    const res = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    const row = res.json().permissions[0];
+    expect(row).toMatchObject({ role: "viewer", effectiveRole: "editor", effectiveSource: "default_role" });
+  });
+
+  it("effectiveSource=admin when the subject is a workspace admin", async () => {
+    const s = await baseScenario();
+    const sub = await createUser("eff-admin@t.co");
+    await addMember(s.ws.id, sub.id, "admin");
+    await grant(s.ws.id, "user", sub.id, "document", s.docId, "viewer");
+    const res = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    const row = res.json().permissions[0];
+    expect(row).toMatchObject({ role: "viewer", effectiveRole: "manager", effectiveSource: "admin" });
+  });
+
   it("does not double-surface a subject that also has an explicit grant", async () => {
     const s = await baseScenario();
     const dual = await createUser("dual@t.co", "Dual");

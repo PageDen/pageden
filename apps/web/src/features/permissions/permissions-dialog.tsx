@@ -192,7 +192,14 @@ export function PermissionsDialog({
                   key={row.id}
                   className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center"
                 >
-                  <span className="min-w-0 truncate">{subjectLabel(row.subjectType, row.subjectId)}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate">{subjectLabel(row.subjectType, row.subjectId)}</span>
+                    <EffectiveRoleBadge
+                      role={row.role}
+                      effectiveRole={row.effectiveRole}
+                      effectiveSource={row.effectiveSource}
+                    />
+                  </span>
                   <select
                     aria-label="Role"
                     className="rounded-md border border-slate-300 px-2 py-2 text-sm"
@@ -291,6 +298,35 @@ function roleLabel(role: "viewer" | "editor" | "manager"): string {
   if (role === "viewer") return "Viewer";
   if (role === "editor") return "Editor";
   return "Manager";
+}
+
+// Phase 4a: only render when the explicit role and the resolver-computed
+// effective role diverge. The two `_tier` / `admin` / `default_role` cases
+// each get a one-line "what overrode it" sentence so the manager isn't left
+// guessing why the dropdown change didn't take effect.
+function EffectiveRoleBadge({
+  role,
+  effectiveRole,
+  effectiveSource,
+}: {
+  role: "viewer" | "editor" | "manager";
+  effectiveRole: "viewer" | "editor" | "manager";
+  effectiveSource: "explicit" | "admin" | "viewer_tier" | "default_role";
+}) {
+  if (effectiveSource === "explicit" || effectiveRole === role) return null;
+  let reason: string;
+  if (effectiveSource === "admin") reason = "user is a workspace admin";
+  else if (effectiveSource === "viewer_tier") reason = "workspace viewer tier caps role at viewer";
+  else reason = "folder default role";
+  const elevated = effectiveSource !== "viewer_tier";
+  return (
+    <span
+      className={`mt-1 inline-block text-xs ${elevated ? "text-amber-700" : "text-slate-500"}`}
+      title={`Effective role: ${roleLabel(effectiveRole)} (${reason})`}
+    >
+      Effective: <span className="font-medium">{roleLabel(effectiveRole)}</span> · {reason}
+    </span>
+  );
 }
 
 function GeneralAccessSection({ folderId, workspaceId }: { folderId: string; workspaceId: string }) {
