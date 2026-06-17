@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveWikiLinks } from "./document-editor";
+import { relatedDocLinksForValue, resolveWikiLinks } from "./obsidian-links";
 
 describe("Obsidian markdown compatibility", () => {
   const tree = {
@@ -41,5 +41,18 @@ describe("Obsidian markdown compatibility", () => {
     expect(resolveWikiLinks("See [[Missing]]\n![[diagram.png|Diagram]]", "ws1", tree)).toBe(
       "See Missing\n![Diagram](diagram.png)",
     );
+  });
+
+  it("resolves frontmatter relatedDocs values to document links", () => {
+    expect(
+      relatedDocLinksForValue(
+        ["[[Runbook]]", "[[engineering/missing]]"],
+        "ws1",
+        tree,
+      ),
+    ).toEqual([
+      { target: "Runbook", label: "Runbook", href: "/w/ws1/p/engineering/runbook" },
+      { target: "engineering/missing", label: "engineering/missing", href: null },
+    ]);
   });
 });
