@@ -556,6 +556,13 @@ export const folderMoveSchema = z
   .strict();
 
 // Permissions
+//
+// Phase 4a: effectiveRole + effectiveSource expose what the resolver would
+// actually return for a user given everything that overrides the explicit
+// grant: workspace admin tier, folder defaultRole floor, workspace viewer-tier
+// cap. The dialog shows a "Effective: editor (via folder default)" badge only
+// when source !== "explicit", so the manager isn't misled when, e.g., they
+// demote a user but the folder defaultRole keeps them at editor.
 const permissionGranteeSchema = z
   .object({
     id: z.string(),
@@ -568,6 +575,8 @@ const permissionGranteeSchema = z
         z.object({ type: z.literal("group"), id: z.string(), name: z.string(), slug: z.string() }).strict(),
       ])
       .nullable(),
+    effectiveRole: roleSchema,
+    effectiveSource: z.enum(["explicit", "admin", "viewer_tier", "default_role"]),
   })
   .strict();
 

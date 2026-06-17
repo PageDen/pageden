@@ -5,7 +5,7 @@ import type { AuthContext } from "../auth.js";
 type DbClient = PrismaClient | Prisma.TransactionClient;
 import { prisma as defaultPrisma } from "../prisma.js";
 
-const RANK: Record<Role, number> = { viewer: 1, editor: 2, manager: 3 };
+export const RANK: Record<Role, number> = { viewer: 1, editor: 2, manager: 3 };
 
 /** Strongest role wins (no explicit deny in MVP). */
 export function strongest(roles: Role[]): Role | null {
