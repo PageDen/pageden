@@ -58,8 +58,10 @@ test("permissions UI: viewer is read-only, editor can save", async ({ page, brow
   await docRow.locator('summary[aria-label="More actions"]').click();
   await docRow.getByRole("button", { name: "Permissions" }).click();
   dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Subject", { exact: true }).selectOption({ label: memberEmail }); // role defaults to viewer
-  await dialog.getByRole("button", { name: "Add" }).click();
+  // Phase 1 unified picker (#70): type to filter, click the matching row.
+  // Role defaults to viewer; staged-with-Save flow unchanged.
+  await dialog.getByLabel("Add people, groups, or invite by email").fill(memberEmail);
+  await dialog.getByRole("option", { name: new RegExp(memberEmail) }).first().click();
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
