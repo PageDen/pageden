@@ -437,7 +437,17 @@ export const documentCreateSchema = z
   .strict();
 
 export const writeResultSchema = z
-  .object({ id: z.string(), version: z.string(), checksum: z.string(), updatedAt: iso })
+  .object({
+    id: z.string(),
+    version: z.string(),
+    checksum: z.string(),
+    updatedAt: iso,
+    // True when the write was deduplicated (identical content; only a
+    // title may have changed). Clients can use this to skip analytics
+    // emits for autosaves so "active days" / edit volume don't inflate.
+    // Optional for backwards compat with older server builds.
+    noOp: z.boolean().optional(),
+  })
   .strict();
 
 export const documentRenameSchema = z.object({ id: z.string(), path: z.string() }).strict();

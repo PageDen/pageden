@@ -385,12 +385,17 @@ async function runJob(jobId: string): Promise<void> {
         progress: { phase: "done", current: report.documentsCreated, total: report.documentsCreated, label: "Import complete" },
       },
     });
-    trackServerEvent("import_completed", job.workspaceId, {
-      documents_created: report.documentsCreated,
-      folders_created: report.foldersCreated,
-      attachments_uploaded: report.attachmentsUploaded,
-      change_source: "import",
-    });
+    trackServerEvent(
+      "import_completed",
+      job.workspaceId,
+      { userId: job.userId, tokenId: null },
+      {
+        documents_created: report.documentsCreated,
+        folders_created: report.foldersCreated,
+        attachments_uploaded: report.attachmentsUploaded,
+        change_source: "import",
+      },
+    );
   } catch (error) {
     await prisma.importJob
       .update({
