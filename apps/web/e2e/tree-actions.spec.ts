@@ -68,7 +68,7 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   // Playwright's strict-mode multi-match rejection.
   await openMenu(renamed, "Permissions");
   await expect(page.getByRole("dialog").locator("h2").getByText("Share")).toBeVisible();
-  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
   // Delete.

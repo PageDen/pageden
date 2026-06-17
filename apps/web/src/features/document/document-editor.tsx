@@ -14,7 +14,7 @@ import { documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
 import { useDocumentDraft } from "../../lib/draft";
 import { Button } from "../../components/ui/button";
 import { RichMarkdownEditor } from "./rich-markdown-editor";
-import { ShareDialog } from "./share-dialog";
+import { PermissionsDialog } from "../permissions/permissions-dialog";
 import { isAllowedEmbedSrc } from "./media";
 import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
@@ -375,10 +375,11 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         {!canEdit || preview ? <DocumentInsightsPanel content={previewContent} readiness={doc.aiReadiness} /> : null}
       </div>
       {shareOpen ? (
-        <ShareDialog
-          documentId={doc.id}
+        <PermissionsDialog
+          kind="document"
+          id={doc.id}
+          name={doc.title}
           workspaceId={workspaceId}
-          documentTitle={doc.title}
           onClose={() => setShareOpen(false)}
         />
       ) : null}

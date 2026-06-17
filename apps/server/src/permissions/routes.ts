@@ -106,6 +106,30 @@ function validatePermissions(input: unknown): { ok: true; value: Array<{ subject
   return { ok: true, value: [...bySubject.values()], version: version ?? null };
 }
 
+function validateSingleGrant(
+  input: unknown,
+): { ok: true; value: { subjectType: PermissionSubjectType; subjectId: string; role: PermissionRole } } | { ok: false; fields: Record<string, string> } {
+  if (!input || typeof input !== "object") {
+    return { ok: false, fields: { subjectId: "subjectId is required.", role: "Role is required." } };
+  }
+  const row = input as { subjectType?: unknown; subjectId?: unknown; role?: unknown };
+  const fields: Record<string, string> = {};
+  const subjectType = SUBJECT_TYPES.includes(row.subjectType as PermissionSubjectType) ? (row.subjectType as PermissionSubjectType) : null;
+  if (!subjectType) fields.subjectType = "subjectType must be 'user' or 'group'.";
+  const subjectId = typeof row.subjectId === "string" ? row.subjectId.trim() : "";
+  if (!subjectId) fields.subjectId = "subjectId is required.";
+  if (!ROLES.includes(row.role as PermissionRole)) fields.role = "Role must be viewer, editor, or manager.";
+  if (Object.keys(fields).length > 0) return { ok: false, fields };
+  return { ok: true, value: { subjectType: subjectType!, subjectId, role: row.role as PermissionRole } };
+}
+
+function validateRole(input: unknown): { ok: true; value: PermissionRole } | { ok: false; fields: Record<string, string> } {
+  if (!input || typeof input !== "object") return { ok: false, fields: { role: "Role is required." } };
+  const role = (input as { role?: unknown }).role;
+  if (!ROLES.includes(role as PermissionRole)) return { ok: false, fields: { role: "Role must be viewer, editor, or manager." } };
+  return { ok: true, value: role as PermissionRole };
+}
+
 function validateGrant(input: unknown): { ok: true; value: { email: string; role: PermissionRole } } | { ok: false; fields: Record<string, string> } {
   if (!input || typeof input !== "object") {
     return { ok: false, fields: { email: "Email is required.", role: "Role is required." } };
@@ -207,6 +231,184 @@ async function currentPermissionRows(
     orderBy: [{ userId: "asc" }, { groupId: "asc" }],
   });
   return rows;
+}
+
+// Result of a single-row permission write. Mirrors the verbose listPermissions
+// "subject" hydration so the dialog can rebuild its local state from the
+// response without a second round-trip.
+interface SingleGrantSubject {
+  id: string;
+  email?: string;
+  name: string;
+  slug?: string;
+}
+type SinglePermissionRow = {
+  id: string;
+  subjectType: "user" | "group";
+  subjectId: string;
+  role: PermissionRole;
+  subject: ({ type: "user" } & SingleGrantSubject) | ({ type: "group" } & SingleGrantSubject) | null;
+};
+type SinglePermissionOutcome =
+  | { ok: true; permission: SinglePermissionRow }
+  | { ok: false; status: "not_found" | "forbidden" | "duplicate" | "invalid_subject" };
+
+async function hydrateSingleRow(
+  workspaceId: string,
+  row: { id: string; userId: string | null; groupId: string | null; role: PermissionRole },
+): Promise<SinglePermissionRow> {
+  const userRow = row.userId
+    ? await prisma.user.findUnique({ where: { id: row.userId }, select: { id: true, email: true, name: true } })
+    : null;
+  const groupRow = row.groupId
+    ? await prisma.group.findFirst({ where: { id: row.groupId, workspaceId }, select: { id: true, name: true, slug: true } })
+    : null;
+  return {
+    id: row.id,
+    ...rowSubject(row),
+    role: row.role,
+    subject: userRow
+      ? { type: "user", id: userRow.id, email: userRow.email, name: userRow.name }
+      : groupRow
+        ? { type: "group", id: groupRow.id, name: groupRow.name, slug: groupRow.slug }
+        : null,
+  };
+}
+
+// Phase 3: per-row endpoints that drive optimistic UI updates. Each one runs
+// inside a transaction, re-checks the manager grant under the lock, and writes
+// an audit event. The bulk PUT route stays for tooling that wants to replace
+// the entire grant set at once.
+async function createSinglePermission(
+  workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+  body: { subjectType: PermissionSubjectType; subjectId: string; role: PermissionRole },
+  auth: AuthContext,
+): Promise<SinglePermissionOutcome> {
+  return prisma.$transaction(async (tx) => {
+    const az =
+      resourceType === "document"
+        ? await authorizeDocumentRole(auth, resourceId, "manager", tx)
+        : await authorizeFolderRole(auth, resourceId, "manager", tx);
+    if (!az.ok) return az;
+    const subjectError = await invalidSubject(workspaceId, [body]);
+    if (subjectError) return { ok: false, status: "invalid_subject" } as const;
+    const existing = await tx.permission.findFirst({
+      where: {
+        workspaceId,
+        resourceType,
+        resourceId,
+        ...(body.subjectType === "user" ? { userId: body.subjectId } : { groupId: body.subjectId }),
+      },
+      select: { id: true },
+    });
+    if (existing) return { ok: false, status: "duplicate" } as const;
+    const created = await tx.permission.create({
+      data: {
+        workspaceId,
+        resourceType,
+        resourceId,
+        userId: body.subjectType === "user" ? body.subjectId : null,
+        groupId: body.subjectType === "group" ? body.subjectId : null,
+        role: body.role,
+      },
+      select: { id: true, userId: true, groupId: true, role: true },
+    });
+    await writeAuditEvent(
+      {
+        workspaceId,
+        userId: auth.userId,
+        action: "permission_added",
+        targetType: resourceType,
+        targetId: resourceId,
+        metadata: { subjectType: body.subjectType, subjectId: body.subjectId, role: body.role },
+      },
+      tx,
+    );
+    return { ok: true as const, permission: await hydrateSingleRow(workspaceId, created) };
+  });
+}
+
+async function updateSinglePermission(
+  workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+  permissionId: string,
+  role: PermissionRole,
+  auth: AuthContext,
+): Promise<SinglePermissionOutcome> {
+  return prisma.$transaction(async (tx) => {
+    const az =
+      resourceType === "document"
+        ? await authorizeDocumentRole(auth, resourceId, "manager", tx)
+        : await authorizeFolderRole(auth, resourceId, "manager", tx);
+    if (!az.ok) return az;
+    const found = await tx.permission.findFirst({
+      where: { id: permissionId, workspaceId, resourceType, resourceId },
+      select: { id: true, userId: true, groupId: true, role: true },
+    });
+    if (!found) return { ok: false, status: "not_found" } as const;
+    if (found.role === role) {
+      return { ok: true as const, permission: await hydrateSingleRow(workspaceId, found) };
+    }
+    const updated = await tx.permission.update({
+      where: { id: permissionId },
+      data: { role },
+      select: { id: true, userId: true, groupId: true, role: true },
+    });
+    await writeAuditEvent(
+      {
+        workspaceId,
+        userId: auth.userId,
+        action: "permission_updated",
+        targetType: resourceType,
+        targetId: resourceId,
+        metadata: { permissionId, previousRole: found.role, role },
+      },
+      tx,
+    );
+    return { ok: true as const, permission: await hydrateSingleRow(workspaceId, updated) };
+  });
+}
+
+async function deleteSinglePermission(
+  workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+  permissionId: string,
+  auth: AuthContext,
+): Promise<{ ok: true } | { ok: false; status: "not_found" | "forbidden" }> {
+  return prisma.$transaction(async (tx) => {
+    const az =
+      resourceType === "document"
+        ? await authorizeDocumentRole(auth, resourceId, "manager", tx)
+        : await authorizeFolderRole(auth, resourceId, "manager", tx);
+    if (!az.ok) return az;
+    const found = await tx.permission.findFirst({
+      where: { id: permissionId, workspaceId, resourceType, resourceId },
+      select: { id: true, userId: true, groupId: true, role: true },
+    });
+    if (!found) return { ok: false, status: "not_found" } as const;
+    await tx.permission.delete({ where: { id: permissionId } });
+    await writeAuditEvent(
+      {
+        workspaceId,
+        userId: auth.userId,
+        action: "permission_removed",
+        targetType: resourceType,
+        targetId: resourceId,
+        metadata: {
+          permissionId,
+          subjectType: found.userId ? "user" : "group",
+          subjectId: found.userId ?? found.groupId ?? "",
+          role: found.role,
+        },
+      },
+      tx,
+    );
+    return { ok: true as const };
+  });
 }
 
 async function listPermissions(reply: FastifyReply, workspaceId: string, resourceType: PermissionResourceType, resourceId: string) {
@@ -552,6 +754,71 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
     return { ok: true, version: outcome.version };
   });
 
+  // Phase 3: per-row endpoints for optimistic UI mutations.
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/api/documents/:id/permissions",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!doc) return notFound(reply, "Document not found.");
+      const parsed = validateSingleGrant(request.body);
+      if (!parsed.ok) return validationError(reply, parsed.fields);
+      const outcome = await createSinglePermission(doc.workspaceId, "document", doc.id, parsed.value, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Document not found.");
+        if (outcome.status === "forbidden") return forbidden(reply);
+        if (outcome.status === "invalid_subject") return validationError(reply, { subjectId: "Subject is not part of this workspace." });
+        return reply.code(409).send({ error: "duplicate", message: "This subject already has an explicit grant." });
+      }
+      return reply.code(201).send({ ok: true, permission: outcome.permission });
+    },
+  );
+
+  app.patch<{ Params: { id: string; permissionId: string }; Body: unknown }>(
+    "/api/documents/:id/permissions/:permissionId",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!doc) return notFound(reply, "Document not found.");
+      const role = validateRole(request.body);
+      if (!role.ok) return validationError(reply, role.fields);
+      const outcome = await updateSinglePermission(doc.workspaceId, "document", doc.id, request.params.permissionId, role.value, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Permission not found.");
+        if (outcome.status === "forbidden") return forbidden(reply);
+        return notFound(reply, "Permission not found.");
+      }
+      return { ok: true, permission: outcome.permission };
+    },
+  );
+
+  app.delete<{ Params: { id: string; permissionId: string } }>(
+    "/api/documents/:id/permissions/:permissionId",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const doc = await prisma.document.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!doc) return notFound(reply, "Document not found.");
+      const outcome = await deleteSinglePermission(doc.workspaceId, "document", doc.id, request.params.permissionId, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Permission not found.");
+        return forbidden(reply);
+      }
+      return { ok: true };
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: unknown }>(
     "/api/documents/:id/permissions/grant",
     { config: { rateLimit: { max: Number(process.env.PERMISSION_GRANT_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
@@ -638,6 +905,70 @@ export async function registerPermissionRoutes(app: FastifyInstance): Promise<vo
     }
     return { ok: true, version: outcome.version };
   });
+
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/api/folders/:id/permissions",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const folder = await prisma.folder.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!folder) return notFound(reply, "Folder not found.");
+      const parsed = validateSingleGrant(request.body);
+      if (!parsed.ok) return validationError(reply, parsed.fields);
+      const outcome = await createSinglePermission(folder.workspaceId, "folder", folder.id, parsed.value, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Folder not found.");
+        if (outcome.status === "forbidden") return forbidden(reply);
+        if (outcome.status === "invalid_subject") return validationError(reply, { subjectId: "Subject is not part of this workspace." });
+        return reply.code(409).send({ error: "duplicate", message: "This subject already has an explicit grant." });
+      }
+      return reply.code(201).send({ ok: true, permission: outcome.permission });
+    },
+  );
+
+  app.patch<{ Params: { id: string; permissionId: string }; Body: unknown }>(
+    "/api/folders/:id/permissions/:permissionId",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const folder = await prisma.folder.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!folder) return notFound(reply, "Folder not found.");
+      const role = validateRole(request.body);
+      if (!role.ok) return validationError(reply, role.fields);
+      const outcome = await updateSinglePermission(folder.workspaceId, "folder", folder.id, request.params.permissionId, role.value, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Permission not found.");
+        if (outcome.status === "forbidden") return forbidden(reply);
+        return notFound(reply, "Permission not found.");
+      }
+      return { ok: true, permission: outcome.permission };
+    },
+  );
+
+  app.delete<{ Params: { id: string; permissionId: string } }>(
+    "/api/folders/:id/permissions/:permissionId",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const folder = await prisma.folder.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!folder) return notFound(reply, "Folder not found.");
+      const outcome = await deleteSinglePermission(folder.workspaceId, "folder", folder.id, request.params.permissionId, auth);
+      if (!outcome.ok) {
+        if (outcome.status === "not_found") return notFound(reply, "Permission not found.");
+        return forbidden(reply);
+      }
+      return { ok: true };
+    },
+  );
 
   app.post<{ Params: { id: string }; Body: unknown }>(
     "/api/folders/:id/permissions/grant",

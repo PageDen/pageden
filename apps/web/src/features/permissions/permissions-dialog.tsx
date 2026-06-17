@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Clipboard, Link2, Trash2 } from "lucide-react";
 import { api, crudErrorMessage, type PermissionInput } from "../../lib/api";
 import { groupsQuery, treeQuery, usersQuery } from "../../lib/queries";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { PasswordInput } from "../../components/ui/password-input";
 import { PeopleCombobox, type ComboboxRole } from "../../components/ui/people-combobox";
 
 type DefaultRole = "viewer" | "editor" | "manager" | null;
@@ -27,7 +30,7 @@ export function PermissionsDialog({
   const current = useQuery({
     queryKey: ["permissions", kind, id],
     queryFn: () => (kind === "document" ? api.documentPermissions(id) : api.folderPermissions(id)),
-    // Always load fresh so a manager never edits/PUTs a stale cached grant set.
+    // Always load fresh so a manager never edits a stale grant set.
     refetchOnMount: "always",
     staleTime: 0,
   });
@@ -35,20 +38,15 @@ export function PermissionsDialog({
   const groups = useQuery({ ...groupsQuery(workspaceId), retry: false });
   const tree = useQuery({ ...treeQuery(workspaceId), staleTime: 30_000 });
 
-  const [rows, setRows] = useState<PermissionInput[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  // Shared role for the combobox — covers both "add an existing user/group"
-  // and "invite by email" branches. Reset to viewer after each invite.
   const [pickerRole, setPickerRole] = useState<ComboboxRole>("viewer");
 
-  // Initialise the editable list from the server once loaded.
-  const editable: PermissionInput[] =
-    rows ?? (current.data?.permissions.map((p) => ({ subjectType: p.subjectType, subjectId: p.subjectId, role: p.role })) ?? []);
-
+  const explicit = current.data?.permissions ?? [];
   const inherited = current.data?.inheritedPermissions ?? [];
+
   const subjectDetails = new Map([
-    ...(current.data?.permissions ?? []).map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const),
+    ...explicit.map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const),
     ...inherited.map((p) => [`${p.subjectType}:${p.subjectId}`, p.subject] as const),
   ]);
   const userName = (uid: string) => users.data?.users.find((u) => u.id === uid)?.email ?? uid;
@@ -60,36 +58,23 @@ export function PermissionsDialog({
     return subjectType === "user" ? userName(subjectId) : `group: ${groupName(subjectId)}`;
   };
 
-  const save = useMutation({
-    mutationFn: () =>
-      kind === "document"
-        ? api.setDocumentPermissions(id, editable, current.data?.version)
-        : api.setFolderPermissions(id, editable, current.data?.version),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["permissions", kind, id] });
-      // Permission changes affect tree visibility + document access.
-      void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "tree" || q.queryKey[0] === "document" });
-      onClose();
-    },
-    onError: (e) => {
-      setError(crudErrorMessage(e));
-      void current.refetch();
-    },
-  });
+  function invalidate() {
+    void queryClient.invalidateQueries({ queryKey: ["permissions", kind, id] });
+    void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "tree" || q.queryKey[0] === "document" });
+  }
 
-  const share = useMutation({
+  // Optimistic mutations — each row write fires its own targeted endpoint and
+  // refetches on success. The Save button is gone; "Done" simply closes.
+  const addByEmail = useMutation({
     mutationFn: (vars: { email: string; role: PermissionInput["role"] }) =>
       kind === "document"
         ? api.grantDocumentPermission(id, vars)
         : api.grantFolderPermission(id, vars),
     onSuccess: (result) => {
-      setRows(null);
       setError(null);
       setNotice(`Shared with ${result.user.email}.`);
-      void queryClient.invalidateQueries({ queryKey: ["permissions", kind, id] });
       void queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey });
-      void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "tree" || q.queryKey[0] === "document" });
-      void current.refetch();
+      invalidate();
     },
     onError: (e) => {
       setNotice(null);
@@ -97,21 +82,53 @@ export function PermissionsDialog({
     },
   });
 
-  function update(next: PermissionInput[]) {
-    setRows(next);
-  }
+  const addBySubject = useMutation({
+    mutationFn: (vars: { subjectType: "user" | "group"; subjectId: string; role: PermissionInput["role"] }) =>
+      kind === "document" ? api.addDocumentPermission(id, vars) : api.addFolderPermission(id, vars),
+    onSuccess: () => {
+      setError(null);
+      setNotice(null);
+      invalidate();
+    },
+    onError: (e) => setError(crudErrorMessage(e)),
+  });
+
+  const updateRole = useMutation({
+    mutationFn: (vars: { permissionId: string; role: PermissionInput["role"] }) =>
+      kind === "document"
+        ? api.updateDocumentPermission(id, vars.permissionId, vars.role)
+        : api.updateFolderPermission(id, vars.permissionId, vars.role),
+    onSuccess: () => {
+      setError(null);
+      invalidate();
+    },
+    onError: (e) => {
+      setError(crudErrorMessage(e));
+      void current.refetch();
+    },
+  });
+
+  const removeRow = useMutation({
+    mutationFn: (permissionId: string) =>
+      kind === "document"
+        ? api.removeDocumentPermission(id, permissionId)
+        : api.removeFolderPermission(id, permissionId),
+    onSuccess: () => {
+      setError(null);
+      invalidate();
+    },
+    onError: (e) => {
+      setError(crudErrorMessage(e));
+      void current.refetch();
+    },
+  });
 
   function addExistingFromCombobox(subjectType: "user" | "group", subjectId: string) {
-    if (editable.some((r) => r.subjectType === subjectType && r.subjectId === subjectId)) return;
-    update([...editable, { subjectType, subjectId, role: pickerRole }]);
-    setNotice(null);
-    setError(null);
+    if (explicit.some((r) => r.subjectType === subjectType && r.subjectId === subjectId)) return;
+    addBySubject.mutate({ subjectType, subjectId, role: pickerRole });
   }
-
   function inviteFromCombobox(email: string) {
-    setNotice(null);
-    setError(null);
-    share.mutate({ email, role: pickerRole });
+    addByEmail.mutate({ email, role: pickerRole });
   }
 
   // For a document, find the parent folder so we can render
@@ -137,7 +154,7 @@ export function PermissionsDialog({
       onClose={onClose}
       size="lg"
     >
-      {current.isFetching && rows === null ? (
+      {current.isFetching && current.data === undefined ? (
         <p className="text-sm text-slate-400">Loading…</p>
       ) : current.isError ? (
         <p className="text-sm text-slate-500">{crudErrorMessage(current.error)}</p>
@@ -152,57 +169,68 @@ export function PermissionsDialog({
           <PeopleCombobox
             users={users.data?.users ?? []}
             groups={groups.data?.groups ?? []}
-            existing={editable}
+            existing={explicit}
             role={pickerRole}
             onRoleChange={setPickerRole}
             onAddExisting={addExistingFromCombobox}
             onInviteEmail={inviteFromCombobox}
-            isInviting={share.isPending}
+            isInviting={addByEmail.isPending || addBySubject.isPending}
             helper={`Type a name to add an existing member, or paste an email to invite a guest of this ${kind}.`}
           />
 
           <div className="space-y-2">
             <div>
               <h3 className="text-sm font-medium text-slate-700">People with access</h3>
-              <p className="mt-1 text-xs text-slate-500">Managers can update or remove explicit grants below.</p>
+              <p className="mt-1 text-xs text-slate-500">Changes take effect immediately.</p>
             </div>
             <ul className="space-y-2">
-              {editable.length === 0 ? <li className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-400">No explicit grants.</li> : null}
-              {editable.map((r, i) => (
-                <li key={`${r.subjectType}:${r.subjectId}`} className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center">
-                  <span className="min-w-0 truncate">{subjectLabel(r.subjectType, r.subjectId)}</span>
+              {explicit.length === 0 ? (
+                <li className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-400">No explicit grants.</li>
+              ) : null}
+              {explicit.map((row) => (
+                <li
+                  key={row.id}
+                  className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center"
+                >
+                  <span className="min-w-0 truncate">{subjectLabel(row.subjectType, row.subjectId)}</span>
                   <select
                     aria-label="Role"
                     className="rounded-md border border-slate-300 px-2 py-2 text-sm"
-                    value={r.role}
-                    onChange={(e) => {
-                      const next = [...editable];
-                      next[i] = { ...r, role: e.target.value as PermissionInput["role"] };
-                      update(next);
-                    }}
+                    value={row.role}
+                    onChange={(e) =>
+                      updateRole.mutate({ permissionId: row.id, role: e.target.value as PermissionInput["role"] })
+                    }
+                    disabled={updateRole.isPending && updateRole.variables?.permissionId === row.id}
                   >
                     <option value="viewer">Viewer</option>
                     <option value="editor">Editor</option>
                     <option value="manager">Manager</option>
                   </select>
-                  <Button variant="ghost" className="justify-self-start sm:justify-self-end" onClick={() => update(editable.filter((_, j) => j !== i))}>Remove</Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-self-start sm:justify-self-end"
+                    onClick={() => removeRow.mutate(row.id)}
+                    disabled={removeRow.isPending && removeRow.variables === row.id}
+                  >
+                    Remove
+                  </Button>
                 </li>
               ))}
             </ul>
           </div>
 
           {inherited.length > 0 ? (
-            <InheritedSection
-              inherited={inherited}
-              subjectLabel={subjectLabel}
-            />
+            <InheritedSection inherited={inherited} subjectLabel={subjectLabel} />
+          ) : null}
+
+          {kind === "document" ? (
+            <PublicLinkSection documentId={id} workspaceId={workspaceId} />
           ) : null}
 
           {notice ? <p className="text-sm text-emerald-700">{notice}</p> : null}
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
           <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-            <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button onClick={() => save.mutate()} disabled={save.isPending || current.isFetching}>{save.isPending ? "Saving…" : "Save"}</Button>
+            <Button onClick={onClose}>Done</Button>
           </div>
         </div>
       )}
@@ -210,9 +238,6 @@ export function PermissionsDialog({
   );
 }
 
-// Read-only subsection rendering grants inherited from an ancestor folder.
-// Grouped by source folder so the path appears once per ancestor instead of
-// once per row. Roles are non-editable: the rule lives upstream.
 function InheritedSection({
   inherited,
   subjectLabel,
@@ -220,7 +245,6 @@ function InheritedSection({
   inherited: NonNullable<Awaited<ReturnType<typeof api.folderPermissions>>["inheritedPermissions"]>;
   subjectLabel: (subjectType: "user" | "group", subjectId: string) => string;
 }) {
-  // Stable grouping by folder so rows from the same ancestor sit together.
   const groups = new Map<string, typeof inherited>();
   for (const row of inherited) {
     const key = row.inheritedFrom.folderId;
@@ -251,9 +275,7 @@ function InheritedSection({
                     className="grid gap-2 rounded-md border border-dashed border-slate-200 bg-slate-50 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
                   >
                     <span className="min-w-0 truncate text-slate-600">{subjectLabel(row.subjectType, row.subjectId)}</span>
-                    <span className="text-xs text-slate-500">
-                      {roleLabel(row.role)} · inherited
-                    </span>
+                    <span className="text-xs text-slate-500">{roleLabel(row.role)} · inherited</span>
                   </li>
                 ))}
               </ul>
@@ -271,9 +293,6 @@ function roleLabel(role: "viewer" | "editor" | "manager"): string {
   return "Manager";
 }
 
-// Folder default-role floor lives at the top of the dialog as "General access"
-// because it frames the entire share decision: is this folder private (explicit
-// grants only) or workspace-wide? Guest memberships are still unaffected.
 function GeneralAccessSection({ folderId, workspaceId }: { folderId: string; workspaceId: string }) {
   const queryClient = useQueryClient();
   const tree = useQuery({ ...treeQuery(workspaceId), staleTime: 30_000 });
@@ -282,7 +301,6 @@ function GeneralAccessSection({ folderId, workspaceId }: { folderId: string; wor
   const [value, setValue] = useState<DefaultRole>(serverValue);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-sync the local picker if the tree refetches with a different value.
   useEffect(() => {
     setValue(serverValue);
   }, [serverValue]);
@@ -327,9 +345,6 @@ function GeneralAccessSection({ folderId, workspaceId }: { folderId: string; wor
   );
 }
 
-// Documents don't carry a default-role themselves — they inherit from the
-// folder they live in. Surface that explicitly so a manager doesn't wonder
-// where the General access picker went.
 function DocumentInheritsFromSection({ folderName, folderPath }: { folderName: string; folderPath: string }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm">
@@ -341,4 +356,180 @@ function DocumentInheritsFromSection({ folderName, folderPath }: { folderName: s
       </p>
     </div>
   );
+}
+
+// Phase 3: public-link sharing folded into the same dialog as the per-user
+// grants. Documents only — folders don't yet have a public-link concept.
+function PublicLinkSection({ documentId, workspaceId }: { documentId: string; workspaceId: string }) {
+  const queryClient = useQueryClient();
+  const sharesKey = ["document-shares", documentId];
+  const shares = useQuery({
+    queryKey: sharesKey,
+    queryFn: () => api.listShares(workspaceId, { documentId, includeRevoked: false }),
+    refetchOnMount: "always",
+    staleTime: 0,
+  });
+
+  const [password, setPassword] = useState("");
+  const [ttlDays, setTtlDays] = useState<string>("");
+  const [allowIndexing, setAllowIndexing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const create = useMutation({
+    mutationFn: () =>
+      api.createShare(documentId, {
+        password: password.trim() ? password : null,
+        allowIndexing,
+        ttlDays: ttlDays.trim() ? Number(ttlDays) : undefined,
+      }),
+    onSuccess: () => {
+      setError(null);
+      setPassword("");
+      setTtlDays("");
+      setAllowIndexing(false);
+      setCreating(false);
+      void queryClient.invalidateQueries({ queryKey: sharesKey });
+    },
+    onError: (err) => setError(crudErrorMessage(err)),
+  });
+
+  const revoke = useMutation({
+    mutationFn: (shareId: string) => api.revokeShare(shareId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: sharesKey }),
+    onError: (err) => setError(crudErrorMessage(err)),
+  });
+
+  async function copy(slug: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(shareUrl(slug));
+      setCopiedSlug(slug);
+      window.setTimeout(() => setCopiedSlug((s) => (s === slug ? null : s)), 1500);
+    } catch {
+      // Clipboard may be blocked (insecure origin); the URL is still selectable.
+    }
+  }
+
+  const active = (shares.data?.shares ?? []).filter((s) => s.active);
+
+  return (
+    <div className="space-y-2 border-t border-slate-200 pt-3">
+      <div>
+        <h3 className="text-sm font-medium text-slate-700">Public link</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Share a read-only view with anyone who has the link. No PageDen account required.
+        </p>
+      </div>
+      {shares.isLoading ? (
+        <p className="text-sm text-slate-400">Loading…</p>
+      ) : shares.isError ? (
+        <p className="text-sm text-slate-500">{crudErrorMessage(shares.error)}</p>
+      ) : active.length === 0 && !creating ? (
+        <div className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 text-sm">
+          <span className="text-slate-500">No active link.</span>
+          <Button variant="ghost" onClick={() => setCreating(true)}>
+            Create link
+          </Button>
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {active.map((share) => (
+            <li key={share.id} className="rounded-md border border-slate-200 p-3 text-sm">
+              <div className="flex items-center gap-2">
+                <Link2 size={14} className="shrink-0 text-slate-400" />
+                <Input value={shareUrl(share.slug)} readOnly className="h-9 flex-1" onFocus={(e) => e.currentTarget.select()} />
+                <Button
+                  variant="ghost"
+                  className="h-9 shrink-0 gap-1.5 px-2.5"
+                  onClick={() => void copy(share.slug)}
+                  title="Copy link"
+                >
+                  {copiedSlug === share.slug ? <Check size={14} /> : <Clipboard size={14} />}
+                  {copiedSlug === share.slug ? "Copied" : "Copy"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-9 shrink-0 gap-1.5 px-2.5 text-red-600 hover:bg-red-50"
+                  onClick={() => revoke.mutate(share.id)}
+                  disabled={revoke.isPending}
+                  title="Revoke link"
+                >
+                  <Trash2 size={14} />
+                  Revoke
+                </Button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                <span>{formatExpiry(share.expiresAt)}</span>
+                {share.hasPassword ? <span className="text-amber-700">· Password required</span> : null}
+                {share.allowIndexing ? <span>· Indexable</span> : <span>· No-index</span>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {creating || active.length > 0 ? (
+        <details className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3" open={creating}>
+          <summary className="cursor-pointer text-sm font-medium text-slate-700">
+            {active.length === 0 ? "New link options" : "Add another link"}
+          </summary>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-500">Password (optional)</span>
+              <PasswordInput
+                aria-label="Share password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Leave blank for no password"
+              />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-500">Expires after (days, optional)</span>
+              <Input
+                aria-label="Expires after days"
+                type="number"
+                min={1}
+                max={365}
+                value={ttlDays}
+                onChange={(e) => setTtlDays(e.target.value)}
+                placeholder="Never"
+              />
+            </label>
+          </div>
+          <label className="mt-2 flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={allowIndexing}
+              onChange={(e) => setAllowIndexing(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Allow search engines to index this link
+          </label>
+          {error ? <p className="mt-1 text-sm text-red-600">{error}</p> : null}
+          <div className="mt-2 flex justify-end gap-2">
+            {active.length > 0 ? (
+              <Button variant="ghost" onClick={() => setCreating(false)}>
+                Cancel
+              </Button>
+            ) : null}
+            <Button onClick={() => create.mutate()} disabled={create.isPending}>
+              {create.isPending ? "Creating…" : "Create link"}
+            </Button>
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function shareUrl(slug: string): string {
+  const base = typeof window !== "undefined" ? window.location.origin : "";
+  return `${base}/s/${slug}`;
+}
+
+function formatExpiry(value: string | null): string {
+  if (!value) return "Never expires";
+  const date = new Date(value);
+  return `Expires ${date.toLocaleString()}`;
 }

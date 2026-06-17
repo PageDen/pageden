@@ -18,7 +18,9 @@ import {
   groupCreateSchema,
   groupsListSchema,
   permissionsListSchema,
+  permissionDeleteResponseSchema,
   permissionGrantSchema,
+  permissionRowResponseSchema,
   permissionsWriteSchema,
   relatedDocsSchema,
   folderDefaultRoleSchema,
@@ -371,12 +373,45 @@ export const api = {
     request("POST", `/documents/${encodeURIComponent(id)}/permissions/grant`, { body, schema: permissionGrantSchema }),
   setDocumentPermissions: (id: string, permissions: PermissionInput[], version?: string) =>
     request("PUT", `/documents/${encodeURIComponent(id)}/permissions`, { body: { permissions, version }, schema: permissionsWriteSchema }),
+  // Phase 3: per-row mutations drive optimistic UI without the bulk PUT.
+  addDocumentPermission: (
+    id: string,
+    body: { subjectType: "user" | "group"; subjectId: string; role: PermissionInput["role"] },
+  ) => request("POST", `/documents/${encodeURIComponent(id)}/permissions`, { body, schema: permissionRowResponseSchema }),
+  updateDocumentPermission: (id: string, permissionId: string, role: PermissionInput["role"]) =>
+    request(
+      "PATCH",
+      `/documents/${encodeURIComponent(id)}/permissions/${encodeURIComponent(permissionId)}`,
+      { body: { role }, schema: permissionRowResponseSchema },
+    ),
+  removeDocumentPermission: (id: string, permissionId: string) =>
+    request(
+      "DELETE",
+      `/documents/${encodeURIComponent(id)}/permissions/${encodeURIComponent(permissionId)}`,
+      { schema: permissionDeleteResponseSchema },
+    ),
   folderPermissions: (id: string) =>
     request("GET", `/folders/${encodeURIComponent(id)}/permissions`, { schema: permissionsListSchema }),
   grantFolderPermission: (id: string, body: { email: string; role: PermissionInput["role"] }) =>
     request("POST", `/folders/${encodeURIComponent(id)}/permissions/grant`, { body, schema: permissionGrantSchema }),
   setFolderPermissions: (id: string, permissions: PermissionInput[], version?: string) =>
     request("PUT", `/folders/${encodeURIComponent(id)}/permissions`, { body: { permissions, version }, schema: permissionsWriteSchema }),
+  addFolderPermission: (
+    id: string,
+    body: { subjectType: "user" | "group"; subjectId: string; role: PermissionInput["role"] },
+  ) => request("POST", `/folders/${encodeURIComponent(id)}/permissions`, { body, schema: permissionRowResponseSchema }),
+  updateFolderPermission: (id: string, permissionId: string, role: PermissionInput["role"]) =>
+    request(
+      "PATCH",
+      `/folders/${encodeURIComponent(id)}/permissions/${encodeURIComponent(permissionId)}`,
+      { body: { role }, schema: permissionRowResponseSchema },
+    ),
+  removeFolderPermission: (id: string, permissionId: string) =>
+    request(
+      "DELETE",
+      `/folders/${encodeURIComponent(id)}/permissions/${encodeURIComponent(permissionId)}`,
+      { schema: permissionDeleteResponseSchema },
+    ),
   setFolderDefaultRole: (id: string, defaultRole: "viewer" | "editor" | "manager" | null) =>
     request("PUT", `/folders/${encodeURIComponent(id)}/default-role`, { body: { defaultRole }, schema: folderDefaultRoleSchema }),
   // --- shares (Phase A2) ---

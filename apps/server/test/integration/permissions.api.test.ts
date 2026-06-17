@@ -211,6 +211,99 @@ describe("permission endpoints", () => {
     });
   });
 
+  it("POST /documents/:id/permissions adds a single grant by subject id", async () => {
+    const s = await baseScenario();
+    const u = await createUser("rowadd@t.co");
+    await addMember(s.ws.id, u.id, "member");
+    const post = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions`,
+      cookies: s.adminCookie,
+      payload: { subjectType: "user", subjectId: u.id, role: "viewer" },
+    });
+    expect(post.statusCode).toBe(201);
+    expect(post.json()).toMatchObject({
+      ok: true,
+      permission: { subjectType: "user", subjectId: u.id, role: "viewer" },
+    });
+    const list = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    expect(list.json().permissions).toHaveLength(1);
+  });
+
+  it("POST /documents/:id/permissions rejects a duplicate subject with 409", async () => {
+    const s = await baseScenario();
+    const u = await createUser("dup@t.co");
+    await addMember(s.ws.id, u.id, "member");
+    await grant(s.ws.id, "user", u.id, "document", s.docId, "viewer");
+    const post = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions`,
+      cookies: s.adminCookie,
+      payload: { subjectType: "user", subjectId: u.id, role: "editor" },
+    });
+    expect(post.statusCode).toBe(409);
+  });
+
+  it("PATCH /documents/:id/permissions/:permId changes the role", async () => {
+    const s = await baseScenario();
+    const u = await createUser("patch@t.co");
+    await addMember(s.ws.id, u.id, "member");
+    const seed = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions`,
+      cookies: s.adminCookie,
+      payload: { subjectType: "user", subjectId: u.id, role: "viewer" },
+    });
+    const permissionId = seed.json().permission.id as string;
+    const patch = await req({
+      method: "PATCH",
+      url: `/api/documents/${s.docId}/permissions/${permissionId}`,
+      cookies: s.adminCookie,
+      payload: { role: "manager" },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json()).toMatchObject({ ok: true, permission: { role: "manager" } });
+  });
+
+  it("DELETE /documents/:id/permissions/:permId removes the grant", async () => {
+    const s = await baseScenario();
+    const u = await createUser("delperm@t.co");
+    await addMember(s.ws.id, u.id, "member");
+    const seed = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions`,
+      cookies: s.adminCookie,
+      payload: { subjectType: "user", subjectId: u.id, role: "viewer" },
+    });
+    const permissionId = seed.json().permission.id as string;
+    const del = await req({
+      method: "DELETE",
+      url: `/api/documents/${s.docId}/permissions/${permissionId}`,
+      cookies: s.adminCookie,
+    });
+    expect(del.statusCode).toBe(200);
+    expect(del.json()).toEqual({ ok: true });
+    const list = await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: s.adminCookie });
+    expect(list.json().permissions).toHaveLength(0);
+  });
+
+  it("rejects per-row endpoints from non-managers", async () => {
+    const s = await baseScenario();
+    const target = await createUser("perm-target@t.co");
+    await addMember(s.ws.id, target.id, "member");
+    const editor = await createUser("perm-editor@t.co");
+    await addMember(s.ws.id, editor.id, "member");
+    await grant(s.ws.id, "user", editor.id, "document", s.docId, "editor");
+
+    const post = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/permissions`,
+      cookies: sessionFor(editor.id),
+      payload: { subjectType: "user", subjectId: target.id, role: "viewer" },
+    });
+    expect(post.statusCode).toBe(403);
+  });
+
   it("does not double-surface a subject that also has an explicit grant", async () => {
     const s = await baseScenario();
     const dual = await createUser("dual@t.co", "Dual");
