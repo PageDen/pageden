@@ -13,6 +13,7 @@ import { ApiError } from "../../lib/api";
 import { formatDateTime } from "../../lib/format";
 import { documentReadablePath } from "../../lib/document-links";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
+import { track } from "../../lib/analytics-bus";
 
 type HistoryEntry = (RevisionSummary | CollapsedRevisionSummary) & { groupCount?: number };
 type ViewMode = "preview" | "changes";
@@ -68,9 +69,10 @@ export function RevisionHistory() {
 
   const restore = useMutation({
     mutationFn: (revisionId: string) => api.restoreRevision(documentId, revisionId),
-    onSuccess: () => {
+    onSuccess: (_data, revisionId) => {
       queryClient.removeQueries({ queryKey: documentQuery(documentId).queryKey });
       queryClient.removeQueries({ queryKey: documentHistoryQuery(documentId).queryKey });
+      track("document_restored", { doc_id: documentId, revision_id: revisionId });
       void navigate({ to: doc.data?.path ? documentReadablePath(workspaceId, doc.data.path) : `/w/${encodeURIComponent(workspaceId)}/d/${encodeURIComponent(documentId)}` });
     },
   });
