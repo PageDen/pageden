@@ -210,9 +210,23 @@ async function currentPermissionRows(
 }
 
 async function listPermissions(reply: FastifyReply, workspaceId: string, resourceType: PermissionResourceType, resourceId: string) {
-  const permissions = await currentPermissionRows(prisma, workspaceId, resourceType, resourceId);
-  const userIds = permissions.flatMap((permission) => (permission.userId ? [permission.userId] : []));
-  const groupIds = permissions.flatMap((permission) => (permission.groupId ? [permission.groupId] : []));
+  const [permissions, inheritedRows] = await Promise.all([
+    currentPermissionRows(prisma, workspaceId, resourceType, resourceId),
+    inheritedPermissionRows(prisma, workspaceId, resourceType, resourceId),
+  ]);
+  // Dedupe inherited rows whose subject already appears explicitly on this
+  // resource — the closer explicit grant wins, and the dialog shouldn't show
+  // both for the same person.
+  const explicitKeys = new Set(
+    permissions.map((row) => `${row.userId ? "user" : "group"}:${row.userId ?? row.groupId ?? ""}`),
+  );
+  const filteredInherited = inheritedRows.filter((row) => {
+    const key = `${row.userId ? "user" : "group"}:${row.userId ?? row.groupId ?? ""}`;
+    return !explicitKeys.has(key);
+  });
+
+  const userIds = [...permissions, ...filteredInherited].flatMap((p) => (p.userId ? [p.userId] : []));
+  const groupIds = [...permissions, ...filteredInherited].flatMap((p) => (p.groupId ? [p.groupId] : []));
   const [users, groups] = await Promise.all([
     userIds.length > 0
       ? prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true, name: true } })
@@ -223,11 +237,8 @@ async function listPermissions(reply: FastifyReply, workspaceId: string, resourc
   ]);
   const usersById = new Map(users.map((user) => [user.id, user]));
   const groupsById = new Map(groups.map((group) => [group.id, group]));
-  const withSubject = permissions.map((permission) => ({
-    id: permission.id,
-    ...rowSubject(permission),
-    role: permission.role,
-    subject: permission.userId
+  const buildSubject = (permission: { userId: string | null; groupId: string | null }) =>
+    permission.userId
       ? usersById.has(permission.userId)
         ? { type: "user" as const, ...usersById.get(permission.userId)! }
         : null
@@ -235,12 +246,122 @@ async function listPermissions(reply: FastifyReply, workspaceId: string, resourc
         ? groupsById.has(permission.groupId)
           ? { type: "group" as const, ...groupsById.get(permission.groupId)! }
           : null
-        : null,
+        : null;
+
+  const withSubject = permissions.map((permission) => ({
+    id: permission.id,
+    ...rowSubject(permission),
+    role: permission.role,
+    subject: buildSubject(permission),
+  }));
+  const inheritedWithSubject = filteredInherited.map((row) => ({
+    id: row.id,
+    ...rowSubject(row),
+    role: row.role,
+    subject: buildSubject(row),
+    inheritedFrom: { folderId: row.folderId, folderPath: row.folderPath, folderName: row.folderName },
   }));
   return reply.send({
     version: permissionVersion(withSubject),
     permissions: withSubject,
+    inheritedPermissions: inheritedWithSubject,
   });
+}
+
+interface InheritedRow {
+  id: string;
+  userId: string | null;
+  groupId: string | null;
+  role: PermissionRole;
+  folderId: string;
+  folderName: string;
+  folderPath: string;
+}
+
+// Walk ancestor folders and return the explicit Permission rows attached to
+// each one, tagged with the source folder so the share dialog can render
+// "Inherited from /Retirement". For a document we start at its own folder
+// (grants on that folder cascade down to the document); for a folder we start
+// at its parent (a folder's own grants are not "inherited").
+//
+// If a subject (user or group) has grants on multiple ancestor levels, only
+// the closest one is returned — that mirrors how `documentRole` /
+// `folderRole` already pick the closest grant when computing the effective
+// role, and avoids cluttering the dialog with three duplicate rows.
+async function inheritedPermissionRows(
+  client: Prisma.TransactionClient | typeof prisma,
+  workspaceId: string,
+  resourceType: PermissionResourceType,
+  resourceId: string,
+): Promise<InheritedRow[]> {
+  let startFolderId: string | null;
+  if (resourceType === "document") {
+    const doc = await client.document.findFirst({
+      where: { id: resourceId, deletedAt: null, workspaceId },
+      select: { folderId: true },
+    });
+    startFolderId = doc?.folderId ?? null;
+  } else {
+    const folder = await client.folder.findFirst({
+      where: { id: resourceId, deletedAt: null, workspaceId },
+      select: { parentFolderId: true },
+    });
+    startFolderId = folder?.parentFolderId ?? null;
+  }
+  if (!startFolderId) return [];
+
+  // Walk ancestors in closest-first order. Capped at 64 levels of nesting so a
+  // pathological cycle (shouldn't happen — we guard at create/move time) can
+  // never stall this endpoint.
+  const ancestorIds: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null = startFolderId;
+  for (let depth = 0; current && !seen.has(current) && depth < 64; depth += 1) {
+    seen.add(current);
+    const folder: { id: string; parentFolderId: string | null } | null = await client.folder.findFirst({
+      where: { id: current, deletedAt: null, workspaceId },
+      select: { id: true, parentFolderId: true },
+    });
+    if (!folder) break;
+    ancestorIds.push(folder.id);
+    current = folder.parentFolderId;
+  }
+  if (ancestorIds.length === 0) return [];
+
+  const [ancestorRows, permRows] = await Promise.all([
+    client.folder.findMany({
+      where: { id: { in: ancestorIds }, deletedAt: null, workspaceId },
+      select: { id: true, name: true, path: true },
+    }),
+    client.permission.findMany({
+      where: { workspaceId, resourceType: "folder", resourceId: { in: ancestorIds } },
+      select: { id: true, userId: true, groupId: true, role: true, resourceId: true },
+      orderBy: [{ userId: "asc" }, { groupId: "asc" }],
+    }),
+  ]);
+  const ancestorInfo = new Map(ancestorRows.map((row) => [row.id, row]));
+
+  // Walk in closest-first order; the first grant for each subject wins.
+  const closest = new Map<string, InheritedRow>();
+  for (const folderId of ancestorIds) {
+    const folder = ancestorInfo.get(folderId);
+    if (!folder) continue;
+    for (const row of permRows) {
+      if (row.resourceId !== folderId) continue;
+      const key = `${row.userId ? "user" : "group"}:${row.userId ?? row.groupId ?? ""}`;
+      if (closest.has(key)) continue;
+      closest.set(key, {
+        id: row.id,
+        userId: row.userId,
+        groupId: row.groupId,
+        role: row.role,
+        folderId: folder.id,
+        folderName: folder.name,
+        folderPath: folder.path,
+      });
+    }
+  }
+  return [...closest.values()];
 }
 
 async function replacePermissions(
