@@ -9,6 +9,7 @@ import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/ui/dialog";
 import { DocumentTree, type Doc, type DocClaimSummary, type Folder, type TreeActions } from "./document-tree";
 import { PermissionsDialog } from "../permissions/permissions-dialog";
+import { track } from "../../lib/analytics-bus";
 
 type DialogState =
   | { kind: "newDoc"; folder: Folder }
@@ -125,7 +126,11 @@ export function TreePanel({
           error={error}
           onClose={close}
           onSubmit={(name, slug) =>
-            run(() => api.createDocument({ workspaceId, folderId: dialog.folder.id, title: name, slug }))
+            run(async () => {
+              const result = await api.createDocument({ workspaceId, folderId: dialog.folder.id, title: name, slug });
+              track("document_created", { source: "tree" });
+              return result;
+            })
           }
         />
       ) : null}
@@ -138,7 +143,11 @@ export function TreePanel({
           error={error}
           onClose={close}
           onSubmit={(name, slug) =>
-            run(() => api.createFolder({ workspaceId, parentFolderId: dialog.parent?.id ?? null, name, slug }))
+            run(async () => {
+              const result = await api.createFolder({ workspaceId, parentFolderId: dialog.parent?.id ?? null, name, slug });
+              track("folder_created", { source: dialog.parent ? "subfolder" : "root" });
+              return result;
+            })
           }
         />
       ) : null}

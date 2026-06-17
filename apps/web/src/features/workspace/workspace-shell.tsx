@@ -15,6 +15,7 @@ import { highlightSnippet } from "../../lib/search-highlight";
 import { documentReadablePath, normalizeReadableDocumentPath } from "../../lib/document-links";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { type ThemeMode, useTheme } from "../../lib/theme";
+import { identifyUser, resetAnalytics, track } from "../../lib/analytics-bus";
 
 export function WorkspaceShell() {
   const params = useParams({ strict: false }) as { workspaceId?: string; documentId?: string; _splat?: string };
@@ -101,10 +102,21 @@ export function WorkspaceShell() {
   const logout = useMutation({
     mutationFn: () => api.logout(),
     onSuccess: () => {
+      track("user_signed_out");
+      resetAnalytics();
       queryClient.clear();
       void navigate({ to: "/login" });
     },
   });
+
+  useEffect(() => {
+    if (!me.data?.user) return;
+    identifyUser(me.data.user.id, {
+      email: me.data.user.email,
+      name: me.data.user.name,
+      workspaceCount: me.data.workspaces.length,
+    });
+  }, [me.data?.user, me.data?.workspaces.length]);
 
   const workspace = me.data?.workspaces.find((w) => w.id === workspaceId);
   const workspaceInitial = getWorkspaceInitial(workspace?.name);
@@ -1065,6 +1077,8 @@ export function WorkspaceChooser() {
   const logout = useMutation({
     mutationFn: () => api.logout(),
     onSuccess: () => {
+      track("user_signed_out");
+      resetAnalytics();
       queryClient.clear();
       void navigate({ to: "/login" });
     },

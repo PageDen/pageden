@@ -5,6 +5,7 @@ import { api, ApiError } from "../../lib/api";
 import { GoogleButton } from "./google-button";
 import { Input } from "../../components/ui/input";
 import { PasswordInput } from "../../components/ui/password-input";
+import { track } from "../../lib/analytics-bus";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -16,6 +17,7 @@ export function LoginPage() {
     mutationFn: () => api.login(email, password),
     onSuccess: (me) => {
       queryClient.setQueryData(["me"], me);
+      track("user_signed_in", { method: "password" });
       void navigate({ to: "/" });
     },
   });

@@ -8,6 +8,7 @@ import { PasswordInput } from "../../components/ui/password-input";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { TurnstileWidget } from "../../components/turnstile";
+import { track } from "../../lib/analytics-bus";
 
 function subdomainFromName(value: string): string {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
@@ -37,6 +38,8 @@ export function RegisterPage() {
     mutationFn: () => api.register(email, name, password, companyName, subdomain, captchaToken ?? undefined),
     onSuccess: (me) => {
       queryClient.setQueryData(["me"], me);
+      track("user_signed_in", { method: "password", first_time: true });
+      track("workspace_created", { source: "register" });
       void navigate({ to: "/" });
     },
     onError: (e) => setError(crudErrorMessage(e)),
