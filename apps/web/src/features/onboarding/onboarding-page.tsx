@@ -57,6 +57,20 @@ export function OnboardingPage() {
     onError: (e) => setError(crudErrorMessage(e)),
   });
 
+  const markOnboarded = useMutation({
+    mutationFn: () => api.markOnboarded(),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
+    },
+  });
+
+  // Persist completion when the user leaves onboarding for the workspace so the
+  // router stops sending them back here. Fire-and-forget and idempotent — the
+  // navigation must not wait on (or be blocked by) this write.
+  function finishOnboarding() {
+    if (!me.data?.onboardedAt) markOnboarded.mutate();
+  }
+
   function submitWorkspace(event: FormEvent) {
     event.preventDefault();
     setError(null);
@@ -86,7 +100,14 @@ export function OnboardingPage() {
             </div>
           </div>
           {selectedWorkspace ? (
-            <Button type="button" variant="secondary" onClick={() => void navigate({ to: "/w/$workspaceId", params: { workspaceId: selectedWorkspace.id } })}>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                finishOnboarding();
+                void navigate({ to: "/w/$workspaceId", params: { workspaceId: selectedWorkspace.id } });
+              }}
+            >
               Skip for now
               <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
             </Button>
@@ -177,6 +198,7 @@ export function OnboardingPage() {
               disabled={!selectedWorkspace}
               href={selectedWorkspace ? `/w/${encodeURIComponent(selectedWorkspace.id)}/import` : undefined}
               buttonLabel="Import vault"
+              onNavigate={finishOnboarding}
             />
             <OnboardingAction
               step="3"
@@ -186,6 +208,7 @@ export function OnboardingPage() {
               disabled={!selectedWorkspace}
               href={selectedWorkspace ? `/w/${encodeURIComponent(selectedWorkspace.id)}/agents` : undefined}
               buttonLabel="Connect agent"
+              onNavigate={finishOnboarding}
             />
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-start gap-3">
@@ -202,6 +225,7 @@ export function OnboardingPage() {
                     <Link
                       to="/w/$workspaceId"
                       params={{ workspaceId: selectedWorkspace.id }}
+                      onClick={finishOnboarding}
                       className="mt-4 inline-flex h-10 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:border-orange-400/60 dark:hover:bg-orange-500/10 dark:hover:text-orange-200"
                     >
                       Go to workspace
@@ -262,6 +286,7 @@ function OnboardingAction({
   disabled,
   href,
   buttonLabel,
+  onNavigate,
 }: {
   step: string;
   icon: ReactNode;
@@ -270,6 +295,7 @@ function OnboardingAction({
   disabled: boolean;
   href?: string;
   buttonLabel: string;
+  onNavigate?: () => void;
 }) {
   return (
     <div className={`rounded-2xl border bg-white p-5 shadow-sm dark:bg-slate-900 ${disabled ? "border-slate-200 opacity-70 dark:border-slate-800" : "border-slate-200 dark:border-slate-800"}`}>
@@ -284,6 +310,7 @@ function OnboardingAction({
           {href && !disabled ? (
             <a
               href={href}
+              onClick={onNavigate}
               className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-orange-600 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-orange-700"
             >
               {buttonLabel}

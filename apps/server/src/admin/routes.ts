@@ -272,7 +272,11 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const result = await prisma.$transaction(async (tx) => {
         const user = existing
           ? await tx.user.findUniqueOrThrow({ where: { id: existing.id } })
-          : await tx.user.create({ data: { email: email!, name: name!, passwordHash, emailVerified: true } });
+          : await tx.user.create({
+              // Provisioned by an admin into an existing workspace — not a
+              // first-run signup, so skip the onboarding redirect.
+              data: { email: email!, name: name!, passwordHash, emailVerified: true, onboardedAt: new Date() },
+            });
         await tx.workspaceMembership.create({ data: { workspaceId: workspaceId!, userId: user.id, role } });
         await writeAuditEvent(
           { workspaceId: workspaceId!, userId: auth.userId, action: "user_created", targetType: "user", targetId: user.id, metadata: { email, role } },

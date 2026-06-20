@@ -29,6 +29,9 @@ async function main() {
         name: "Bootstrap Admin",
         passwordHash,
         emailVerified: true,
+        // Provisioned admin with a seeded workspace — not a first-run signup, so
+        // skip the onboarding redirect.
+        onboardedAt: new Date(),
       },
     });
 

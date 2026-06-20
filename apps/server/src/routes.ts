@@ -72,6 +72,7 @@ async function mePayload(userId: string) {
       email: true,
       name: true,
       emailVerified: true,
+      onboardedAt: true,
       workspaceMemberships: {
         select: {
           role: true,
@@ -84,6 +85,7 @@ async function mePayload(userId: string) {
   return {
     user: userDto(user),
     emailVerified: user.emailVerified,
+    onboardedAt: user.onboardedAt ? user.onboardedAt.toISOString() : null,
     workspaces: user.workspaceMemberships.map((membership) => ({
       id: membership.workspace.id,
       name: membership.workspace.name,
@@ -644,6 +646,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/me", async (request) => {
     const auth = await requireAuth(request);
     return mePayload(auth.userId);
+  });
+
+  // Mark first-run onboarding as done (idempotent). The web calls this when the
+  // user finishes or skips onboarding so they are not redirected back to it.
+  app.post("/api/me/onboarded", async (request) => {
+    const auth = await requireAuth(request);
+    await prisma.user.updateMany({
+      where: { id: auth.userId, onboardedAt: null },
+      data: { onboardedAt: new Date() },
+    });
+    return { ok: true as const };
   });
 
   app.post<{
