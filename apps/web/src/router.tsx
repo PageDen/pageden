@@ -134,11 +134,6 @@ const indexRoute = createRoute({
       if (!(error instanceof ApiError && error.status === 404)) throw error;
     }
     const me = await context.queryClient.ensureQueryData(meQuery);
-    // First-run onboarding takes priority: a freshly-created account (signup
-    // always makes one workspace) would otherwise skip straight to its empty
-    // workspace. Persisted via onboardedAt so it survives refresh/re-login and
-    // is shown exactly once until completed or skipped.
-    if (!me.onboardedAt) throw redirect({ to: "/onboarding" });
     if (routeScoped && currentWorkspaceId) throw redirect({ to: "/w/$workspaceId", params: { workspaceId: currentWorkspaceId } });
     if (me.workspaces.length === 1) throw redirect({ to: "/w/$workspaceId", params: { workspaceId: me.workspaces[0]!.id } });
     const first = me.workspaces[0];
