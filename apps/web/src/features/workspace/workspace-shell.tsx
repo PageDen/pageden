@@ -5,7 +5,7 @@ import { Activity, ArrowRight, BarChart3, Bot, Building2, ChevronDown, FileText,
 import type { z } from "zod";
 import { searchSchema, treeSchema } from "@pageden/api-types";
 import { api } from "../../lib/api";
-import { currentWorkspaceQuery, meQuery, searchQuery, treeQuery } from "../../lib/queries";
+import { meQuery, searchQuery, treeQuery } from "../../lib/queries";
 import { Input } from "../../components/ui/input";
 import { TreePanel } from "./tree-panel";
 import { CommandPalette } from "./command-palette";
@@ -865,7 +865,6 @@ export function WorkspaceEmptyState() {
   const params = useParams({ strict: false });
   const workspaceId = params.workspaceId ?? "";
   const tree = useQuery(treeQuery(workspaceId));
-  const currentWorkspace = useQuery(currentWorkspaceQuery);
   const [tab, setTab] = useState<HomeTab>("recent");
 
   if (tree.isLoading) {
@@ -881,9 +880,9 @@ export function WorkspaceEmptyState() {
   const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
   const visibleDocs = documentsForHomeTab(docs, tab);
 
-  const isCloud = currentWorkspace.data?.routingMode !== "self_hosted";
-
-  if (isCloud && docs.length === 0 && folders.length === 0) {
+  // Show the getting-started cards in any empty workspace — same experience for
+  // self-hosted and cloud. They disappear once the workspace has content.
+  if (docs.length === 0 && folders.length === 0) {
     return <OnboardingView workspaceId={workspaceId} />;
   }
 
