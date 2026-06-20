@@ -44,7 +44,14 @@ export const publicCurrentWorkspaceSchema = z
   .strict();
 
 export const meResponseSchema = z
-  .object({ user: userDtoSchema, emailVerified: z.boolean(), workspaces: z.array(workspaceDtoSchema) })
+  .object({
+    user: userDtoSchema,
+    emailVerified: z.boolean(),
+    // ISO timestamp of when first-run onboarding was completed/skipped; null
+    // means the user has not been through onboarding yet.
+    onboardedAt: z.string().nullable(),
+    workspaces: z.array(workspaceDtoSchema),
+  })
   .strict();
 
 export const okSchema = z.object({ ok: z.literal(true) }).strict();

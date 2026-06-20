@@ -131,6 +131,7 @@ async function request<T>(method: string, path: string, opts: RequestOptions<T> 
 
 export const api = {
   me: () => request("GET", "/me", { schema: meResponseSchema }),
+  markOnboarded: () => request("POST", "/me/onboarded", { schema: okSchema }),
   currentWorkspace: () => request("GET", "/workspaces/current", { schema: currentWorkspaceSchema }),
   publicCurrentWorkspace: () => request("GET", "/workspaces/current-public", { schema: publicCurrentWorkspaceSchema }),
   workspaceAvailability: (subdomain: string) =>

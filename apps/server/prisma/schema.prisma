@@ -70,6 +70,9 @@ model User {
   passwordHash            String? // argon2id; null for OAuth-only accounts
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
+  // Null until the user finishes (or skips) first-run onboarding. Existing users
+  // are backfilled to createdAt by the migration so they are not re-prompted.
+  onboardedAt             DateTime?
   workspaceMemberships    WorkspaceMembership[]
   groupMemberships        GroupMembership[]
   createdDocuments        Document[]               @relation("DocumentCreatedBy")
