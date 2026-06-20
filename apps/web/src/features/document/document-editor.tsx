@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Download, Eye, Gavel, History, Info, Radio, Save, Share2, Sparkles, SquarePen } from "lucide-react";
+import { AlertTriangle, ArrowRight, Archive, Check, CheckCircle2, CircleDashed, Clipboard, ClipboardList, Copy, Download, Eye, Gavel, History, Info, Link2, MessageSquareQuote, Radio, Save, Share2, Sparkles, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -19,8 +19,9 @@ import { isAllowedEmbedSrc } from "./media";
 import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
-import { documentReadablePath } from "../../lib/document-links";
+import { documentDeepLink, documentReadablePath, documentReviewNote, workspaceRelativePath } from "../../lib/document-links";
 import { relatedDocLinksForValue, resolveWikiLinks } from "./obsidian-links";
+import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import { track } from "../../lib/analytics-bus";
 
 type Doc = z.infer<typeof documentWithContentSchema>;
@@ -232,6 +233,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                 {decisionsOnly ? "All sections" : `Decisions (${decisionCount})`}
               </Button>
             ) : null}
+            <CopyReferenceMenu doc={doc} workspaceId={workspaceId} />
             {canShare ? (
               <Button
                 variant="ghost"
@@ -393,6 +395,64 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         />
       ) : null}
     </article>
+  );
+}
+
+// Dropdown that copies a reference to this document for sharing with an AI
+// agent or a teammate. Three shapes:
+//   • path  — the workspace-relative ".md" path agents pass to MCP tools
+//   • url   — a stable, id-based deep link (survives rename/move) for humans
+//   • review_note — both of the above plus an agent hint, as one paste
+function CopyReferenceMenu({ doc, workspaceId }: { doc: Doc; workspaceId: string }) {
+  const menuRef = useDismissableMenu();
+  const [copied, setCopied] = useState<"path" | "url" | "review_note" | null>(null);
+
+  async function copy(format: "path" | "url" | "review_note", text: string) {
+    await copyTextToClipboard(text);
+    setCopied(format);
+    window.setTimeout(() => setCopied((c) => (c === format ? null : c)), 1600);
+    track("document_reference_copied", { format, doc_id: doc.id });
+    menuRef.current?.removeAttribute("open");
+  }
+
+  const items: { format: "path" | "url" | "review_note"; label: string; icon: typeof Copy; value: () => string }[] = [
+    { format: "path", label: "Path for AI agents", icon: Copy, value: () => workspaceRelativePath(doc.path) },
+    { format: "url", label: "Link for humans", icon: Link2, value: () => documentDeepLink(workspaceId, doc.id) },
+    {
+      format: "review_note",
+      label: "Review note (both)",
+      icon: MessageSquareQuote,
+      value: () => documentReviewNote({ workspaceId, documentId: doc.id, path: doc.path }),
+    },
+  ];
+
+  return (
+    <details ref={menuRef} className="relative">
+      <summary
+        className="flex h-9 cursor-pointer list-none items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 [&::-webkit-details-marker]:hidden"
+        title="Copy a path or link to share this document with an agent or teammate"
+      >
+        <Copy size={15} />
+        Copy reference
+      </summary>
+      <div className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg">
+        {items.map((item) => {
+          const Icon = item.icon;
+          const isCopied = copied === item.format;
+          return (
+            <button
+              key={item.format}
+              type="button"
+              onClick={() => void copy(item.format, item.value())}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100"
+            >
+              {isCopied ? <Check size={15} className="text-emerald-600" /> : <Icon size={15} className="text-slate-400" />}
+              <span>{isCopied ? "Copied" : item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
