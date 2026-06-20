@@ -34,10 +34,12 @@ export function OnboardingPage() {
   const [subdomainEdited, setSubdomainEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debouncedSubdomain = useDebouncedValue(subdomain.trim(), 250);
+  const authConfig = useQuery({ queryKey: ["auth-config"], queryFn: () => api.authConfig(), staleTime: 5 * 60 * 1000, retry: false });
+  const cloudHosted = authConfig.data?.cloudHosted ?? false;
   const availability = useQuery({
     queryKey: ["workspace-availability", debouncedSubdomain],
     queryFn: () => api.workspaceAvailability(debouncedSubdomain),
-    enabled: debouncedSubdomain.length > 0,
+    enabled: cloudHosted && debouncedSubdomain.length > 0,
   });
 
   const workspaces = me.data?.workspaces ?? [];
@@ -158,31 +160,33 @@ export function OnboardingPage() {
                     required={!selectedWorkspace}
                   />
                 </label>
-                <label className="block space-y-1.5">
-                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Workspace URL</span>
-                  <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100 dark:border-slate-700 dark:bg-slate-950 dark:focus-within:border-orange-400 dark:focus-within:ring-orange-500/20">
-                    <Input
-                      value={subdomain}
-                      onChange={(event) => {
-                        setSubdomainEdited(true);
-                        setSubdomain(event.target.value.toLowerCase());
-                      }}
-                      className="border-0 focus:border-transparent focus:ring-0"
-                      placeholder="acme"
-                      required={!selectedWorkspace}
-                    />
-                    <span className="shrink-0 pr-3 text-sm text-slate-500 dark:text-slate-400">.{workspaceBaseDomain}</span>
-                  </div>
-                  {availability.isFetching ? (
-                    <p className="text-xs text-slate-400 dark:text-slate-500">Checking availability...</p>
-                  ) : availability.data ? (
-                    <p className={`text-xs ${availability.data.available ? "text-emerald-700 dark:text-emerald-300" : "text-red-600 dark:text-red-300"}`}>
-                      {availability.data.available ? "Available" : availability.data.reason}
-                    </p>
-                  ) : null}
-                </label>
+                {cloudHosted ? (
+                  <label className="block space-y-1.5">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Workspace URL</span>
+                    <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100 dark:border-slate-700 dark:bg-slate-950 dark:focus-within:border-orange-400 dark:focus-within:ring-orange-500/20">
+                      <Input
+                        value={subdomain}
+                        onChange={(event) => {
+                          setSubdomainEdited(true);
+                          setSubdomain(event.target.value.toLowerCase());
+                        }}
+                        className="border-0 focus:border-transparent focus:ring-0"
+                        placeholder="acme"
+                        required={!selectedWorkspace}
+                      />
+                      <span className="shrink-0 pr-3 text-sm text-slate-500 dark:text-slate-400">.{workspaceBaseDomain}</span>
+                    </div>
+                    {availability.isFetching ? (
+                      <p className="text-xs text-slate-400 dark:text-slate-500">Checking availability...</p>
+                    ) : availability.data ? (
+                      <p className={`text-xs ${availability.data.available ? "text-emerald-700 dark:text-emerald-300" : "text-red-600 dark:text-red-300"}`}>
+                        {availability.data.available ? "Available" : availability.data.reason}
+                      </p>
+                    ) : null}
+                  </label>
+                ) : null}
                 {error ? <p className="text-sm text-red-600 dark:text-red-300">{error}</p> : null}
-                <Button type="submit" className="w-full" disabled={createWorkspace.isPending || !name.trim() || !subdomain.trim()}>
+                <Button type="submit" className="w-full" disabled={createWorkspace.isPending || !name.trim() || (cloudHosted && !subdomain.trim())}>
                   {createWorkspace.isPending ? "Creating..." : "Create workspace"}
                 </Button>
               </div>

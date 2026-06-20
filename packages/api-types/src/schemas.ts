@@ -22,6 +22,8 @@ export const workspaceDtoSchema = z
     customDomain: z.string().nullish(),
     customDomainStatus: customDomainStatusSchema.optional(),
     role: workspaceRoleSchema,
+    // Cloud-only company logo; null when none uploaded. Versioned URL.
+    logoUrl: z.string().nullable(),
   })
   .strict();
 
@@ -32,6 +34,7 @@ export const publicWorkspaceDtoSchema = z
     slug: z.string().nullish(),
     subdomain: z.string().nullish(),
     customDomain: z.string().nullish(),
+    logoUrl: z.string().nullable(),
   })
   .strict();
 
@@ -59,6 +62,9 @@ export const authConfigSchema = z
   .object({
     googleEnabled: z.boolean(),
     captcha: z.object({ provider: z.literal("turnstile"), siteKey: z.string() }).strict().nullable(),
+    // True when this deployment is the multi-tenant cloud host. Gates cloud-only
+    // UI (workspace URL/subdomain field, logo upload).
+    cloudHosted: z.boolean(),
   })
   .strict();
 export const okDeletedSchema = z.object({ ok: z.literal(true), deletedAt: iso }).strict();
@@ -640,6 +646,7 @@ export const workspaceAvailabilitySchema = z
   .object({ available: z.boolean(), subdomain: z.string(), reason: z.string().nullable() })
   .strict();
 export const workspaceCreateSchema = z.object({ workspace: workspaceDtoSchema }).strict();
+export const workspaceLogoSchema = z.object({ logoUrl: z.string() }).strict();
 export const usersListSchema = z
   .object({
     users: z.array(

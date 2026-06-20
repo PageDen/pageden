@@ -21,10 +21,12 @@ export function CreateWorkspacePage() {
   const [subdomainEdited, setSubdomainEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debouncedSubdomain = useDebouncedValue(subdomain.trim(), 250);
+  const authConfig = useQuery({ queryKey: ["auth-config"], queryFn: () => api.authConfig(), staleTime: 5 * 60 * 1000, retry: false });
+  const cloudHosted = authConfig.data?.cloudHosted ?? false;
   const availability = useQuery({
     queryKey: ["workspace-availability", debouncedSubdomain],
     queryFn: () => api.workspaceAvailability(debouncedSubdomain),
-    enabled: debouncedSubdomain.length > 0,
+    enabled: cloudHosted && debouncedSubdomain.length > 0,
   });
 
   const mutation = useMutation({
@@ -70,29 +72,31 @@ export function CreateWorkspacePage() {
             required
           />
         </label>
-        <label className="block space-y-1">
-          <span className="text-sm font-medium">Workspace URL</span>
-          <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100">
-            <Input
-              aria-label="Workspace URL"
-              value={subdomain}
-              onChange={(e) => {
-                setSubdomainEdited(true);
-                setSubdomain(e.target.value.toLowerCase());
-              }}
-              className="border-0 focus:border-transparent focus:ring-0"
-              required
-            />
-            <span className="shrink-0 pr-3 text-sm text-slate-500">.{workspaceBaseDomain}</span>
-          </div>
-          {availability.isFetching ? (
-            <p className="text-xs text-slate-400">Checking availability…</p>
-          ) : availability.data ? (
-            <p className={`text-xs ${availability.data.available ? "text-green-700" : "text-red-600"}`}>
-              {availability.data.available ? "Available" : availability.data.reason}
-            </p>
-          ) : null}
-        </label>
+        {cloudHosted ? (
+          <label className="block space-y-1">
+            <span className="text-sm font-medium">Workspace URL</span>
+            <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100">
+              <Input
+                aria-label="Workspace URL"
+                value={subdomain}
+                onChange={(e) => {
+                  setSubdomainEdited(true);
+                  setSubdomain(e.target.value.toLowerCase());
+                }}
+                className="border-0 focus:border-transparent focus:ring-0"
+                required
+              />
+              <span className="shrink-0 pr-3 text-sm text-slate-500">.{workspaceBaseDomain}</span>
+            </div>
+            {availability.isFetching ? (
+              <p className="text-xs text-slate-400">Checking availability…</p>
+            ) : availability.data ? (
+              <p className={`text-xs ${availability.data.available ? "text-green-700" : "text-red-600"}`}>
+                {availability.data.available ? "Available" : availability.data.reason}
+              </p>
+            ) : null}
+          </label>
+        ) : null}
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <Button type="submit" className="w-full" disabled={mutation.isPending}>
           {mutation.isPending ? "Creating…" : "Create workspace"}

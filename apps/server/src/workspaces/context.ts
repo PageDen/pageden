@@ -2,6 +2,7 @@ import type { FastifyRequest } from "fastify";
 import { CustomDomainStatus, type Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { requestHost, workspaceRouteFromHost } from "./domains.js";
+import { workspaceLogoUrl } from "./logo.js";
 
 export type WorkspaceRoutingMode = "cloud_subdomain" | "custom_domain" | "self_hosted" | "explicit";
 
@@ -12,6 +13,7 @@ export interface WorkspaceContext {
   subdomain: string | null;
   customDomain: string | null;
   customDomainStatus: "pending" | "verified" | "active" | "failed";
+  logoUrl: string | null;
   role: "member" | "admin" | "viewer" | "guest";
   routingMode: WorkspaceRoutingMode;
 }
@@ -47,14 +49,18 @@ export async function resolveWorkspaceContext(
           subdomain: true,
           customDomain: true,
           customDomainStatus: true,
+          logoStorageKey: true,
+          logoSha: true,
         },
       },
     },
   });
   if (!membership) return null;
 
+  const { logoStorageKey: _logoStorageKey, logoSha: _logoSha, ...workspace } = membership.workspace;
   return {
-    ...membership.workspace,
+    ...workspace,
+    logoUrl: workspaceLogoUrl(membership.workspace),
     role: membership.role,
     routingMode: route?.mode ?? (explicitWorkspaceId ? "explicit" : "self_hosted"),
   };

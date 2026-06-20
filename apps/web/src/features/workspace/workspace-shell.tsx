@@ -215,10 +215,16 @@ export function WorkspaceShell() {
             </button>
             <Link
               to="/"
-              className="mt-3 flex h-9 w-9 items-center justify-center rounded-lg bg-orange-600 text-sm font-semibold text-white shadow-sm"
+              className="mt-3 flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg shadow-sm"
               title={workspace?.name ? `Switch workspace: ${workspace.name}` : "Switch workspace"}
             >
-              {workspaceInitial}
+              {workspace?.logoUrl ? (
+                <img src={workspace.logoUrl} alt={workspace.name} className="h-full w-full bg-white object-contain" />
+              ) : (
+                <span className="flex h-full w-full items-center justify-center bg-orange-600 text-sm font-semibold text-white">
+                  {workspaceInitial}
+                </span>
+              )}
             </Link>
             <button
               type="button"
@@ -248,9 +254,17 @@ export function WorkspaceShell() {
             className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left transition hover:bg-white"
             title="Switch workspace"
           >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-600 text-sm font-semibold text-white shadow-sm">
-              {workspaceInitial}
-            </span>
+            {workspace?.logoUrl ? (
+              <img
+                src={workspace.logoUrl}
+                alt={workspace?.name ?? "Workspace"}
+                className="h-7 w-7 shrink-0 rounded-lg bg-white object-contain shadow-sm"
+              />
+            ) : (
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-600 text-sm font-semibold text-white shadow-sm">
+                {workspaceInitial}
+              </span>
+            )}
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold leading-5 text-slate-950">{workspace?.name ?? "Workspace"}</span>
               <span className="block truncate text-[11px] leading-4 text-slate-500">PageDen workspace</span>
