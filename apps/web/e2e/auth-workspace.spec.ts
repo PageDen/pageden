@@ -28,7 +28,17 @@ test("auth/workspace: register with company + workspace URL, with availability +
   await url.fill(sub);
   await expect(page.getByText("Available", { exact: true })).toBeVisible();
 
-  // Submit -> account created and signed in.
+  // Submit -> account created and signed in. A brand-new account lands on
+  // first-run onboarding (it has one workspace but onboardedAt is still null).
   await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { name: "Bring your vault. Connect your agent." })).toBeVisible({
+    timeout: 15000,
+  });
+
+  // Skipping onboarding marks it done and drops into the workspace; re-visiting
+  // the app root no longer bounces back to onboarding.
+  await page.getByRole("button", { name: "Skip for now" }).click();
   await expect(page.getByRole("link", { name: "Home" })).toBeVisible({ timeout: 15000 });
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: "Home" })).toBeVisible();
 });
