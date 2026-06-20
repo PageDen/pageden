@@ -25,6 +25,7 @@ export type EventName =
   | "workspace_created"
   | "document_created"
   | "document_read"
+  | "document_reference_copied"
   | "document_saved"
   | "document_restored"
   | "folder_created"

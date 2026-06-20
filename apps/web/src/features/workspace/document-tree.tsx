@@ -3,9 +3,11 @@ import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import type { z } from "zod";
 import { treeSchema } from "@pageden/api-types";
 import { Link } from "@tanstack/react-router";
-import { documentReadablePath } from "../../lib/document-links";
+import { documentReadablePath, workspaceRelativePath } from "../../lib/document-links";
+import { track } from "../../lib/analytics-bus";
 import {
   ChevronRight,
+  Copy,
   FilePlus,
   FileText,
   FolderClosed,
@@ -95,6 +97,22 @@ function MenuButton({ item }: { item: MenuItem }) {
 
 const canEdit = (p: string | null) => p === "editor" || p === "manager";
 const canManage = (p: string | null) => p === "manager";
+
+async function copyDocPath(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
 
 // ─── FolderNode ────────────────────────────────────────────────────────────────
 // Extracted into its own component so it can hold useState for open/closed.
@@ -197,14 +215,25 @@ function DocRow({
   onNavigate?: () => void;
   claim?: DocClaimSummary;
 }) {
+  // Copying a reference is a read-only client action, so it's offered to every
+  // role (not just managers) and wired here rather than through TreeActions.
+  const copyReference: MenuItem = {
+    label: "Copy reference",
+    icon: Copy,
+    onClick: () => {
+      void copyDocPath(workspaceRelativePath(doc.path));
+      track("document_reference_copied", { format: "path", doc_id: doc.id, source: "tree" });
+    },
+  };
   const menuItems: MenuItem[] = canManage(doc.permission)
     ? [
+        copyReference,
         { label: "Rename", icon: Pencil, onClick: () => actions.onRenameDoc(doc) },
         { label: "Move", icon: MoveRight, onClick: () => actions.onMoveDoc(doc) },
         { label: "Permissions", icon: KeyRound, onClick: () => actions.onPermissionsDoc(doc) },
         { label: "Delete", icon: Trash2, destructive: true, onClick: () => actions.onDeleteDoc(doc) },
       ]
-    : [];
+    : [copyReference];
 
   const claimTitle = claim
     ? `Claimed${claim.actorLabel ? ` by ${claim.actorLabel}` : ""} until ${new Date(claim.expiresAt).toLocaleString()}`
