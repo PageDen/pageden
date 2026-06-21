@@ -11,6 +11,14 @@ export const MAX_LOGO_BYTES = 512 * 1024; // 512 KiB
 
 const ALLOWED_LOGO_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"]);
 
+// Read CLOUD_HOSTED at request time (not module load) so tests can toggle it,
+// mirroring the cloud approvals gate. Falls back to the boot-time env value.
+function cloudHostedEnabled(): boolean {
+  const v = process.env.CLOUD_HOSTED;
+  if (v === undefined) return env.cloudHosted;
+  return v === "true" || v === "1";
+}
+
 type LogoFields = { id: string; logoStorageKey: string | null; logoSha: string | null };
 
 /** Versioned public URL for a workspace logo, or null when none is set. */
@@ -66,7 +74,7 @@ export async function registerWorkspaceLogoRoutes(app: FastifyInstance): Promise
       "/api/workspaces/:id/logo",
       { bodyLimit: MAX_LOGO_BYTES + 1024 },
       async (request, reply) => {
-        if (!env.cloudHosted) return notFound(reply, "Not found.");
+        if (!cloudHostedEnabled()) return notFound(reply, "Not found.");
         const auth = await requireAuth(request);
         requireTokenScope(auth, "update");
         const workspaceId = request.params.id;
@@ -107,7 +115,7 @@ export async function registerWorkspaceLogoRoutes(app: FastifyInstance): Promise
     );
 
     instance.delete<{ Params: { id: string } }>("/api/workspaces/:id/logo", async (request, reply) => {
-      if (!env.cloudHosted) return notFound(reply, "Not found.");
+      if (!cloudHostedEnabled()) return notFound(reply, "Not found.");
       const auth = await requireAuth(request);
       requireTokenScope(auth, "update");
       const workspaceId = request.params.id;
