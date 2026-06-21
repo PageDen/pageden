@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { api, crudErrorMessage, type AuditFilters } from "../../lib/api";
+import { meQuery } from "../../lib/queries";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 
@@ -10,6 +11,8 @@ type AuditEvent = Awaited<ReturnType<typeof api.auditEvents>>["events"][number];
 export function AuditLogPage() {
   const params = useParams({ strict: false });
   const workspaceId = params.workspaceId ?? "";
+  const me = useQuery(meQuery);
+  const isAdmin = me.data?.workspaces.find((w) => w.id === workspaceId)?.role === "admin";
 
   const [actionInput, setActionInput] = useState("");
   const [actorUserId, setActorUserId] = useState("");
@@ -83,7 +86,8 @@ export function AuditLogPage() {
         <p className="text-sm text-slate-500">Every recorded action in this workspace. Filter, page, and export.</p>
       </div>
 
-      <RetentionSection workspaceId={workspaceId} />
+      {isAdmin ? <RetentionSection workspaceId={workspaceId} /> : null}
+      {isAdmin ? <IntegritySection workspaceId={workspaceId} /> : null}
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
         <label className="space-y-1">
@@ -231,6 +235,59 @@ function RetentionSection({ workspaceId }: { workspaceId: string }) {
         {saved ? <span className="text-sm text-green-700">Saved.</span> : null}
         {error ? <span className="text-sm text-red-600">{error}</span> : null}
       </div>
+    </section>
+  );
+}
+
+function IntegritySection({ workspaceId }: { workspaceId: string }) {
+  const queryClient = useQueryClient();
+  const integrity = useQuery({
+    queryKey: ["audit-integrity", workspaceId],
+    queryFn: () => api.auditIntegrity(workspaceId),
+    retry: false,
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const verify = useMutation({
+    // Seal any pending events, then re-verify the whole chain.
+    mutationFn: async () => {
+      await api.createAuditCheckpoint(workspaceId);
+      return api.auditIntegrity(workspaceId);
+    },
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: ["audit-integrity", workspaceId] });
+    },
+    onError: (e) => setError(crudErrorMessage(e)),
+  });
+
+  const data = integrity.data;
+  return (
+    <section className="rounded-lg border border-slate-200 p-3">
+      <h3 className="text-sm font-semibold text-slate-900">Tamper-evidence</h3>
+      <p className="mb-3 text-sm text-slate-500">
+        Audit events are sealed hourly into a signed hash chain. Verify recomputes the chain from stored records and flags any change.
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={() => verify.mutate()} disabled={verify.isPending || integrity.isLoading}>
+          {verify.isPending ? "Verifying…" : "Verify now"}
+        </Button>
+        {data ? (
+          data.ok ? (
+            <span className="text-sm text-green-700">
+              ✓ Chain intact — {data.verified} checkpoint{data.verified === 1 ? "" : "s"} verified
+              {data.pruned > 0 ? `, ${data.pruned} aged out` : ""}
+              {data.pendingCount > 0 ? `, ${data.pendingCount} pending` : ""}.
+            </span>
+          ) : (
+            <span className="text-sm font-medium text-red-700">⚠ Tampering detected at checkpoint {data.brokenCheckpointId}.</span>
+          )
+        ) : null}
+        {error ? <span className="text-sm text-red-600">{error}</span> : null}
+      </div>
+      {data?.lastSealedAt ? (
+        <p className="mt-2 text-xs text-slate-400">Last sealed {new Date(data.lastSealedAt).toLocaleString()}.</p>
+      ) : null}
     </section>
   );
 }

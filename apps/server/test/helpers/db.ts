@@ -1,6 +1,7 @@
 import { prisma } from "../../src/prisma.js";
 
 const TABLES = [
+  "AuditCheckpoint",
   "AuditEvent",
   "McpOAuthCode",
   "DeviceAuthRequest",

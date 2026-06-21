@@ -667,6 +667,27 @@ export const auditEventSchema = z
   .strict();
 export const auditListSchema = z.object({ events: z.array(auditEventSchema), next: z.string().nullable() }).strict();
 export const auditRetentionSchema = z.object({ auditRetentionDays: z.number().int().nullable() }).strict();
+export const auditCheckpointSchema = z
+  .object({
+    created: z.boolean(),
+    checkpoint: z
+      .object({ id: z.string(), eventCount: z.number().int(), throughCreatedAt: z.string() })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export const auditIntegritySchema = z
+  .object({
+    ok: z.boolean(),
+    checkpoints: z.number().int(),
+    verified: z.number().int(),
+    pruned: z.number().int(),
+    brokenCheckpointId: z.string().nullable(),
+    lastCheckpointAt: z.string().nullable(),
+    lastSealedAt: z.string().nullable(),
+    pendingCount: z.number().int(),
+  })
+  .strict();
 export const usersListSchema = z
   .object({
     users: z.array(

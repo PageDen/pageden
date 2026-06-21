@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
@@ -153,8 +154,184 @@ export async function pruneAuditEvents(): Promise<number> {
   return deleted;
 }
 
+// ---------------------------------------------------------------------------
+// Tamper-evidence: a global, append-only hash chain over the audit log.
+// Each checkpoint seals every event newer than the previous one and stores an
+// HMAC over (prevHash + the covered events). Verification recomputes the chain
+// from the stored rows; any in-place edit or insertion into a sealed range, or
+// a hash break, is detected. Cloud-only.
+// ---------------------------------------------------------------------------
+
+function checkpointSecret(): string {
+  return process.env.AUDIT_CHECKPOINT_SECRET || env.tokenHashSecret;
+}
+
+/** Deterministic JSON with recursively sorted keys, so metadata hashes stably. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
+    .join(",")}}`;
+}
+
+const chainSelect = {
+  id: true,
+  createdAt: true,
+  action: true,
+  userId: true,
+  workspaceId: true,
+  targetType: true,
+  targetId: true,
+  metadata: true,
+} satisfies Prisma.AuditEventSelect;
+type ChainEvent = Prisma.AuditEventGetPayload<{ select: typeof chainSelect }>;
+
+function serializeEvent(e: ChainEvent): string {
+  // Unit-separator joined; covers every persisted field so any edit changes the hash.
+  return [
+    e.id,
+    e.createdAt.toISOString(),
+    e.action,
+    e.userId ?? "",
+    e.workspaceId ?? "",
+    e.targetType,
+    e.targetId ?? "",
+    stableStringify(e.metadata),
+  ].join("␟");
+}
+
+function computeChainHash(prevHash: string | null, events: ChainEvent[]): string {
+  const h = createHmac("sha256", checkpointSecret());
+  h.update(prevHash ?? "");
+  for (const e of events) {
+    h.update("\n");
+    h.update(serializeEvent(e));
+  }
+  return h.digest("hex");
+}
+
+type Cursor = { createdAt: Date; id: string };
+
+// Events strictly after `lower` (exclusive) and up to `upper` (inclusive), in chain order.
+function rangeWhere(lower: Cursor | null, upper: Cursor | null): Prisma.AuditEventWhereInput {
+  const and: Prisma.AuditEventWhereInput[] = [];
+  if (lower) {
+    and.push({ OR: [{ createdAt: { gt: lower.createdAt } }, { createdAt: lower.createdAt, id: { gt: lower.id } }] });
+  }
+  if (upper) {
+    and.push({ OR: [{ createdAt: { lt: upper.createdAt } }, { createdAt: upper.createdAt, id: { lte: upper.id } }] });
+  }
+  return and.length ? { AND: and } : {};
+}
+
+/** Seal all events newer than the last checkpoint into a new chained checkpoint. Returns null when nothing is pending. */
+export async function createAuditCheckpoint(): Promise<{ id: string; eventCount: number; throughCreatedAt: Date } | null> {
+  const last = await prisma.auditCheckpoint.findFirst({ orderBy: { createdAt: "desc" } });
+  const lower = last ? { createdAt: last.throughCreatedAt, id: last.throughId } : null;
+  const events = await prisma.auditEvent.findMany({
+    where: rangeWhere(lower, null),
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: chainSelect,
+  });
+  if (events.length === 0) return null;
+  const prevHash = last?.hash ?? null;
+  const hash = computeChainHash(prevHash, events);
+  const lastEvent = events[events.length - 1]!;
+  const cp = await prisma.auditCheckpoint.create({
+    data: { throughCreatedAt: lastEvent.createdAt, throughId: lastEvent.id, eventCount: events.length, prevHash, hash },
+  });
+  return { id: cp.id, eventCount: cp.eventCount, throughCreatedAt: cp.throughCreatedAt };
+}
+
+export type ChainVerification = {
+  ok: boolean;
+  checkpoints: number;
+  verified: number;
+  pruned: number;
+  brokenCheckpointId: string | null;
+  lastCheckpointAt: string | null;
+  lastSealedAt: string | null;
+  pendingCount: number;
+};
+
+/**
+ * Walk the checkpoint chain oldest→newest and recompute each hash from the
+ * surviving rows. Retention pruning only ever removes the OLDEST events, so a
+ * contiguous prefix of checkpoints may be missing rows ("pruned") — those are
+ * trusted via their stored hash. Once a checkpoint verifies in full, every
+ * later checkpoint must match exactly: a shrunk count (deletion) or grown count
+ * (insertion) or hash mismatch after that point is reported as tampering.
+ */
+export async function verifyAuditChain(): Promise<ChainVerification> {
+  const checkpoints = await prisma.auditCheckpoint.findMany({ orderBy: { createdAt: "asc" } });
+  let prevHash: string | null = null;
+  let lower: Cursor | null = null;
+  let inPrunablePrefix = true;
+  let verified = 0;
+  let pruned = 0;
+  const last = checkpoints[checkpoints.length - 1] ?? null;
+
+  for (const cp of checkpoints) {
+    const upper: Cursor = { createdAt: cp.throughCreatedAt, id: cp.throughId };
+    const events = await prisma.auditEvent.findMany({
+      where: rangeWhere(lower, upper),
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: chainSelect,
+    });
+    if (events.length === cp.eventCount) {
+      if (computeChainHash(prevHash, events) !== cp.hash) {
+        return broken(cp.id, checkpoints.length, verified, pruned, last);
+      }
+      inPrunablePrefix = false;
+      verified++;
+    } else if (events.length < cp.eventCount && inPrunablePrefix) {
+      pruned++; // older events aged out by retention — trust the stored hash and continue.
+    } else {
+      return broken(cp.id, checkpoints.length, verified, pruned, last);
+    }
+    prevHash = cp.hash;
+    lower = upper;
+  }
+
+  const pendingCount = await prisma.auditEvent.count({ where: rangeWhere(lower, null) });
+  return {
+    ok: true,
+    checkpoints: checkpoints.length,
+    verified,
+    pruned,
+    brokenCheckpointId: null,
+    lastCheckpointAt: last ? last.createdAt.toISOString() : null,
+    lastSealedAt: last ? last.throughCreatedAt.toISOString() : null,
+    pendingCount,
+  };
+}
+
+function broken(
+  id: string,
+  total: number,
+  verified: number,
+  pruned: number,
+  last: { createdAt: Date; throughCreatedAt: Date } | null,
+): ChainVerification {
+  return {
+    ok: false,
+    checkpoints: total,
+    verified,
+    pruned,
+    brokenCheckpointId: id,
+    lastCheckpointAt: last ? last.createdAt.toISOString() : null,
+    lastSealedAt: last ? last.throughCreatedAt.toISOString() : null,
+    pendingCount: 0,
+  };
+}
+
 let pruneTimer: ReturnType<typeof setInterval> | null = null;
+let checkpointTimer: ReturnType<typeof setInterval> | null = null;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CHECKPOINT_INTERVAL_MS = 60 * 60 * 1000;
 
 export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void> {
   // Viewing (list/export) is allowed for admins OR members granted canViewAudit.
@@ -313,11 +490,35 @@ export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void
     return { events: rows.map(toDto), next: nextRow ? nextRow.createdAt.toISOString() : null };
   });
 
+  // Tamper-evidence: seal pending events into a new checkpoint (admin, on demand).
+  app.post<{ Params: { id: string } }>("/api/workspaces/:id/audit/checkpoint", async (request, reply) => {
+    if (!(await requireAdmin(request, reply, request.params.id))) return reply;
+    const created = await createAuditCheckpoint();
+    return {
+      created: created !== null,
+      checkpoint: created ? { id: created.id, eventCount: created.eventCount, throughCreatedAt: created.throughCreatedAt.toISOString() } : null,
+    };
+  });
+
+  // Tamper-evidence: verify the whole checkpoint chain against the stored rows.
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/audit/integrity", async (request, reply) => {
+    if (!(await requireAdmin(request, reply, request.params.id))) return reply;
+    return verifyAuditChain();
+  });
+
   // Daily prune timer — cloud-only, failure-safe, and unref'd so it never blocks exit/tests.
   if (cloudHostedEnabled() && !pruneTimer) {
     pruneTimer = setInterval(() => {
       void pruneAuditEvents().catch((err) => console.error("[audit-prune] failed:", err));
     }, PRUNE_INTERVAL_MS);
     pruneTimer.unref?.();
+  }
+
+  // Hourly checkpoint timer — cloud-only, failure-safe, unref'd.
+  if (cloudHostedEnabled() && !checkpointTimer) {
+    checkpointTimer = setInterval(() => {
+      void createAuditCheckpoint().catch((err) => console.error("[audit-checkpoint] failed:", err));
+    }, CHECKPOINT_INTERVAL_MS);
+    checkpointTimer.unref?.();
   }
 }

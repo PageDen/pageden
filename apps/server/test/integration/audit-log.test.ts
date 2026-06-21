@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { closeApp, getApp, req } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario, createWorkspace, member } from "../fixtures/seed.js";
-import { pruneAuditEvents } from "../../src/workspaces/audit-log.js";
+import { pruneAuditEvents, createAuditCheckpoint, verifyAuditChain } from "../../src/workspaces/audit-log.js";
 
 beforeAll(async () => {
   await getApp();
@@ -174,5 +174,70 @@ describe("cloud audit log", () => {
     expect(
       (await req({ method: "PUT", url: `/api/workspaces/${s.ws.id}/members/${other.user.id}/audit-access`, cookies: m.cookie, payload: { canViewAudit: true } })).statusCode,
     ).toBe(403);
+  });
+});
+
+describe("audit tamper-evidence (signed checkpoints)", () => {
+  it("seals events and verifies an intact chain across multiple checkpoints", async () => {
+    const s = await baseScenario();
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "a", metadata: { n: 1 } } });
+    const cp1 = await createAuditCheckpoint();
+    expect(cp1).not.toBeNull();
+    // A second batch + checkpoint, to exercise the chain link.
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "b" } });
+    const cp2 = await createAuditCheckpoint();
+    expect(cp2).not.toBeNull();
+    // No new events → no checkpoint created.
+    expect(await createAuditCheckpoint()).toBeNull();
+
+    const v = await verifyAuditChain();
+    expect(v.ok).toBe(true);
+    expect(v.checkpoints).toBe(2);
+    expect(v.verified).toBe(2);
+    expect(v.pendingCount).toBe(0);
+  });
+
+  it("detects in-place modification of a sealed event", async () => {
+    const s = await baseScenario();
+    const ev = await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "permission_added", targetType: "document", targetId: "d1", metadata: { role: "viewer" } } });
+    await createAuditCheckpoint();
+    expect((await verifyAuditChain()).ok).toBe(true);
+
+    // Tamper: silently change the stored action.
+    await prisma.auditEvent.update({ where: { id: ev.id }, data: { action: "permission_removed" } });
+    const v = await verifyAuditChain();
+    expect(v.ok).toBe(false);
+    expect(v.brokenCheckpointId).not.toBeNull();
+  });
+
+  it("detects an event inserted into an already-sealed range", async () => {
+    const s = await baseScenario();
+    const e1 = await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "x", createdAt: new Date(Date.now() - 60_000) } });
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "y" } });
+    await createAuditCheckpoint();
+    // Backdate an injected event into the sealed window.
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "z", createdAt: new Date(e1.createdAt.getTime() + 1000) } });
+    const v = await verifyAuditChain();
+    expect(v.ok).toBe(false);
+    expect(v.brokenCheckpointId).not.toBeNull();
+  });
+
+  it("admin can seal + verify via the API; non-admins and self-hosted 404", async () => {
+    const s = await baseScenario();
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "a" } });
+
+    const seal = await req({ method: "POST", url: `/api/workspaces/${s.ws.id}/audit/checkpoint`, cookies: s.adminCookie });
+    expect(seal.statusCode).toBe(200);
+    expect(seal.json().created).toBe(true);
+
+    const integrity = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit/integrity`, cookies: s.adminCookie });
+    expect(integrity.statusCode).toBe(200);
+    expect(integrity.json().ok).toBe(true);
+
+    const m = await member(s.ws.id, "member@t.co", "member");
+    expect((await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit/integrity`, cookies: m.cookie })).statusCode).toBe(404);
+
+    delete process.env.CLOUD_HOSTED;
+    expect((await req({ method: "POST", url: `/api/workspaces/${s.ws.id}/audit/checkpoint`, cookies: s.adminCookie })).statusCode).toBe(404);
   });
 });
