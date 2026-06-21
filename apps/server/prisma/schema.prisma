@@ -436,6 +436,21 @@ model AuditEvent {
   @@index([targetType, targetId])
 }
 
+// Tamper-evidence: a global, append-only hash chain over AuditEvent rows.
+// Each checkpoint seals all events newer than the previous one and stores an
+// HMAC over (prevHash + the covered events). Cloud-only. See audit-log.ts.
+model AuditCheckpoint {
+  id               String   @id @default(cuid())
+  createdAt        DateTime @default(now())
+  throughCreatedAt DateTime // inclusive upper bound of covered events
+  throughId        String   // last covered event id (tiebreaker within a timestamp)
+  eventCount       Int      // number of events sealed by THIS checkpoint
+  prevHash         String? // hash of the previous checkpoint (null for the first)
+  hash             String // HMAC over prevHash + covered events
+
+  @@index([createdAt])
+}
+
 model Attachment {
   id           String    @id @default(cuid())
   workspaceId  String

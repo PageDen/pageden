@@ -6,6 +6,8 @@ import {
   workspaceLogoSchema,
   auditListSchema,
   auditRetentionSchema,
+  auditCheckpointSchema,
+  auditIntegritySchema,
   attachmentSchema,
   attachmentListSchema,
   documentCreateSchema,
@@ -187,6 +189,10 @@ export const api = {
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { schema: auditRetentionSchema }),
   setAuditRetention: (workspaceId: string, auditRetentionDays: number | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { body: { auditRetentionDays }, schema: auditRetentionSchema }),
+  auditIntegrity: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/audit/integrity`, { schema: auditIntegritySchema }),
+  createAuditCheckpoint: (workspaceId: string) =>
+    request("POST", `/workspaces/${encodeURIComponent(workspaceId)}/audit/checkpoint`, { schema: auditCheckpointSchema }),
   downloadAuditExport: async (workspaceId: string, format: "csv" | "json", filters: AuditFilters = {}) => {
     const qs = auditQuery({ ...filters, format });
     const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}/audit/export?${qs}`, { credentials: "include" });
