@@ -273,7 +273,9 @@ const adminRoute = createRoute({
     await context.queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
     const me = await context.queryClient.ensureQueryData(meQuery);
     const ws = me.workspaces.find((w) => w.id === (params as { workspaceId: string }).workspaceId);
-    if (ws?.role !== "admin") throw redirect({ to: "/w/$workspaceId", params: { workspaceId: (params as { workspaceId: string }).workspaceId } });
+    // Admins get the full admin area; non-admin members granted audit access may
+    // enter only for the Audit log tab (other tabs are admin-gated server-side).
+    if (ws?.role !== "admin" && !ws?.canViewAudit) throw redirect({ to: "/w/$workspaceId", params: { workspaceId: (params as { workspaceId: string }).workspaceId } });
   },
   component: () => (
     <Lazy>

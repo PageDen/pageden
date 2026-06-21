@@ -157,25 +157,39 @@ let pruneTimer: ReturnType<typeof setInterval> | null = null;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void> {
-  async function requireAdmin(request: FastifyRequest, reply: FastifyReply, workspaceId: string): Promise<boolean> {
+  // Viewing (list/export) is allowed for admins OR members granted canViewAudit.
+  // Mutating retention stays admin-only (`requireAdmin`).
+  async function gate(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    workspaceId: string,
+    mode: "view" | "admin",
+  ): Promise<boolean> {
     if (!cloudHostedEnabled()) {
       notFound(reply, "Not found.");
       return false;
     }
     const auth = await requireAuth(request);
     requireTokenScope(auth, "read");
-    if (!(await canManageWorkspace(auth.userId, workspaceId))) {
-      notFound(reply, "Workspace not found.");
-      return false;
+    if (await canManageWorkspace(auth.userId, workspaceId)) return true;
+    if (mode === "view") {
+      const m = await prisma.workspaceMembership.findUnique({
+        where: { workspaceId_userId: { workspaceId, userId: auth.userId } },
+        select: { canViewAudit: true },
+      });
+      if (m?.canViewAudit) return true;
     }
-    return true;
+    notFound(reply, "Workspace not found.");
+    return false;
   }
+  const requireViewer = (req: FastifyRequest, reply: FastifyReply, ws: string) => gate(req, reply, ws, "view");
+  const requireAdmin = (req: FastifyRequest, reply: FastifyReply, ws: string) => gate(req, reply, ws, "admin");
 
   app.get<{ Params: { id: string }; Querystring: Record<string, unknown> }>(
     "/api/workspaces/:id/audit",
     async (request, reply) => {
       const workspaceId = request.params.id;
-      if (!(await requireAdmin(request, reply, workspaceId))) return reply;
+      if (!(await requireViewer(request, reply, workspaceId))) return reply;
       const filters = parseFilters(workspaceId, request.query, reply);
       if (!filters) return reply;
       const rawLimit = Number(request.query.limit ?? DEFAULT_PAGE);
@@ -196,7 +210,7 @@ export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void
     "/api/workspaces/:id/audit/export",
     async (request, reply) => {
       const workspaceId = request.params.id;
-      if (!(await requireAdmin(request, reply, workspaceId))) return reply;
+      if (!(await requireViewer(request, reply, workspaceId))) return reply;
       const format = String(request.query.format ?? "csv");
       if (format !== "csv" && format !== "json") return validationError(reply, { format: "format must be csv or json." });
       const filters = parseFilters(workspaceId, request.query, reply);

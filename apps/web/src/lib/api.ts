@@ -393,6 +393,8 @@ export const api = {
     request("GET", `/users?workspaceId=${encodeURIComponent(workspaceId)}`, { schema: usersListSchema }),
   createUser: (body: { workspaceId: string; email: string; name: string; password: string; role: "member" | "admin" | "viewer" | "guest" }) =>
     request("POST", "/users", { body, schema: userCreateSchema }),
+  setMemberAuditAccess: (workspaceId: string, userId: string, canViewAudit: boolean) =>
+    request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}/audit-access`, { body: { canViewAudit }, schema: okSchema }),
   groups: (workspaceId: string) =>
     request("GET", `/groups?workspaceId=${encodeURIComponent(workspaceId)}`, { schema: groupsListSchema }),
   createGroup: (body: { workspaceId: string; name: string; slug: string }) =>

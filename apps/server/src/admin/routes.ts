@@ -232,7 +232,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
     const memberships = await prisma.workspaceMembership.findMany({
       where: { workspaceId },
-      select: { role: true, user: { select: { id: true, email: true, name: true } } },
+      select: { role: true, canViewAudit: true, user: { select: { id: true, email: true, name: true } } },
       orderBy: { user: { email: "asc" } },
     });
     return {
@@ -241,9 +241,37 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         email: membership.user.email,
         name: membership.user.name,
         role: membership.role,
+        canViewAudit: membership.canViewAudit,
       })),
     };
   });
+
+  // Grant/revoke per-member Audit Log read access (admin only). Admins always
+  // have audit access regardless of this flag.
+  app.put<{ Params: { workspaceId: string; userId: string }; Body: { canViewAudit?: boolean } }>(
+    "/api/workspaces/:workspaceId/members/:userId/audit-access",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const { workspaceId, userId } = request.params;
+      if (!(await canManageWorkspace(auth.userId, workspaceId))) return forbidden(reply);
+      const canViewAudit = request.body?.canViewAudit === true;
+      const updated = await prisma.workspaceMembership.updateMany({
+        where: { workspaceId, userId },
+        data: { canViewAudit },
+      });
+      if (updated.count === 0) return notFound(reply, "Member not found.");
+      await writeAuditEvent({
+        workspaceId,
+        userId: auth.userId,
+        action: "member_audit_access_changed",
+        targetType: "user",
+        targetId: userId,
+        metadata: { canViewAudit },
+      });
+      return { ok: true as const };
+    },
+  );
 
   // Create a workspace member (admin only; no public signup).
   app.post<{ Body: { workspaceId?: string; email?: string; name?: string; password?: string; role?: string } }>(

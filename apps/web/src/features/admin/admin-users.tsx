@@ -13,8 +13,16 @@ export function AdminUsers() {
   const workspaceId = params.workspaceId ?? "";
   const queryClient = useQueryClient();
   const users = useQuery(usersQuery(workspaceId));
+  const authConfig = useQuery({ queryKey: ["auth-config"], queryFn: () => api.authConfig(), staleTime: 5 * 60 * 1000, retry: false });
+  const cloudHosted = authConfig.data?.cloudHosted ?? false;
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "member" as "member" | "admin" | "viewer" | "guest" });
   const [error, setError] = useState<string | null>(null);
+
+  const setAuditAccess = useMutation({
+    mutationFn: (vars: { userId: string; canViewAudit: boolean }) => api.setMemberAuditAccess(workspaceId, vars.userId, vars.canViewAudit),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey }),
+    onError: (e) => setError(crudErrorMessage(e)),
+  });
 
   const create = useMutation({
     mutationFn: () => api.createUser({ workspaceId, ...form }),
@@ -64,12 +72,25 @@ export function AdminUsers() {
       ) : (
         <ul className="divide-y divide-slate-200 rounded-md border border-slate-200 bg-white">
           {users.data!.users.map((u) => (
-            <li key={u.id} className="flex items-center justify-between px-4 py-2 text-sm">
-              <div>
+            <li key={u.id} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+              <div className="min-w-0">
                 <div className="font-medium">{u.name}</div>
                 <div className="text-xs text-slate-400">{u.email}</div>
               </div>
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{u.role}</span>
+              <div className="flex shrink-0 items-center gap-3">
+                {cloudHosted && u.role !== "admin" ? (
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600" title="Allow this member to read the workspace Audit Log">
+                    <input
+                      type="checkbox"
+                      checked={u.canViewAudit}
+                      disabled={setAuditAccess.isPending}
+                      onChange={(e) => setAuditAccess.mutate({ userId: u.id, canViewAudit: e.target.checked })}
+                    />
+                    Audit access
+                  </label>
+                ) : null}
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{u.role}</span>
+              </div>
             </li>
           ))}
         </ul>

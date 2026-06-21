@@ -109,4 +109,32 @@ describe("cloud audit log", () => {
       delete process.env.AUDIT_MAX_RETENTION_DAYS;
     }
   });
+
+  it("canViewAudit member can view + export but not change retention or grant access", async () => {
+    const s = await baseScenario();
+    const m = await member(s.ws.id, "viewer@t.co", "member");
+    // Before grant: no access.
+    expect((await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit`, cookies: m.cookie })).statusCode).toBe(404);
+
+    const grant = await req({
+      method: "PUT",
+      url: `/api/workspaces/${s.ws.id}/members/${m.user.id}/audit-access`,
+      cookies: s.adminCookie,
+      payload: { canViewAudit: true },
+    });
+    expect(grant.statusCode).toBe(200);
+
+    // Now can view + export.
+    expect((await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit`, cookies: m.cookie })).statusCode).toBe(200);
+    expect((await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit/export?format=csv`, cookies: m.cookie })).statusCode).toBe(200);
+
+    // But cannot change retention (admin-only) or grant access to others.
+    expect(
+      (await req({ method: "PUT", url: `/api/workspaces/${s.ws.id}/settings/audit-retention`, cookies: m.cookie, payload: { auditRetentionDays: 30 } })).statusCode,
+    ).toBe(404);
+    const other = await member(s.ws.id, "other@t.co", "member");
+    expect(
+      (await req({ method: "PUT", url: `/api/workspaces/${s.ws.id}/members/${other.user.id}/audit-access`, cookies: m.cookie, payload: { canViewAudit: true } })).statusCode,
+    ).toBe(403);
+  });
 });
