@@ -57,6 +57,17 @@ describe("cloud audit log", () => {
     expect(String(res.body).split("\n")[0]).toContain("createdAt,action");
   });
 
+  it("exports JSON and rejects unknown formats", async () => {
+    const s = await baseScenario();
+    const json = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit/export?format=json`, cookies: s.adminCookie });
+    expect(json.statusCode).toBe(200);
+    expect(json.headers["content-type"]).toContain("application/json");
+    expect(json.headers["content-disposition"]).toContain(".json");
+    expect(Array.isArray(json.json().events)).toBe(true);
+    const bad = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit/export?format=xml`, cookies: s.adminCookie });
+    expect(bad.statusCode).toBe(400);
+  });
+
   it("rejects an invalid date filter", async () => {
     const s = await baseScenario();
     const res = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit?from=notadate`, cookies: s.adminCookie });
@@ -80,5 +91,22 @@ describe("cloud audit log", () => {
     await pruneAuditEvents();
     expect(await prisma.auditEvent.findUnique({ where: { id: old.id } })).toBeNull();
     expect(await prisma.auditEvent.findUnique({ where: { id: recent.id } })).not.toBeNull();
+  });
+
+  it("operator AUDIT_MAX_RETENTION_DAYS overrides per-workspace 'keep forever'", async () => {
+    const s = await baseScenario();
+    // Workspace opts out of pruning...
+    await prisma.workspace.update({ where: { id: s.ws.id }, data: { auditRetentionDays: 0 } });
+    const old = await prisma.auditEvent.create({
+      data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "old", createdAt: new Date(Date.now() - 100 * 864e5) },
+    });
+    // ...but the operator cap forces a 30-day ceiling.
+    process.env.AUDIT_MAX_RETENTION_DAYS = "30";
+    try {
+      await pruneAuditEvents();
+      expect(await prisma.auditEvent.findUnique({ where: { id: old.id } })).toBeNull();
+    } finally {
+      delete process.env.AUDIT_MAX_RETENTION_DAYS;
+    }
   });
 });

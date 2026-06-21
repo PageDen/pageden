@@ -955,14 +955,9 @@ async function readDocument(auth: AuthContext, args: Record<string, unknown>, op
   // here must not break the read — log nothing and move on.
   await touchReadCursor(auth, { id: doc.id, workspaceId: doc.workspaceId, currentVersionId: doc.currentVersionId }).catch(() => undefined);
   if (opts.auditRead && auth.tokenKind === "agent") {
-    await writeAuditEvent({
-      workspaceId: doc.workspaceId,
-      userId: auth.userId,
-      action: "document_read_by_agent",
-      targetType: "document",
-      targetId: doc.id,
-      metadata: { version: doc.currentVersionId, path: doc.path, readMode: opts.readMode ?? "document", tokenId: auth.tokenId ?? null },
-    }).catch(() => undefined);
+    // We no longer persist a `document_read_by_agent` AuditEvent — agent reads
+    // are high-volume and the signal is fully captured on the analytics bus
+    // (agent_document_read) below. Writes/changes remain in the audit trail.
     trackServerEvent(
       "agent_document_read",
       doc.workspaceId,

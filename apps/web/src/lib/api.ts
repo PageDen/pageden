@@ -185,13 +185,13 @@ export const api = {
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { schema: auditRetentionSchema }),
   setAuditRetention: (workspaceId: string, auditRetentionDays: number | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { body: { auditRetentionDays }, schema: auditRetentionSchema }),
-  downloadAuditCsv: async (workspaceId: string, filters: AuditFilters = {}) => {
-    const qs = auditQuery({ ...filters, format: "csv" });
+  downloadAuditExport: async (workspaceId: string, format: "csv" | "json", filters: AuditFilters = {}) => {
+    const qs = auditQuery({ ...filters, format });
     const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}/audit/export?${qs}`, { credentials: "include" });
     if (res.status === 401 && onUnauthorized) onUnauthorized();
     if (!res.ok) throw new ApiError(res.status, safeJson(await res.text()));
     const blob = await res.blob();
-    return { blob, truncated: res.headers.get("x-audit-export-truncated") === "true", filename: `audit-${workspaceId}-${new Date().toISOString().slice(0, 10)}.csv` };
+    return { blob, truncated: res.headers.get("x-audit-export-truncated") === "true", filename: `audit-${workspaceId}-${new Date().toISOString().slice(0, 10)}.${format}` };
   },
   setWorkspaceCustomDomain: (workspaceId: string, customDomain: string | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/custom-domain`, { body: { customDomain }, schema: workspaceCreateSchema }),
