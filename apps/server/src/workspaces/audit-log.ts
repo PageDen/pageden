@@ -288,6 +288,31 @@ export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void
     },
   );
 
+  // Account-security log: the signed-in user's OWN audit events across every
+  // workspace, plus account-level events with no workspace (logins, token use).
+  // Not admin-gated — it only ever returns `userId = me`. Cloud-only.
+  app.get<{ Querystring: Record<string, unknown> }>("/api/me/account-activity", async (request, reply) => {
+    if (!cloudHostedEnabled()) return notFound(reply, "Not found.");
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "read");
+    const filters = parseFilters("", request.query, reply);
+    if (!filters) return reply;
+    const rawLimit = Number(request.query.limit ?? DEFAULT_PAGE);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), MAX_PAGE) : DEFAULT_PAGE;
+
+    // Reuse whereFor's date/action logic but pin the actor to the caller and
+    // drop the workspace constraint (account events may have workspaceId=null).
+    const { workspaceId: _ws, ...rest } = whereFor(filters);
+    const rows = await prisma.auditEvent.findMany({
+      where: { ...rest, userId: auth.userId },
+      orderBy: { createdAt: "desc" },
+      take: limit + 1,
+      select: eventSelect,
+    });
+    const nextRow = rows.length > limit ? rows.pop() ?? null : null;
+    return { events: rows.map(toDto), next: nextRow ? nextRow.createdAt.toISOString() : null };
+  });
+
   // Daily prune timer — cloud-only, failure-safe, and unref'd so it never blocks exit/tests.
   if (cloudHostedEnabled() && !pruneTimer) {
     pruneTimer = setInterval(() => {
