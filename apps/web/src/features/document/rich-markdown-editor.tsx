@@ -94,6 +94,11 @@ type ImageResizeDrag = {
   ratio: number;
 };
 
+type MarkdownFrontmatterParts = {
+  frontmatter: string;
+  body: string;
+};
+
 const turndown = new TurndownService({
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
@@ -226,6 +231,7 @@ const Embed = Node.create({
 export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMarkdownEditorProps) {
   const lastSyncedMarkdown = useRef(value);
   const editorRef = useRef<Editor | null>(null);
+  const frontmatterRef = useRef("");
   const documentIdRef = useRef(documentId);
   documentIdRef.current = documentId;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -382,9 +388,12 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
     [liveConfig],
   );
 
+  const initialMarkdown = splitMarkdownFrontmatter(value);
+  frontmatterRef.current = initialMarkdown.frontmatter;
+
   const editor = useEditor({
     extensions,
-    content: liveConfig ? undefined : markdownToHtml(value),
+    content: liveConfig ? undefined : markdownToHtml(initialMarkdown.body),
     editorProps: {
       attributes: { "aria-label": "Document body", class: "min-h-full outline-none" },
       handlePaste: (_view, event) => {
@@ -409,7 +418,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
       },
     },
     onUpdate: ({ editor: updatedEditor }) => {
-      const markdown = htmlToMarkdown(updatedEditor.getHTML());
+      const markdown = joinMarkdownFrontmatter(frontmatterRef.current, htmlToMarkdown(updatedEditor.getHTML()));
       lastSyncedMarkdown.current = markdown;
       onChange(markdown);
       refreshSelectedImage(updatedEditor);
@@ -430,7 +439,9 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
       if (seeded) return;
       seeded = true;
       if (!editor.getText().trim() && value.trim()) {
-        editor.commands.setContent(markdownToHtml(value), { emitUpdate: true });
+        const nextMarkdown = splitMarkdownFrontmatter(value);
+        frontmatterRef.current = nextMarkdown.frontmatter;
+        editor.commands.setContent(markdownToHtml(nextMarkdown.body), { emitUpdate: true });
       }
     };
     const provider = liveConfig.provider;
@@ -460,7 +471,9 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
   useEffect(() => {
     if (!editor || liveConfig || value === lastSyncedMarkdown.current) return;
     lastSyncedMarkdown.current = value;
-    editor.commands.setContent(markdownToHtml(value), { emitUpdate: false });
+    const nextMarkdown = splitMarkdownFrontmatter(value);
+    frontmatterRef.current = nextMarkdown.frontmatter;
+    editor.commands.setContent(markdownToHtml(nextMarkdown.body), { emitUpdate: false });
   }, [editor, liveConfig, value]);
 
   const setLink = useCallback(() => {
@@ -721,6 +734,30 @@ export function markdownToHtml(markdown: string): string {
 export function htmlToMarkdown(html: string): string {
   const markdown = turndown.turndown(html).trimEnd();
   return markdown ? `${markdown}\n` : "";
+}
+
+export function splitMarkdownFrontmatter(markdown: string): MarkdownFrontmatterParts {
+  const newline = markdown.startsWith("---\r\n") ? "\r\n" : markdown.startsWith("---\n") ? "\n" : null;
+  if (!newline) return { frontmatter: "", body: markdown };
+
+  const closingMarkerStart = markdown.indexOf(`${newline}---`, 3);
+  if (closingMarkerStart === -1) return { frontmatter: "", body: markdown };
+
+  const closingMarkerEnd = closingMarkerStart + newline.length + 3;
+  const frontmatterEnd = markdown.startsWith(newline, closingMarkerEnd)
+    ? closingMarkerEnd + newline.length
+    : closingMarkerEnd;
+  const bodyStart = markdown.startsWith(newline, frontmatterEnd) ? frontmatterEnd + newline.length : frontmatterEnd;
+
+  return {
+    frontmatter: `${markdown.slice(0, frontmatterEnd)}${newline}`,
+    body: markdown.slice(bodyStart),
+  };
+}
+
+export function joinMarkdownFrontmatter(frontmatter: string, body: string): string {
+  if (!frontmatter) return body;
+  return `${frontmatter}${body.replace(/^\r?\n/, "")}`;
 }
 
 function escapeHtmlAttribute(value: string): string {
