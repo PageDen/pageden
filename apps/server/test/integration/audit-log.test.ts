@@ -110,6 +110,44 @@ describe("cloud audit log", () => {
     }
   });
 
+  it("account-activity returns only the caller's own events across all workspaces + null-ws", async () => {
+    const s = await baseScenario();
+    const other = await createWorkspace("Other", "other");
+    // Admin's own events: one workspace-scoped, one account-level (workspaceId=null).
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, userId: s.admin.id, action: "token_created", targetType: "token", targetId: "t1" } });
+    await prisma.auditEvent.create({ data: { workspaceId: null, userId: s.admin.id, action: "login_succeeded", targetType: "user", targetId: s.admin.id, metadata: { sessionToken: "secret" } } });
+    // Someone else's event, and an event in another workspace by another actor.
+    const m = await member(s.ws.id, "member@t.co", "member");
+    await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, userId: m.user.id, action: "token_created", targetType: "token", targetId: "t2" } });
+    await prisma.auditEvent.create({ data: { workspaceId: other.id, userId: null, action: "document_updated", targetType: "document", targetId: "x" } });
+
+    const res = await req({ method: "GET", url: "/api/me/account-activity", cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const events = res.json().events as Array<{ action: string; targetId: string | null; actor: { id: string } | null; metadata: Record<string, unknown> | null }>;
+    // Every returned event belongs to the caller (across all workspaces + null-ws)...
+    expect(events.every((e) => e.actor?.id === s.admin.id)).toBe(true);
+    const targets = events.map((e) => e.targetId);
+    expect(targets).toContain("t1"); // own workspace-scoped event
+    expect(targets).not.toContain("t2"); // ...never another user's event
+    expect(events.some((e) => e.action === "login_succeeded")).toBe(true); // account-level (workspaceId=null) included
+    // Redaction still applies.
+    expect(events.find((e) => e.action === "login_succeeded")?.metadata?.sessionToken).toBe("[redacted]");
+
+    // A different user only sees their own.
+    const mine = await req({ method: "GET", url: "/api/me/account-activity", cookies: m.cookie });
+    expect(mine.statusCode).toBe(200);
+    const mineEvents = mine.json().events as Array<{ targetId: string | null; actor: { id: string } | null }>;
+    expect(mineEvents.every((e) => e.actor?.id === m.user.id)).toBe(true);
+    expect(mineEvents.map((e) => e.targetId)).toContain("t2");
+    expect(mineEvents.map((e) => e.targetId)).not.toContain("t1");
+  });
+
+  it("account-activity 404s when cloud is disabled", async () => {
+    const s = await baseScenario();
+    delete process.env.CLOUD_HOSTED;
+    expect((await req({ method: "GET", url: "/api/me/account-activity", cookies: s.adminCookie })).statusCode).toBe(404);
+  });
+
   it("canViewAudit member can view + export but not change retention or grant access", async () => {
     const s = await baseScenario();
     const m = await member(s.ws.id, "viewer@t.co", "member");

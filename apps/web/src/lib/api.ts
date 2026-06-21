@@ -181,6 +181,8 @@ export const api = {
     request("DELETE", `/workspaces/${encodeURIComponent(workspaceId)}/logo`, { schema: okSchema }),
   auditEvents: (workspaceId: string, filters: AuditFilters = {}) =>
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/audit?${auditQuery(filters)}`, { schema: auditListSchema }),
+  accountActivity: (filters: AuditFilters = {}) =>
+    request("GET", `/me/account-activity?${auditQuery(filters)}`, { schema: auditListSchema }),
   auditRetention: (workspaceId: string) =>
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { schema: auditRetentionSchema }),
   setAuditRetention: (workspaceId: string, auditRetentionDays: number | null) =>
