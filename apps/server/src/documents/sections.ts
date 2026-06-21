@@ -6,7 +6,7 @@
 // its own file so a future markdown-AST refactor (Feature 17) can swap the
 // implementation without leaking through to the MCP/REST layers.
 
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+import { extractMarkdownHeadings } from "./headings.js";
 
 export interface SectionRange {
   heading: string;
@@ -35,15 +35,7 @@ function anchorFor(value: string): string {
  */
 export function sectionRanges(body: string): SectionRange[] {
   const lines = body.split("\n");
-  const starts: Array<{ heading: string; anchor: string; level: number; headingLine: number }> = [];
-  lines.forEach((line, i) => {
-    const match = HEADING_RE.exec(line);
-    if (!match) return;
-    const level = match[1]!.length;
-    const heading = match[2]!.replace(/\s+#+$/, "").trim();
-    if (!heading) return;
-    starts.push({ heading, anchor: anchorFor(heading), level, headingLine: i });
-  });
+  const starts = extractMarkdownHeadings(body, anchorFor).map((heading) => ({ ...heading, headingLine: heading.startLine }));
   return starts.map((section, idx) => ({
     heading: section.heading,
     anchor: section.anchor,

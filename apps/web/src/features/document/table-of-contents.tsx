@@ -44,23 +44,82 @@ export function TableOfContents({ content, embedded = false }: { content: string
 export function extractHeadings(markdown: string): Heading[] {
   const headings: Heading[] = [];
   const lines = markdown.split("\n");
+  let inFence = false;
+  let fenceMarker: string | null = null;
 
   for (const line of lines) {
-    // Match markdown headings: # H1, ## H2, ### H3, etc.
-    const match = line.match(/^(#{1,6})\s+(.+?)(?:\s*#*)?$/);
-    if (match) {
-      const marks = match[1];
-      const rawText = match[2];
-      if (!marks || !rawText) continue;
-      const level = marks.length;
-      const text = rawText.trim();
-      const id = headingId(text);
-
-      headings.push({ level, text, id });
+    const fence = detectFenceMarker(line);
+    if (inFence) {
+      if (fence && fenceMarker && fence[0] === fenceMarker[0] && fence.length >= fenceMarker.length) {
+        inFence = false;
+        fenceMarker = null;
+      }
+      continue;
     }
+    if (fence) {
+      inFence = true;
+      fenceMarker = fence;
+      continue;
+    }
+
+    const heading = parseMarkdownHeading(line);
+    if (!heading) continue;
+    headings.push({ level: heading.level, text: heading.text, id: headingId(heading.text) });
   }
 
   return headings;
+}
+
+function parseMarkdownHeading(line: string): { level: number; text: string } | null {
+  let i = 0;
+  let level = 0;
+  while (i < line.length && line.charCodeAt(i) === 35 /* # */ && level < 6) {
+    i += 1;
+    level += 1;
+  }
+  if (level === 0 || i >= line.length) return null;
+  const next = line.charCodeAt(i);
+  if (next !== 32 && next !== 9) return null;
+  while (i < line.length) {
+    const c = line.charCodeAt(i);
+    if (c !== 32 && c !== 9) break;
+    i += 1;
+  }
+  const text = stripTrailingAtxClosing(line.slice(i)).trim();
+  return text ? { level, text } : null;
+}
+
+function detectFenceMarker(line: string): string | null {
+  let i = 0;
+  while (i < line.length && (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9)) i += 1;
+  if (i >= line.length) return null;
+  const ch = line.charCodeAt(i);
+  if (ch !== 96 /* ` */ && ch !== 126 /* ~ */) return null;
+  let end = i;
+  while (end < line.length && line.charCodeAt(end) === ch) end += 1;
+  if (end - i < 3) return null;
+  return line.slice(i, end);
+}
+
+function stripTrailingAtxClosing(s: string): string {
+  let end = s.length;
+  while (end > 0) {
+    const c = s.charCodeAt(end - 1);
+    if (c !== 32 && c !== 9) break;
+    end -= 1;
+  }
+  let hashStart = end;
+  while (hashStart > 0 && s.charCodeAt(hashStart - 1) === 35) hashStart -= 1;
+  if (hashStart === end || hashStart === 0) return s.slice(0, end);
+  const before = s.charCodeAt(hashStart - 1);
+  if (before !== 32 && before !== 9) return s.slice(0, end);
+  let stop = hashStart - 1;
+  while (stop > 0) {
+    const c = s.charCodeAt(stop - 1);
+    if (c !== 32 && c !== 9) break;
+    stop -= 1;
+  }
+  return s.slice(0, stop);
 }
 
 export function headingId(text: string): string {

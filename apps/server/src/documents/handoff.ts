@@ -7,6 +7,7 @@
 
 import { documentContext, type DocumentContext } from "../ai-readiness.js";
 import type { DocumentStatus } from "@prisma/client";
+import { extractMarkdownHeadings, parseMarkdownHeading } from "./headings.js";
 import { dedupeDecisions, maskCodeContext } from "./markdown-context.js";
 
 export type ImplementationReadinessStatus =
@@ -79,7 +80,6 @@ export interface TaskPacket {
   implementationReadiness: ImplementationReadiness;
 }
 
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const DECISION_FENCE_OPEN = /^:::\s*decision\s*$/i;
 const DECISION_FENCE_CLOSE = /^:::\s*$/;
 const PR_LINK_RE = /https?:\/\/(?:[\w-]+\.)*github\.com\/[\w./-]+\/(?:pull|issues)\/\d+|https?:\/\/(?:[\w-]+\.)*gitlab\.com\/[\w./-]+\/(?:-\/)?(?:merge_requests|issues)\/\d+/g;
@@ -183,15 +183,7 @@ export function extractPrLinks(body: string, frontmatter: Record<string, string 
 // loading the whole document into an agent context window.
 export function extractSections(body: string): DocumentSection[] {
   const lines = body.split("\n");
-  const starts: Array<{ heading: string; anchor: string; level: number; startLine: number }> = [];
-  lines.forEach((line, i) => {
-    const match = HEADING_RE.exec(line);
-    if (!match) return;
-    const level = match[1]!.length;
-    const heading = match[2]!.replace(/\s+#+$/, "").trim();
-    if (!heading) return;
-    starts.push({ heading, anchor: anchorFor(heading), level, startLine: i });
-  });
+  const starts = extractMarkdownHeadings(body, anchorFor);
   return starts.map((section, idx) => {
     const startLine = section.startLine + 1;
     const endLine = starts[idx + 1]?.startLine ?? lines.length;
@@ -455,7 +447,7 @@ function firstParagraph(body: string): string {
   // sentence describes the goal." pattern returns the prose, not the heading.
   const paragraphs = body.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
   for (const paragraph of paragraphs) {
-    if (HEADING_RE.test(paragraph)) continue;
+    if (parseMarkdownHeading(paragraph)) continue;
     return condense(paragraph, 480);
   }
   return "";
