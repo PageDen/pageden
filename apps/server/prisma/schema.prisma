@@ -144,6 +144,9 @@ model WorkspaceMembership {
   workspaceId String
   userId      String
   role        WorkspaceRole @default(member)
+  // Cloud-only: grants read access to the workspace Audit Log without making the
+  // member a full admin. Admins always have audit access regardless of this flag.
+  canViewAudit Boolean      @default(false)
   createdAt   DateTime      @default(now())
   workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)

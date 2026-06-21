@@ -78,6 +78,7 @@ async function mePayload(userId: string) {
       workspaceMemberships: {
         select: {
           role: true,
+          canViewAudit: true,
           workspace: { select: { id: true, name: true, slug: true, subdomain: true, customDomain: true, customDomainStatus: true, logoStorageKey: true, logoSha: true } },
         },
       },
@@ -97,6 +98,7 @@ async function mePayload(userId: string) {
       customDomainStatus: membership.workspace.customDomainStatus,
       logoUrl: workspaceLogoUrl(membership.workspace),
       role: membership.role,
+      canViewAudit: membership.canViewAudit,
     })),
   };
 }

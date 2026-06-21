@@ -24,6 +24,9 @@ export const workspaceDtoSchema = z
     role: workspaceRoleSchema,
     // Cloud-only company logo; null when none uploaded. Versioned URL.
     logoUrl: z.string().nullable(),
+    // Cloud-only: this member may read the workspace Audit Log without being an
+    // admin. Optional — only the /me payload populates it.
+    canViewAudit: z.boolean().optional(),
   })
   .strict();
 
@@ -667,7 +670,7 @@ export const auditRetentionSchema = z.object({ auditRetentionDays: z.number().in
 export const usersListSchema = z
   .object({
     users: z.array(
-      z.object({ id: z.string(), email: z.string(), name: z.string(), role: workspaceRoleSchema }).strict(),
+      z.object({ id: z.string(), email: z.string(), name: z.string(), role: workspaceRoleSchema, canViewAudit: z.boolean() }).strict(),
     ),
   })
   .strict();
