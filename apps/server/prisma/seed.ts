@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { env } from "../src/env.js";
 import { hashPassword } from "../src/passwords.js";
@@ -6,15 +7,16 @@ import { hashPassword } from "../src/passwords.js";
 // Reads BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD from the environment.
 const prisma = new PrismaClient();
 
-async function main() {
-  if (!env.bootstrapAdminEmail || !env.bootstrapAdminPassword) {
-    throw new Error("Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD to seed.");
-  }
+type SeedClient = PrismaClient;
 
-  const email = env.bootstrapAdminEmail.trim().toLowerCase();
-  const passwordHash = await hashPassword(env.bootstrapAdminPassword);
+export async function bootstrapAdminSeed(
+  input: { email: string; password: string },
+  client: SeedClient = prisma,
+): Promise<{ email: string }> {
+  const email = input.email.trim().toLowerCase();
+  const passwordHash = await hashPassword(input.password);
 
-  await prisma.$transaction(async (tx) => {
+  await client.$transaction(async (tx) => {
     const workspace = await tx.workspace.upsert({
       where: { slug: "default" },
       update: {},
@@ -41,25 +43,51 @@ async function main() {
       create: { workspaceId: workspace.id, userId: user.id, role: "admin" },
     });
 
-    await tx.auditEvent.create({
-      data: {
+    const existingBootstrapAudit = await tx.auditEvent.findFirst({
+      where: {
         workspaceId: workspace.id,
         userId: user.id,
         action: "bootstrap_admin_seeded",
         targetType: "user",
         targetId: user.id,
-        metadata: { email },
       },
+      select: { id: true },
     });
+
+    if (!existingBootstrapAudit) {
+      await tx.auditEvent.create({
+        data: {
+          workspaceId: workspace.id,
+          userId: user.id,
+          action: "bootstrap_admin_seeded",
+          targetType: "user",
+          targetId: user.id,
+          metadata: { email },
+        },
+      });
+    }
   });
 
-  console.log(`Bootstrapped admin ${email}.`);
+  return { email };
 }
 
-main()
-  .then(() => prisma.$disconnect())
-  .catch(async (e) => {
-    console.error(e);
-    await prisma.$disconnect();
-    process.exit(1);
-  });
+async function main() {
+  if (!env.bootstrapAdminEmail || !env.bootstrapAdminPassword) {
+    throw new Error("Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD to seed.");
+  }
+
+  const result = await bootstrapAdminSeed({ email: env.bootstrapAdminEmail, password: env.bootstrapAdminPassword });
+  console.log(`Bootstrapped admin ${result.email}.`);
+}
+
+const isDirectRun = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+
+if (isDirectRun) {
+  main()
+    .then(() => prisma.$disconnect())
+    .catch(async (e) => {
+      console.error(e);
+      await prisma.$disconnect();
+      process.exit(1);
+    });
+}

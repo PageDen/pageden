@@ -11,6 +11,7 @@ coverage/
 .env.*
 !.env.example
 !.env.test.example
+!.env.selfhost.example
 storage/workspaces/
 .DS_Store
 apps/server/prisma/*.db
