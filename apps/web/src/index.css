@@ -330,6 +330,27 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
   @apply scroll-mt-24 text-slate-950;
 }
 
+.pageden-document-view.prose h1 {
+  @apply mb-4 mt-8 text-4xl font-semibold leading-tight tracking-tight;
+}
+
+.pageden-document-view.prose h2 {
+  @apply mb-3 mt-7 text-3xl font-semibold leading-tight tracking-tight;
+}
+
+.pageden-document-view.prose h3 {
+  @apply mb-2 mt-6 text-2xl font-semibold leading-snug;
+}
+
+.pageden-document-view.prose h4 {
+  @apply mb-2 mt-5 text-xl font-semibold leading-snug;
+}
+
+.pageden-document-view.prose h5,
+.pageden-document-view.prose h6 {
+  @apply mb-2 mt-4 text-lg font-semibold leading-snug;
+}
+
 .dark .pageden-document-view.prose h1,
 .dark .pageden-document-view.prose h2,
 .dark .pageden-document-view.prose h3,
