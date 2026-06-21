@@ -15,6 +15,7 @@ import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
 import { replaceSection, suggestAnchors } from "../documents/sections.js";
 import { brokenLinkExplanation, lintWikilinks, rewriteWikilinks, type RewriteReplacement } from "../documents/wikilinks.js";
@@ -1081,14 +1082,7 @@ function firstChangedLine(before: string, after: string): number {
 
 function sectionAtLine(content: string, lineIndex: number) {
   const lines = content.split("\n");
-  const headings: Array<{ heading: string; anchor: string; level: number; startLine: number }> = [];
-  lines.forEach((line, index) => {
-    const match = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (!match) return;
-    const heading = match[2]!.replace(/\s+#+$/, "").trim();
-    if (!heading) return;
-    headings.push({ heading, anchor: anchorForMcp(heading), level: match[1]!.length, startLine: index });
-  });
+  const headings = extractMarkdownHeadings(content, anchorForMcp);
   const current = headings.filter((heading) => heading.startLine <= lineIndex).at(-1) ?? headings[0] ?? null;
   if (!current) return null;
   const currentIndex = headings.indexOf(current);

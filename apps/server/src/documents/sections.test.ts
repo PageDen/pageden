@@ -35,6 +35,24 @@ describe("sectionRanges", () => {
     const notes = ranges.find((r) => r.anchor === "notes")!;
     expect(notes.contentEnd).toBe(SAMPLE.split("\n").length);
   });
+
+  it("ignores heading-like shell comments inside fenced code blocks", () => {
+    const ranges = sectionRanges(`# Plan
+
+\`\`\`sh
+# install dependencies
+## not a real section
+\`\`\`
+
+~~~text
+# not a heading either
+~~~
+
+## Verification
+`);
+
+    expect(ranges.map((r) => r.anchor)).toEqual(["plan", "verification"]);
+  });
 });
 
 describe("findRange", () => {

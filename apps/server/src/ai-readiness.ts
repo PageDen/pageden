@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.js";
+import { extractMarkdownHeadings } from "./documents/headings.js";
 import { maskCodeContext } from "./documents/markdown-context.js";
 
 export type AiReadinessIssue = { code: string; severity: "info" | "warning"; message: string };
@@ -229,52 +230,7 @@ function stripYamlQuotes(value: string): string {
 // /\s+#+$/) trips CodeQL's polynomial-redos rule because each `\s+` plus `.+`
 // can backtrack on pathological input. Linear scan per line avoids that.
 function extractHeadings(content: string): Array<{ level: number; title: string; anchor: string }> {
-  const headings: Array<{ level: number; title: string; anchor: string }> = [];
-  for (const rawLine of content.split("\n")) {
-    let i = 0;
-    let level = 0;
-    while (i < rawLine.length && rawLine.charCodeAt(i) === 35 /* # */ && level < 6) {
-      i += 1;
-      level += 1;
-    }
-    if (level === 0) continue;
-    if (i >= rawLine.length) continue;
-    const next = rawLine.charCodeAt(i);
-    if (next !== 32 && next !== 9) continue;
-    while (i < rawLine.length) {
-      const c = rawLine.charCodeAt(i);
-      if (c !== 32 && c !== 9) break;
-      i += 1;
-    }
-    const title = stripTrailingAtxClosing(rawLine.slice(i)).trim();
-    if (!title) continue;
-    headings.push({ level, title, anchor: anchorFor(title) });
-  }
-  return headings;
-}
-
-// Strip a trailing ATX-style closing run of `#`s and the whitespace separating
-// them. Hand-rolled to avoid the `\s+#+$` regex backtracking on long
-// trailing-whitespace inputs.
-function stripTrailingAtxClosing(s: string): string {
-  let end = s.length;
-  while (end > 0) {
-    const c = s.charCodeAt(end - 1);
-    if (c !== 32 && c !== 9) break;
-    end -= 1;
-  }
-  let hashStart = end;
-  while (hashStart > 0 && s.charCodeAt(hashStart - 1) === 35) hashStart -= 1;
-  if (hashStart === end || hashStart === 0) return s.slice(0, end);
-  const before = s.charCodeAt(hashStart - 1);
-  if (before !== 32 && before !== 9) return s.slice(0, end);
-  let stop = hashStart - 1;
-  while (stop > 0) {
-    const c = s.charCodeAt(stop - 1);
-    if (c !== 32 && c !== 9) break;
-    stop -= 1;
-  }
-  return s.slice(0, stop);
+  return extractMarkdownHeadings(content, anchorFor).map(({ level, heading, anchor }) => ({ level, title: heading, anchor }));
 }
 
 // Wikilink extraction. The original /!?\[\[([^\]#|]+)(?:[#|][^\]]*)?\]\]/g
