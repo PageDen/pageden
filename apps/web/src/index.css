@@ -349,6 +349,14 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
   @apply my-4 pl-7;
 }
 
+.pageden-document-view.prose ul {
+  @apply list-disc;
+}
+
+.pageden-document-view.prose ol {
+  @apply list-decimal;
+}
+
 .pageden-document-view.prose li > ul,
 .pageden-document-view.prose li > ol {
   @apply my-2;
