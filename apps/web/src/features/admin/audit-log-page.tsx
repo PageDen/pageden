@@ -54,12 +54,12 @@ export function AuditLogPage() {
     void load();
   }, [load]);
 
-  async function onExport() {
+  async function onExport(format: "csv" | "json") {
     setExporting(true);
     setError(null);
     setNotice(null);
     try {
-      const { blob, truncated, filename } = await api.downloadAuditCsv(workspaceId, filters);
+      const { blob, truncated, filename } = await api.downloadAuditExport(workspaceId, format, filters);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -103,8 +103,11 @@ export function AuditLogPage() {
           <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9" />
         </label>
         <div className="ml-auto flex gap-2">
-          <Button variant="ghost" onClick={() => onExport()} disabled={exporting || (events.length === 0 && !hasFilters)}>
+          <Button variant="ghost" onClick={() => onExport("csv")} disabled={exporting || (events.length === 0 && !hasFilters)}>
             {exporting ? "Exporting…" : "Export CSV"}
+          </Button>
+          <Button variant="ghost" onClick={() => onExport("json")} disabled={exporting || (events.length === 0 && !hasFilters)}>
+            Export JSON
           </Button>
         </div>
       </div>

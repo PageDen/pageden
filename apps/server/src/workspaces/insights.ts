@@ -19,7 +19,6 @@ const DOCUMENT_ACTIONS = new Set([
   "document_moved",
   "document_deleted",
   "document_restored",
-  "document_read_by_agent",
   "document_marked_canonical",
   "document_marked_superseded",
   "document_marked_draft",

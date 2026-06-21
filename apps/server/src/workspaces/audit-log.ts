@@ -22,6 +22,15 @@ function defaultRetentionDays(): number {
   return Number.isFinite(n) ? n : 365;
 }
 
+// Operator guardrail: an optional hard ceiling that overrides per-workspace
+// settings (including "keep forever"). 0/unset = no cap.
+function maxRetentionDays(): number {
+  const raw = process.env.AUDIT_MAX_RETENTION_DAYS;
+  if (raw === undefined || raw === "") return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 const SENSITIVE_KEY = /token|secret|password|hash|authorization|cookie|apikey|api_key|\bkey\b/i;
 
 /**
@@ -126,11 +135,14 @@ function toDto(e: Prisma.AuditEventGetPayload<{ select: typeof eventSelect }>) {
 /** Delete audit events older than each workspace's effective retention. Cloud-only; failure-safe. */
 export async function pruneAuditEvents(): Promise<number> {
   const fallback = defaultRetentionDays();
+  const cap = maxRetentionDays(); // 0 = no operator cap
   const workspaces = await prisma.workspace.findMany({ select: { id: true, auditRetentionDays: true } });
   let deleted = 0;
   for (const ws of workspaces) {
-    const days = ws.auditRetentionDays ?? fallback;
-    if (days <= 0) continue; // 0 (or default 0) = keep forever
+    let days = ws.auditRetentionDays ?? fallback;
+    // Operator cap overrides per-workspace values, including "keep forever" (0).
+    if (cap > 0) days = days <= 0 ? cap : Math.min(days, cap);
+    if (days <= 0) continue; // keep forever (only possible when no cap is set)
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const res = await prisma.auditEvent.deleteMany({ where: { workspaceId: ws.id, createdAt: { lt: cutoff } } });
     if (res.count > 0) {
@@ -186,7 +198,7 @@ export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void
       const workspaceId = request.params.id;
       if (!(await requireAdmin(request, reply, workspaceId))) return reply;
       const format = String(request.query.format ?? "csv");
-      if (format !== "csv") return validationError(reply, { format: "Only csv export is supported." });
+      if (format !== "csv" && format !== "json") return validationError(reply, { format: "format must be csv or json." });
       const filters = parseFilters(workspaceId, request.query, reply);
       if (!filters) return reply;
 
@@ -198,11 +210,22 @@ export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void
       });
       const truncated = rows.length > AUDIT_EXPORT_CAP;
       if (truncated) rows.pop();
+      const events = rows.map(toDto);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const base = reply
+        .header("content-disposition", `attachment; filename="audit-${workspaceId}-${stamp}.${format}"`)
+        .header("x-content-type-options", "nosniff")
+        .header("x-audit-export-truncated", truncated ? "true" : "false");
+
+      if (format === "json") {
+        return base
+          .header("content-type", "application/json; charset=utf-8")
+          .send(JSON.stringify({ events, truncated, cap: AUDIT_EXPORT_CAP }, null, 2));
+      }
 
       const header = ["createdAt", "action", "actorEmail", "targetType", "targetId", "ipAddress", "userAgent", "metadata"];
       const lines = [header.join(",")];
-      for (const e of rows) {
-        const dto = toDto(e);
+      for (const dto of events) {
         lines.push(
           [
             dto.createdAt,
@@ -219,13 +242,7 @@ export async function registerAuditLogRoutes(app: FastifyInstance): Promise<void
         );
       }
       if (truncated) lines.push(csvCell(`[truncated to ${AUDIT_EXPORT_CAP} most-recent rows — narrow the filters]`));
-      const filename = `audit-${workspaceId}-${new Date().toISOString().slice(0, 10)}.csv`;
-      return reply
-        .header("content-type", "text/csv; charset=utf-8")
-        .header("content-disposition", `attachment; filename="${filename}"`)
-        .header("x-content-type-options", "nosniff")
-        .header("x-audit-export-truncated", truncated ? "true" : "false")
-        .send(`${lines.join("\n")}\n`);
+      return base.header("content-type", "text/csv; charset=utf-8").send(`${lines.join("\n")}\n`);
     },
   );
 

@@ -206,7 +206,9 @@ describe("MCP agent access", () => {
 
     const activity = toolJson(await tool(s.token, "pageden_activity_timeline", { limit: 20 }));
     const actions = activity.events.map((event: { action: string }) => event.action);
-    expect(actions).toContain("document_read_by_agent");
+    // Agent reads are no longer persisted as audit events, so they don't appear
+    // in the activity timeline; document changes still do.
+    expect(actions).not.toContain("document_read_by_agent");
     expect(actions).toContain("document_marked_draft");
   });
 
