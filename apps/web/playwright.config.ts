@@ -21,10 +21,6 @@ const serverEnv = {
   BOOTSTRAP_ADMIN_PASSWORD: required("BOOTSTRAP_ADMIN_PASSWORD"),
   RATE_LIMIT_MAX: "1000000",
   LOGIN_RATE_LIMIT_MAX: "1000000",
-  // Exercise the multi-tenant cloud surface (workspace URL field, branding).
-  // Requests come from localhost so host-based routing stays inert.
-  CLOUD_HOSTED: "true",
-  BASE_DOMAIN: "pageden.app",
 };
 
 export default defineConfig({
