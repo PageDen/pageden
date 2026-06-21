@@ -22,6 +22,7 @@ import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, w
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
 import { registerWorkspaceLogoRoutes, workspaceLogoUrl } from "./workspaces/logo.js";
+import { registerAuditLogRoutes } from "./workspaces/audit-log.js";
 import { registerCommentRoutes } from "./documents/comments.js";
 import { registerClaimRoutes } from "./documents/claims.js";
 import { registerPublicShareRoutes, registerShareRoutes } from "./documents/shares.js";
@@ -165,6 +166,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerShareRoutes(app);
   await registerPublicShareRoutes(app);
   await registerWorkspaceLogoRoutes(app);
+  await registerAuditLogRoutes(app);
 
   app.get<{ Querystring: { subdomain?: string } }>("/api/workspaces/availability", async (request) => {
     const subdomain = normalizeWorkspaceSubdomain(request.query.subdomain ?? "");

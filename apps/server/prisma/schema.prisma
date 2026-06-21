@@ -112,6 +112,10 @@ model Workspace {
   logoStorageKey         String?
   logoContentType        String?
   logoSha                String?
+  // Cloud-only audit-log retention. null = use the cloud default
+  // (AUDIT_DEFAULT_RETENTION_DAYS); 0 = keep forever; >0 = prune events older
+  // than N days. Self-hosted never prunes (gated by cloudHosted).
+  auditRetentionDays     Int?
   // Phase C2: agent edit scope. When set, agent tokens may only WRITE inside this
   // folder subtree (read-anywhere is unaffected). Null = agents write anywhere,
   // which is the historical behavior. Cleared automatically by FK SetNull if the
