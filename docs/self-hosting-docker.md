@@ -252,6 +252,4 @@ Check that the `pageden_storage` volume still exists and is mounted by the `serv
 docker compose -f docker-compose.selfhost.yml config
 ```
 
-## Self-host feature boundary
-
-The self-host stack sets `CLOUD_HOSTED=false`. It should not require Mixpanel, Sentry, hosted-service OAuth connector cards, cloud wildcard routing, or Pageden-hosted operations infrastructure.
+#
