@@ -2,7 +2,7 @@
 
 This guide runs the public-core Pageden app with Docker Compose. It is for self-hosted deployments only and keeps cloud-only hosted-service features disabled by default.
 
-The default stack uses published GHCR images, PostgreSQL, the Pageden server, the Pageden web UI, local filesystem storage, and one-shot migration/seed jobs. You do not need Node, pnpm, Prisma, or nginx installed on the host.
+The default stack builds the Pageden server and web images from this checkout, then runs PostgreSQL, the API server, the web UI, local filesystem storage, and one-shot migration/seed jobs. You do not need Node, pnpm, Prisma, or nginx installed on the host.
 
 ## Requirements
 
@@ -61,11 +61,10 @@ Volume names are prefixed by the Compose project name. Run `docker volume ls` if
 
    Use URL-safe characters for `POSTGRES_PASSWORD` because `docker-compose.selfhost.yml` builds `DATABASE_URL` from the database env vars.
 
-5. Pull and start the stack.
+5. Build and start the stack.
 
    ```bash
-   docker compose -f docker-compose.selfhost.yml pull
-   docker compose -f docker-compose.selfhost.yml up -d
+   docker compose -f docker-compose.selfhost.yml up -d --build
    ```
 
 6. Verify the app.
@@ -87,8 +86,8 @@ Volume names are prefixed by the Compose project name. Run `docker volume ls` if
 
 | Env var | Required | Example | Notes |
 |---|---:|---|---|
-| `PAGEDEN_SERVER_IMAGE` | no | `ghcr.io/pageden/pageden-server:latest` | Pin to a version tag in production when available. |
-| `PAGEDEN_WEB_IMAGE` | no | `ghcr.io/pageden/pageden-web:latest` | Pin to the same version tag as the server image. |
+| `PAGEDEN_SERVER_IMAGE` | no | `pageden-server:selfhost` | Local server image tag built by Compose. Advanced users may override with a published image tag. |
+| `PAGEDEN_WEB_IMAGE` | no | `pageden-web:selfhost` | Local web image tag built by Compose. Advanced users may override with a published image tag. |
 | `PAGEDEN_WEB_PORT` | no | `3000` | Host port mapped to the web container. |
 | `POSTGRES_DB` | yes | `pageden` | Database created by the Postgres image. |
 | `POSTGRES_USER` | yes | `pageden` | Database user. |
@@ -124,14 +123,12 @@ The first self-host implementation intentionally does not include a Caddy, certb
 
 ## Updating
 
-If you use `latest` images:
+When deploying from a Git checkout, pull the latest source and rebuild the local images:
 
 ```bash
-docker compose -f docker-compose.selfhost.yml pull
-docker compose -f docker-compose.selfhost.yml up -d
+git pull --ff-only
+docker compose -f docker-compose.selfhost.yml up -d --build
 ```
-
-If you pin images, update `PAGEDEN_SERVER_IMAGE` and `PAGEDEN_WEB_IMAGE` in `.env`, then run the same commands.
 
 The stack runs migrations before the server starts:
 
@@ -200,36 +197,19 @@ Start the full stack:
 docker compose -f docker-compose.selfhost.yml up -d
 ```
 
-## Source-build fallback
+## Optional published-image override
 
-The default self-host path uses prebuilt GHCR images. If you need to build from local source, create a local override file such as `docker-compose.selfhost.build.yml`:
+The default stack builds local `pageden-server:selfhost` and `pageden-web:selfhost` images from this checkout. If published container images are available in your environment, advanced users may override the image tags in `.env`:
 
-```yaml
-services:
-  migrate:
-    build:
-      context: .
-      dockerfile: apps/server/Dockerfile
-  seed:
-    build:
-      context: .
-      dockerfile: apps/server/Dockerfile
-  server:
-    build:
-      context: .
-      dockerfile: apps/server/Dockerfile
-  web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-      args:
-        VITE_WORKSPACE_BASE_DOMAIN: ${VITE_WORKSPACE_BASE_DOMAIN:-pageden.app}
+```dotenv
+PAGEDEN_SERVER_IMAGE=ghcr.io/pageden/pageden-server:v1.2.3
+PAGEDEN_WEB_IMAGE=ghcr.io/pageden/pageden-web:v1.2.3
 ```
 
 Then run:
 
 ```bash
-docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d --build
+docker compose -f docker-compose.selfhost.yml up -d
 ```
 
 Do not set `VITE_API_BASE_URL` to `http://localhost:4000/api` for self-hosted production. The web image should use same-origin `/api`, and `apps/web/nginx.conf` proxies `/api` to the `server` container.
