@@ -32,7 +32,6 @@ const DOCUMENT_ACTIONS = new Set([
   "comment_resolved",
   "comment_resolved_by_agent",
   "comment_deleted",
-  "mcp_tool_called",
 ]);
 
 type ActorKind = "user" | "agent" | "system" | "obsidian_plugin" | "unknown";
