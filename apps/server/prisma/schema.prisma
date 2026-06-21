@@ -106,6 +106,12 @@ model Workspace {
   customDomain           String?               @unique
   customDomainStatus     CustomDomainStatus    @default(pending)
   customDomainVerifiedAt DateTime?
+  // Cloud-only workspace branding: a company logo shown on the subdomain login/
+  // signup pages and the in-app sidebar. Bytes live in blob storage under the
+  // workspace prefix; logoSha versions the public URL for cache-busting.
+  logoStorageKey         String?
+  logoContentType        String?
+  logoSha                String?
   // Phase C2: agent edit scope. When set, agent tokens may only WRITE inside this
   // folder subtree (read-anywhere is unaffected). Null = agents write anywhere,
   // which is the historical behavior. Cleared automatically by FK SetNull if the

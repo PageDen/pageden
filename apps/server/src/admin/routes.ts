@@ -8,6 +8,8 @@ import { hashPassword } from "../passwords.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { canManageWorkspace } from "../permissions/index.js";
 import { resolveWorkspaceContext } from "../workspaces/context.js";
+import { workspaceLogoUrl } from "../workspaces/logo.js";
+import { env } from "../env.js";
 import { normalizeHostname, normalizeWorkspaceSubdomain, validateCustomDomain, validateWorkspaceSubdomain } from "../workspaces/domains.js";
 
 function slugify(value: string): string {
@@ -31,7 +33,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       where: { userId: auth.userId },
       select: {
         role: true,
-        workspace: { select: { id: true, name: true, slug: true, subdomain: true, customDomain: true, customDomainStatus: true } },
+        workspace: { select: { id: true, name: true, slug: true, subdomain: true, customDomain: true, customDomainStatus: true, logoStorageKey: true, logoSha: true } },
       },
     });
     return {
@@ -42,6 +44,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         subdomain: membership.workspace.subdomain,
         customDomain: membership.workspace.customDomain,
         customDomainStatus: membership.workspace.customDomainStatus,
+        logoUrl: workspaceLogoUrl(membership.workspace),
         role: membership.role,
       })),
     };
@@ -52,17 +55,23 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "create");
     const name = request.body.name?.trim() ?? "";
-    const subdomain = normalizeWorkspaceSubdomain(request.body.subdomain ?? "");
+    const subdomainInput = normalizeWorkspaceSubdomain(request.body.subdomain ?? "");
+    // Subdomains are a cloud-only concept; self-hosted stores null.
+    const subdomain: string | null = env.cloudHosted ? subdomainInput : subdomainInput || null;
     const fields: Record<string, string> = {};
     if (!name) fields.name = "Company name is required.";
-    const subdomainError = validateWorkspaceSubdomain(subdomain);
-    if (subdomainError) fields.subdomain = subdomainError;
+    if (env.cloudHosted) {
+      const subdomainError = validateWorkspaceSubdomain(subdomainInput);
+      if (subdomainError) fields.subdomain = subdomainError;
+    }
     if (Object.keys(fields).length > 0) return validationError(reply, fields);
 
-    const existing = await prisma.workspace.findUnique({ where: { subdomain }, select: { id: true } });
-    if (existing) return validationError(reply, { subdomain: "That workspace URL is already taken." });
+    if (subdomain) {
+      const existing = await prisma.workspace.findUnique({ where: { subdomain }, select: { id: true } });
+      if (existing) return validationError(reply, { subdomain: "That workspace URL is already taken." });
+    }
 
-    const base = slugify(name) || subdomain;
+    const base = slugify(name) || subdomain || "workspace";
     const workspace = await prisma.$transaction(async (tx) => {
       const created = await tx.workspace.create({
         data: { name, slug: `${base}-${randomBytes(6).toString("hex")}`, subdomain },
@@ -83,6 +92,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         subdomain: workspace.subdomain,
         customDomain: workspace.customDomain,
         customDomainStatus: workspace.customDomainStatus,
+        logoUrl: workspaceLogoUrl(workspace),
         role: "admin",
       },
     });
@@ -105,7 +115,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           data: { customDomain: null, customDomainStatus: "pending", customDomainVerifiedAt: null },
         });
         await writeAuditEvent({ workspaceId, userId: auth.userId, action: "custom_domain_removed", targetType: "workspace", targetId: workspaceId });
-        return { workspace: { id: workspace.id, name: workspace.name, slug: workspace.slug, subdomain: workspace.subdomain, customDomain: null, customDomainStatus: workspace.customDomainStatus, role: "admin" } };
+        return { workspace: { id: workspace.id, name: workspace.name, slug: workspace.slug, subdomain: workspace.subdomain, customDomain: null, customDomainStatus: workspace.customDomainStatus, logoUrl: workspaceLogoUrl(workspace), role: "admin" } };
       }
 
       const customDomain = normalizeHostname(raw);
@@ -129,6 +139,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           subdomain: workspace.subdomain,
           customDomain: workspace.customDomain,
           customDomainStatus: workspace.customDomainStatus,
+          logoUrl: workspaceLogoUrl(workspace),
           role: "admin",
         },
       };

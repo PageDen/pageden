@@ -3,6 +3,7 @@ import {
   currentWorkspaceSchema,
   workspaceAvailabilitySchema,
   workspaceCreateSchema,
+  workspaceLogoSchema,
   attachmentSchema,
   attachmentListSchema,
   documentCreateSchema,
@@ -138,6 +139,22 @@ export const api = {
     request("GET", `/workspaces/availability?subdomain=${encodeURIComponent(subdomain)}`, { schema: workspaceAvailabilitySchema }),
   createWorkspace: (name: string, subdomain: string) =>
     request("POST", "/workspaces", { body: { name, subdomain }, schema: workspaceCreateSchema }),
+  uploadWorkspaceLogo: async (workspaceId: string, file: File) => {
+    const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}/logo`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const json = safeJson(await res.text());
+    if (res.status === 401 && onUnauthorized) onUnauthorized();
+    if (!res.ok) throw new ApiError(res.status, json);
+    const parsed = workspaceLogoSchema.safeParse(json);
+    if (!parsed.success) throw new ApiError(res.status, json);
+    return parsed.data;
+  },
+  deleteWorkspaceLogo: (workspaceId: string) =>
+    request("DELETE", `/workspaces/${encodeURIComponent(workspaceId)}/logo`, { schema: okSchema }),
   setWorkspaceCustomDomain: (workspaceId: string, customDomain: string | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/custom-domain`, { body: { customDomain }, schema: workspaceCreateSchema }),
   register: (email: string, name: string, password: string, companyName: string, subdomain: string, captchaToken?: string) =>

@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { api, ApiError } from "../../lib/api";
 import { GoogleButton } from "./google-button";
+import { AuthBrandHeader } from "./auth-brand-header";
 import { Input } from "../../components/ui/input";
 import { PasswordInput } from "../../components/ui/password-input";
 import { track } from "../../lib/analytics-bus";
@@ -42,15 +43,7 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <form onSubmit={onSubmit} className="w-full max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-7 shadow-sm">
-        <div className="mb-5">
-          <div className="flex items-center gap-2.5 mb-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-600 text-sm font-semibold text-white shadow-sm">
-              P
-            </span>
-            <span className="text-sm font-semibold text-slate-900">Pageden</span>
-          </div>
-          <p className="text-xs text-slate-400 leading-snug">One source of truth for people and AI.</p>
-        </div>
+        <AuthBrandHeader />
         <div>
           <h1 className="text-2xl font-medium text-slate-900 mb-1">Sign in</h1>
           <p className="text-sm text-slate-500">Welcome back to your workspace.</p>

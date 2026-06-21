@@ -361,7 +361,8 @@ describe("registration / email verification", () => {
     expect(dup.json().fields).toHaveProperty("email");
     const bad = await req({ method: "POST", url: "/api/auth/register", payload: { email: "notanemail", name: "", password: "short" } });
     expect(bad.statusCode).toBe(400);
-    expect(Object.keys(bad.json().fields).sort()).toEqual(["companyName", "email", "name", "password", "subdomain"]);
+    // subdomain is only required on the cloud host (CLOUD_HOSTED); this suite runs self-hosted.
+    expect(Object.keys(bad.json().fields).sort()).toEqual(["companyName", "email", "name", "password"]);
   });
 
   it("verifies email with the emailed token (single-use) and flips /api/me", async () => {

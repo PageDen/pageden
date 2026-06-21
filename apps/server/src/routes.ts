@@ -21,6 +21,7 @@ import { registerImportRoutes } from "./import/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
+import { registerWorkspaceLogoRoutes, workspaceLogoUrl } from "./workspaces/logo.js";
 import { registerCommentRoutes } from "./documents/comments.js";
 import { registerClaimRoutes } from "./documents/claims.js";
 import { registerPublicShareRoutes, registerShareRoutes } from "./documents/shares.js";
@@ -76,7 +77,7 @@ async function mePayload(userId: string) {
       workspaceMemberships: {
         select: {
           role: true,
-          workspace: { select: { id: true, name: true, slug: true, subdomain: true, customDomain: true, customDomainStatus: true } },
+          workspace: { select: { id: true, name: true, slug: true, subdomain: true, customDomain: true, customDomainStatus: true, logoStorageKey: true, logoSha: true } },
         },
       },
     },
@@ -93,6 +94,7 @@ async function mePayload(userId: string) {
       subdomain: membership.workspace.subdomain,
       customDomain: membership.workspace.customDomain,
       customDomainStatus: membership.workspace.customDomainStatus,
+      logoUrl: workspaceLogoUrl(membership.workspace),
       role: membership.role,
     })),
   };
@@ -162,6 +164,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerClaimRoutes(app);
   await registerShareRoutes(app);
   await registerPublicShareRoutes(app);
+  await registerWorkspaceLogoRoutes(app);
 
   app.get<{ Querystring: { subdomain?: string } }>("/api/workspaces/availability", async (request) => {
     const subdomain = normalizeWorkspaceSubdomain(request.query.subdomain ?? "");
@@ -179,13 +182,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const route = workspaceRouteFromHost(requestHost(request));
     if (!route) return { workspace: null, routingMode: null };
 
-    const workspace = await prisma.workspace.findFirst({
+    const found = await prisma.workspace.findFirst({
       where:
         route.mode === "cloud_subdomain"
           ? { subdomain: route.subdomain }
           : { customDomain: route.customDomain, customDomainStatus: "active" },
-      select: { id: true, name: true, slug: true, subdomain: true, customDomain: true },
+      select: { id: true, name: true, slug: true, subdomain: true, customDomain: true, logoStorageKey: true, logoSha: true },
     });
+    const workspace = found
+      ? { id: found.id, name: found.name, slug: found.slug, subdomain: found.subdomain, customDomain: found.customDomain, logoUrl: workspaceLogoUrl(found) }
+      : null;
 
     return { workspace, routingMode: workspace ? route.mode : null };
   });
@@ -441,13 +447,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       const name = request.body?.name?.trim() ?? "";
       const password = request.body?.password ?? "";
       const companyName = request.body?.companyName?.trim() ?? "";
-      const subdomain = normalizeWorkspaceSubdomain(request.body?.subdomain ?? "");
+      const subdomainInput = normalizeWorkspaceSubdomain(request.body?.subdomain ?? "");
+      // Subdomains only matter on the multi-tenant cloud host. Self-hosted is
+      // single-tenant, so the workspace URL is optional there and stored as null.
+      const subdomain: string | null = env.cloudHosted ? subdomainInput : subdomainInput || null;
       const fields: Record<string, string> = {};
       if (!isValidEmailShape(email)) fields.email = "A valid email is required.";
       if (!name) fields.name = "Name is required.";
       if (!companyName) fields.companyName = "Company name is required.";
-      const subdomainError = validateWorkspaceSubdomain(subdomain);
-      if (subdomainError) fields.subdomain = subdomainError;
+      if (env.cloudHosted) {
+        const subdomainError = validateWorkspaceSubdomain(subdomainInput);
+        if (subdomainError) fields.subdomain = subdomainError;
+      }
       if (password.length < MIN_PASSWORD_LENGTH) fields.password = `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
       if (Object.keys(fields).length > 0) return validationError(reply, fields);
 
@@ -470,11 +481,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const passwordHash = await hashPassword(password);
-      const base = slugify(companyName) || subdomain;
+      const base = slugify(companyName) || subdomain || "workspace";
       let created: { user: { id: string }; workspace: { id: string } };
       try {
         created = await prisma.$transaction(async (tx) => {
-          if (await tx.workspace.findUnique({ where: { subdomain }, select: { id: true } })) {
+          if (subdomain && (await tx.workspace.findUnique({ where: { subdomain }, select: { id: true } }))) {
             throw new Error("SUBDOMAIN_TAKEN");
           }
           const user = await tx.user.create({ data: { email, name, passwordHash, emailVerified: false } });
@@ -582,6 +593,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/auth/config", async () => ({
     googleEnabled: getGoogleClient() !== null,
     captcha: getSignupGuardCaptcha(),
+    cloudHosted: env.cloudHosted,
   }));
 
   const OAUTH_COOKIE_OPTIONS = {

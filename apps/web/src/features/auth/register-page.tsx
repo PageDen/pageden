@@ -8,6 +8,7 @@ import { PasswordInput } from "../../components/ui/password-input";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { TurnstileWidget } from "../../components/turnstile";
+import { AuthBrandHeader } from "./auth-brand-header";
 import { identifyUser, track } from "../../lib/analytics-bus";
 
 function subdomainFromName(value: string): string {
@@ -64,15 +65,7 @@ export function RegisterPage() {
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <form onSubmit={onSubmit} className="w-full max-w-sm space-y-3.5 rounded-lg border border-slate-200 bg-white p-7 shadow-sm">
-        <div className="mb-5">
-          <div className="flex items-center gap-2.5 mb-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-600 text-sm font-semibold text-white shadow-sm">
-              P
-            </span>
-            <span className="text-sm font-semibold text-slate-900">Pageden</span>
-          </div>
-          <p className="text-xs text-slate-400 leading-snug">One source of truth for people and AI.</p>
-        </div>
+        <AuthBrandHeader />
         <div>
           <h1 className="text-2xl font-medium text-slate-900 mb-1">Create your workspace</h1>
           <p className="text-sm text-slate-500">Free to start. Invite your team later.</p>
@@ -103,29 +96,31 @@ export function RegisterPage() {
             required
           />
         </label>
-        <label className="block space-y-1">
-          <span className="text-sm font-medium">Workspace URL</span>
-          <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100">
-            <Input
-              aria-label="Workspace URL"
-              value={subdomain}
-              onChange={(e) => {
-                setSubdomainEdited(true);
-                setSubdomain(e.target.value.toLowerCase());
-              }}
-              className="h-10 border-0 focus:border-transparent focus:ring-0"
-              required
-            />
-            <span className="shrink-0 pr-3 text-sm text-slate-500">.{workspaceBaseDomain}</span>
-          </div>
-          {availability.isFetching ? (
-            <p className="text-xs text-slate-400">Checking availability…</p>
-          ) : availability.data ? (
-            <p className={`text-xs ${availability.data.available ? "text-green-700" : "text-red-600"}`}>
-              {availability.data.available ? "Available" : availability.data.reason}
-            </p>
-          ) : null}
-        </label>
+        {authConfig.data?.cloudHosted ? (
+          <label className="block space-y-1">
+            <span className="text-sm font-medium">Workspace URL</span>
+            <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100">
+              <Input
+                aria-label="Workspace URL"
+                value={subdomain}
+                onChange={(e) => {
+                  setSubdomainEdited(true);
+                  setSubdomain(e.target.value.toLowerCase());
+                }}
+                className="h-10 border-0 focus:border-transparent focus:ring-0"
+                required
+              />
+              <span className="shrink-0 pr-3 text-sm text-slate-500">.{workspaceBaseDomain}</span>
+            </div>
+            {availability.isFetching ? (
+              <p className="text-xs text-slate-400">Checking availability…</p>
+            ) : availability.data ? (
+              <p className={`text-xs ${availability.data.available ? "text-green-700" : "text-red-600"}`}>
+                {availability.data.available ? "Available" : availability.data.reason}
+              </p>
+            ) : null}
+          </label>
+        ) : null}
         {captcha ? <TurnstileWidget siteKey={captcha.siteKey} onToken={setCaptchaToken} /> : null}
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <button
