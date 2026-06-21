@@ -4,6 +4,8 @@ import {
   workspaceAvailabilitySchema,
   workspaceCreateSchema,
   workspaceLogoSchema,
+  auditListSchema,
+  auditRetentionSchema,
   attachmentSchema,
   attachmentListSchema,
   documentCreateSchema,
@@ -130,6 +132,28 @@ async function request<T>(method: string, path: string, opts: RequestOptions<T> 
   return json as T;
 }
 
+export type AuditFilters = {
+  action?: string[];
+  actorUserId?: string;
+  from?: string;
+  to?: string;
+  before?: string;
+  limit?: number;
+  format?: string;
+};
+
+function auditQuery(filters: AuditFilters): string {
+  const qs = new URLSearchParams();
+  for (const a of filters.action ?? []) qs.append("action", a);
+  if (filters.actorUserId) qs.set("actorUserId", filters.actorUserId);
+  if (filters.from) qs.set("from", filters.from);
+  if (filters.to) qs.set("to", filters.to);
+  if (filters.before) qs.set("before", filters.before);
+  if (filters.limit) qs.set("limit", String(filters.limit));
+  if (filters.format) qs.set("format", filters.format);
+  return qs.toString();
+}
+
 export const api = {
   me: () => request("GET", "/me", { schema: meResponseSchema }),
   markOnboarded: () => request("POST", "/me/onboarded", { schema: okSchema }),
@@ -155,6 +179,20 @@ export const api = {
   },
   deleteWorkspaceLogo: (workspaceId: string) =>
     request("DELETE", `/workspaces/${encodeURIComponent(workspaceId)}/logo`, { schema: okSchema }),
+  auditEvents: (workspaceId: string, filters: AuditFilters = {}) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/audit?${auditQuery(filters)}`, { schema: auditListSchema }),
+  auditRetention: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { schema: auditRetentionSchema }),
+  setAuditRetention: (workspaceId: string, auditRetentionDays: number | null) =>
+    request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/audit-retention`, { body: { auditRetentionDays }, schema: auditRetentionSchema }),
+  downloadAuditCsv: async (workspaceId: string, filters: AuditFilters = {}) => {
+    const qs = auditQuery({ ...filters, format: "csv" });
+    const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}/audit/export?${qs}`, { credentials: "include" });
+    if (res.status === 401 && onUnauthorized) onUnauthorized();
+    if (!res.ok) throw new ApiError(res.status, safeJson(await res.text()));
+    const blob = await res.blob();
+    return { blob, truncated: res.headers.get("x-audit-export-truncated") === "true", filename: `audit-${workspaceId}-${new Date().toISOString().slice(0, 10)}.csv` };
+  },
   setWorkspaceCustomDomain: (workspaceId: string, customDomain: string | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/custom-domain`, { body: { customDomain }, schema: workspaceCreateSchema }),
   register: (email: string, name: string, password: string, companyName: string, subdomain: string, captchaToken?: string) =>

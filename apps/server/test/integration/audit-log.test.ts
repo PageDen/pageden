@@ -1,0 +1,84 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { closeApp, getApp, req } from "../helpers/app.js";
+import { prisma, resetDb } from "../helpers/db.js";
+import { baseScenario, createWorkspace, member } from "../fixtures/seed.js";
+import { pruneAuditEvents } from "../../src/workspaces/audit-log.js";
+
+beforeAll(async () => {
+  await getApp();
+});
+afterAll(async () => {
+  await closeApp();
+  await prisma.$disconnect();
+});
+beforeEach(async () => {
+  process.env.CLOUD_HOSTED = "true";
+  await resetDb();
+});
+afterEach(() => {
+  delete process.env.CLOUD_HOSTED;
+});
+
+describe("cloud audit log", () => {
+  it("lists workspace-scoped events with redacted metadata; excludes other-ws and null-ws", async () => {
+    const s = await baseScenario();
+    const other = await createWorkspace("Other", "other");
+    await prisma.auditEvent.create({
+      data: { workspaceId: s.ws.id, userId: s.admin.id, action: "permission_added", targetType: "document", targetId: "d1", metadata: { tokenHash: "secret", role: "editor" } },
+    });
+    await prisma.auditEvent.create({ data: { workspaceId: other.id, action: "permission_added", targetType: "document", targetId: "x" } });
+    await prisma.auditEvent.create({ data: { workspaceId: null, userId: s.admin.id, action: "login_succeeded", targetType: "user", targetId: s.admin.id } });
+
+    const res = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit?action=permission_added`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const events = res.json().events as Array<{ action: string; actor: { email: string } | null; metadata: Record<string, unknown> | null }>;
+    expect(events).toHaveLength(1);
+    expect(events[0].action).toBe("permission_added");
+    expect(events[0].metadata?.tokenHash).toBe("[redacted]");
+    expect(events[0].metadata?.role).toBe("editor");
+    expect(events[0].actor?.email).toBe("admin@t.co");
+  });
+
+  it("404s for non-admins and when cloud is disabled", async () => {
+    const s = await baseScenario();
+    const m = await member(s.ws.id, "member@t.co", "member");
+    expect((await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit`, cookies: m.cookie })).statusCode).toBe(404);
+
+    delete process.env.CLOUD_HOSTED;
+    expect((await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit`, cookies: s.adminCookie })).statusCode).toBe(404);
+  });
+
+  it("exports CSV with attachment headers", async () => {
+    const s = await baseScenario();
+    const res = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit/export?format=csv`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-disposition"]).toContain("attachment");
+    expect(res.headers["content-type"]).toContain("text/csv");
+    expect(String(res.body).split("\n")[0]).toContain("createdAt,action");
+  });
+
+  it("rejects an invalid date filter", async () => {
+    const s = await baseScenario();
+    const res = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/audit?from=notadate`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("validates + persists retention and prunes only older events", async () => {
+    const s = await baseScenario();
+    expect(
+      (await req({ method: "PUT", url: `/api/workspaces/${s.ws.id}/settings/audit-retention`, cookies: s.adminCookie, payload: { auditRetentionDays: 4000 } })).statusCode,
+    ).toBe(400);
+    const ok = await req({ method: "PUT", url: `/api/workspaces/${s.ws.id}/settings/audit-retention`, cookies: s.adminCookie, payload: { auditRetentionDays: 30 } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().auditRetentionDays).toBe(30);
+
+    const old = await prisma.auditEvent.create({
+      data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "old", createdAt: new Date(Date.now() - 100 * 864e5) },
+    });
+    const recent = await prisma.auditEvent.create({ data: { workspaceId: s.ws.id, action: "document_updated", targetType: "document", targetId: "recent" } });
+
+    await pruneAuditEvents();
+    expect(await prisma.auditEvent.findUnique({ where: { id: old.id } })).toBeNull();
+    expect(await prisma.auditEvent.findUnique({ where: { id: recent.id } })).not.toBeNull();
+  });
+});

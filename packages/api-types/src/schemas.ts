@@ -647,6 +647,23 @@ export const workspaceAvailabilitySchema = z
   .strict();
 export const workspaceCreateSchema = z.object({ workspace: workspaceDtoSchema }).strict();
 export const workspaceLogoSchema = z.object({ logoUrl: z.string() }).strict();
+
+// Cloud-only audit log (admin viewer). `metadata` is redacted/allowlisted server-side.
+export const auditEventSchema = z
+  .object({
+    id: z.string(),
+    createdAt: iso,
+    action: z.string(),
+    actor: z.object({ id: z.string(), email: z.string(), name: z.string() }).strict().nullable(),
+    targetType: z.string(),
+    targetId: z.string().nullable(),
+    ipAddress: z.string().nullable(),
+    userAgent: z.string().nullable(),
+    metadata: z.record(z.unknown()).nullable(),
+  })
+  .strict();
+export const auditListSchema = z.object({ events: z.array(auditEventSchema), next: z.string().nullable() }).strict();
+export const auditRetentionSchema = z.object({ auditRetentionDays: z.number().int().nullable() }).strict();
 export const usersListSchema = z
   .object({
     users: z.array(
