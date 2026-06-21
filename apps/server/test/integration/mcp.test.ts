@@ -86,10 +86,19 @@ describe("MCP agent access", () => {
     expect(init.json().result.serverInfo.name).toBe("pageden");
 
     const listed = await rpc(s.token, "tools/list");
-    const toolNames = listed.json().result.tools.map((t: { name: string }) => t.name);
+    const tools = listed.json().result.tools as Array<{ name: string; annotations?: Record<string, unknown> }>;
+    const toolNames = tools.map((t) => t.name);
     expect(toolNames).toContain("pageden_search");
     expect(toolNames).toContain("pageden_upsert_document_by_path");
     expect(toolNames).toContain("pageden_import_markdown_tree");
+    expect(tools.find((t) => t.name === "pageden_add_section_comment")?.annotations).toMatchObject({
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(tools.find((t) => t.name === "pageden_update_document")?.annotations).toMatchObject({
+      destructiveHint: true,
+      openWorldHint: false,
+    });
 
     const search = await tool(s.token, "pageden_search", { workspaceId: s.ws.id, query: "Runbook" });
     expect(search.statusCode).toBe(200);

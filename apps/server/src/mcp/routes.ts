@@ -251,6 +251,7 @@ const tools = [
   {
     name: "pageden_update_document",
     description: "Replace a document's Markdown content using baseVersion conflict protection.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -265,6 +266,7 @@ const tools = [
   {
     name: "pageden_append_to_document",
     description: "Append Markdown to a document using the latest version.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -277,6 +279,7 @@ const tools = [
   {
     name: "pageden_replace_section",
     description: "Replace the body of one section identified by heading anchor without round-tripping the full document. Heading stays put; pass the new section CONTENT only. Returns anchor_not_found with candidate anchors when the heading does not exist.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -401,7 +404,8 @@ const tools = [
   },
   {
     name: "pageden_add_section_comment",
-    description: "Add an inline review comment on a document, optionally anchored to a heading. Use for raising open questions or noting blockers without rewriting the doc prose.",
+    description: "Add a non-destructive inline review comment on a document, optionally anchored to a heading. Use for raising open questions or noting blockers without rewriting the doc prose. If this tool is unavailable or cancelled, report that the comment was not added instead of falling back to editing the document body.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
