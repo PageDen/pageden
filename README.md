@@ -123,9 +123,14 @@ Run `pnpm db:generate` after changing `apps/server/prisma/schema.prisma`.
 
 ## Deployment
 
-This public repository is for the open-source app and local/self-host development. For
-self-hosting, build the app with the commands above and run it with your own PostgreSQL
-database, object storage, reverse proxy, and TLS setup.
+This public repository is for the open-source app and local/self-host development.
+
+For the Docker-based self-host stack, see [Self-host Pageden with Docker](docs/self-hosting-docker.md).
+The stack uses PostgreSQL, the Pageden server and web images, one-shot migration/seed jobs,
+and persistent filesystem storage.
+
+For custom deployments, build the app with the commands above and run it with your own
+PostgreSQL database, storage, reverse proxy, and TLS setup.
 
 ## Troubleshooting
 
