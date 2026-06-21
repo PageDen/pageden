@@ -72,17 +72,30 @@ describe("workspace logo", () => {
     expect(served.headers["content-type"]).toContain("image/png");
     expect(served.headers["x-content-type-options"]).toBe("nosniff");
 
-    // SVG is sanitized on upload.
+    // SVG is sanitized on upload, including malformed script endings and event handlers.
+    const maliciousSvg = `
+      <svg xmlns="http://www.w3.org/2000/svg">
+        <script>alert(1)</script>
+        <script>alert(2)</script\t\n bar>
+        <script src="https://evil.example/x.js" />
+        <foreignObject><div onclick="alert(3)">x</div></foreignObject>
+        <rect onload="alert(4)" style="background:url(javascript:alert(5))" href="java\nscript:alert(6)" xlink:href="#ok" width="1" />
+      </svg>`;
     const upSvg = await req({
       method: "POST",
       url: `/api/workspaces/${s.ws.id}/logo`,
       cookies: s.adminCookie,
       headers: { "content-type": "image/svg+xml" },
-      payload: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect/></svg>`),
+      payload: Buffer.from(maliciousSvg),
     });
     expect(upSvg.statusCode).toBe(200);
     const servedSvg = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/logo` });
-    expect(servedSvg.body).not.toContain("<script");
+    expect(servedSvg.body).not.toMatch(/<\s*script/i);
+    expect(servedSvg.body).not.toMatch(/<\s*foreignObject/i);
+    expect(servedSvg.body).not.toContain("onclick");
+    expect(servedSvg.body).not.toContain("onload");
+    expect(servedSvg.body).not.toContain("javascript:");
+    expect(servedSvg.body).toContain('xlink:href="#ok"');
 
     // Delete clears it.
     const del = await req({ method: "DELETE", url: `/api/workspaces/${s.ws.id}/logo`, cookies: s.adminCookie });

@@ -26,22 +26,142 @@ export function workspaceLogoUrl(ws: LogoFields): string | null {
   return ws.logoStorageKey ? `/api/workspaces/${ws.id}/logo?v=${ws.logoSha ?? ""}` : null;
 }
 
+const BLOCKED_SVG_ELEMENTS = new Set([
+  "script",
+  "foreignobject",
+  "iframe",
+  "object",
+  "embed",
+  "audio",
+  "video",
+  "canvas",
+]);
+
+const URL_ATTRIBUTES = new Set(["href", "xlink:href", "src"]);
+
+function readXmlName(input: string, start: number): { name: string; next: number } {
+  let i = start;
+  while (i < input.length && /[A-Za-z0-9:_.-]/.test(input[i] ?? "")) i += 1;
+  return { name: input.slice(start, i), next: i };
+}
+
+function escapeAttributeValue(value: string): string {
+  return value.replace(/[&"<>]/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case '"':
+        return "&quot;";
+      case "<":
+        return "&lt;";
+      default:
+        return "&gt;";
+    }
+  });
+}
+
+function safeUrlAttributeValue(value: string): boolean {
+  const normalized = Array.from(value)
+    .filter((char) => char.charCodeAt(0) > 31 && char.charCodeAt(0) !== 127 && !/\s/.test(char))
+    .join("")
+    .toLowerCase();
+  return normalized === "" || normalized.startsWith("#");
+}
+
+function sanitizeSvgAttributes(input: string): string {
+  const attrs: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    while (i < input.length && /\s/.test(input[i] ?? "")) i += 1;
+    if (i >= input.length) break;
+
+    const { name, next } = readXmlName(input, i);
+    if (!name) break;
+    i = next;
+
+    while (i < input.length && /\s/.test(input[i] ?? "")) i += 1;
+    if (input[i] !== "=") continue;
+    i += 1;
+    while (i < input.length && /\s/.test(input[i] ?? "")) i += 1;
+
+    const quote = input[i];
+    let value: string;
+    if (quote === '"' || quote === "'") {
+      i += 1;
+      const valueStart = i;
+      while (i < input.length && input[i] !== quote) i += 1;
+      value = input.slice(valueStart, i);
+      if (input[i] === quote) i += 1;
+    } else {
+      const valueStart = i;
+      while (i < input.length && !/\s/.test(input[i] ?? "")) i += 1;
+      value = input.slice(valueStart, i);
+    }
+
+    const lowerName = name.toLowerCase();
+    if (lowerName.startsWith("on")) continue;
+    if (lowerName === "style") continue;
+    if (URL_ATTRIBUTES.has(lowerName) && !safeUrlAttributeValue(value)) continue;
+    attrs.push(`${name}="${escapeAttributeValue(value)}"`);
+  }
+  return attrs.length > 0 ? ` ${attrs.join(" ")}` : "";
+}
+
 /**
- * Best-effort SVG hardening: strip scripts, event-handler attributes, external
- * fetching elements, and javascript: URLs. Defense-in-depth only — the serve
- * route also sends a restrictive CSP + nosniff so a missed vector still can't
- * execute. Returns the cleaned markup.
+ * Best-effort SVG hardening: strip scriptable elements, event-handler
+ * attributes, external/scriptable URL attributes, and inline style attributes.
+ * Defense-in-depth only — the serve route also sends a restrictive CSP +
+ * nosniff so a missed vector still can't execute. Returns the cleaned markup.
  */
 export function sanitizeSvg(input: Buffer): Buffer {
-  let svg = input.toString("utf8");
-  svg = svg.replace(/<\s*script[\s\S]*?<\s*\/\s*script\s*>/gi, "");
-  svg = svg.replace(/<\s*script[\s\S]*?\/\s*>/gi, "");
-  svg = svg.replace(/<\s*foreignObject[\s\S]*?<\s*\/\s*foreignObject\s*>/gi, "");
-  // on*="..." / on*='...' event handlers
-  svg = svg.replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-  // javascript: in href/xlink:href/src/style
-  svg = svg.replace(/(href|xlink:href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, "");
-  return Buffer.from(svg, "utf8");
+  const svg = input.toString("utf8");
+  let out = "";
+  const blockedStack: string[] = [];
+  let cursor = 0;
+
+  while (cursor < svg.length) {
+    const tagStart = svg.indexOf("<", cursor);
+    if (tagStart === -1) {
+      if (blockedStack.length === 0) out += svg.slice(cursor);
+      break;
+    }
+    if (blockedStack.length === 0) out += svg.slice(cursor, tagStart);
+
+    const tagEnd = svg.indexOf(">", tagStart + 1);
+    if (tagEnd === -1) break;
+    const rawTag = svg.slice(tagStart + 1, tagEnd).trim();
+    cursor = tagEnd + 1;
+
+    if (!rawTag || rawTag.startsWith("!") || rawTag.startsWith("?")) continue;
+
+    const closing = rawTag.startsWith("/");
+    const nameStart = closing ? 1 : 0;
+    const { name, next } = readXmlName(rawTag, nameStart);
+    const lowerName = name.toLowerCase();
+    if (!name) continue;
+
+    if (closing) {
+      if (BLOCKED_SVG_ELEMENTS.has(lowerName)) {
+        const lastBlocked = blockedStack[blockedStack.length - 1];
+        if (lastBlocked === lowerName) blockedStack.pop();
+        continue;
+      }
+      if (blockedStack.length === 0) out += `</${name}>`;
+      continue;
+    }
+
+    const selfClosing = rawTag.endsWith("/");
+    if (BLOCKED_SVG_ELEMENTS.has(lowerName)) {
+      if (!selfClosing) blockedStack.push(lowerName);
+      continue;
+    }
+    if (blockedStack.length > 0) continue;
+
+    const attrText = rawTag.slice(next, selfClosing ? -1 : undefined);
+    out += `<${name}${sanitizeSvgAttributes(attrText)}${selfClosing ? " /" : ""}>`;
+  }
+
+  return Buffer.from(out, "utf8");
 }
 
 export async function registerWorkspaceLogoRoutes(app: FastifyInstance): Promise<void> {
