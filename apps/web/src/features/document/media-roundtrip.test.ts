@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { markdownToHtml, htmlToMarkdown } from "./rich-markdown-editor";
+import { markdownToHtml, htmlToMarkdown, joinMarkdownFrontmatter, splitMarkdownFrontmatter } from "./rich-markdown-editor";
 
 describe("media markdown round-trip", () => {
   it("keeps an uploaded <video> through html<->markdown", () => {
@@ -32,5 +32,30 @@ describe("media markdown round-trip", () => {
     expect(back).toContain('width="640"');
     expect(back).toContain('height="360"');
     expect(back).toContain('data-align="right"');
+  });
+
+  it("keeps YAML frontmatter out of the rendered editor body", () => {
+    const md = [
+      "---",
+      "status: canonical",
+      "docType: reference",
+      "created: 2026-06-17",
+      "---",
+      "",
+      "# AI Agent Onboarding",
+      "",
+      "1. There are **two repos**.",
+      "2. Work happens on `PageDen/pageden`.",
+      "",
+    ].join("\n");
+    const parts = splitMarkdownFrontmatter(md);
+    const html = markdownToHtml(parts.body);
+    const back = joinMarkdownFrontmatter(parts.frontmatter, htmlToMarkdown(html));
+
+    expect(html).not.toContain("<hr");
+    expect(html).not.toContain("status: canonical");
+    expect(back).toMatch(/^---\nstatus: canonical\ndocType: reference\ncreated: 2026-06-17\n---\n\n# AI Agent Onboarding/);
+    expect(back).toMatch(/1\.\s+There are \*\*two repos\*\*\./);
+    expect(back).toMatch(/2\.\s+Work happens on `PageDen\/pageden`\./);
   });
 });
