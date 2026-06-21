@@ -840,16 +840,10 @@ async function callTool(
     typeof data === "object" && data && "workspaceId" in data
       ? String((data as { workspaceId: unknown }).workspaceId)
       : undefined;
-  await writeAuditEvent({
-    workspaceId: calledWorkspaceId,
-    userId: auth.userId,
-    action: "mcp_tool_called",
-    targetType: "mcp_tool",
-    targetId: name,
-    ipAddress: request.ip,
-    userAgent: request.headers["user-agent"],
-    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, tokenKind: auth.tokenKind },
-  });
+  // Note: we deliberately do NOT write an `mcp_tool_called` AuditEvent here. It
+  // fired on every tool call (the single largest audit-volume source) and was
+  // redundant with the specific per-action events (document_*_by_agent, etc.).
+  // The call is still captured on the analytics bus below (agent_mcp_call).
   if (calledWorkspaceId) {
     trackServerEvent(
       "agent_mcp_call",
