@@ -1,7 +1,7 @@
 // Media helpers for the editor: classify pasted URLs and normalize video providers.
 // Pure functions (no DOM) so they are unit-tested directly.
 
-export const MAX_MEDIA_BYTES = 25 * 1024 * 1024; // mirrors the server's MAX_ATTACHMENT_BYTES
+export const MAX_MEDIA_BYTES = 50 * 1024 * 1024; // mirrors the server's MAX_ATTACHMENT_BYTES
 
 export type MediaKind = "image" | "video" | "embed" | null;
 
@@ -12,11 +12,22 @@ function validYouTubeId(id: string | undefined): id is string {
   return !!id && /^[A-Za-z0-9_-]{6,20}$/.test(id);
 }
 
-/** True for files we accept as uploads (images + common video containers). */
+/** True for files we accept as uploads (images, video, PDF, DOCX). */
 export function isUploadableType(mime: string): boolean {
   const m = mime.toLowerCase();
   if (m === "image/svg+xml") return false; // no inline SVG embeds
-  return m.startsWith("image/") || m.startsWith("video/");
+  return (
+    m.startsWith("image/") ||
+    m.startsWith("video/") ||
+    m === "application/pdf" ||
+    m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  );
+}
+
+/** True for non-embeddable document types (PDF/DOCX) that are inserted as download links. */
+export function isDocumentType(mime: string): boolean {
+  const m = mime.toLowerCase();
+  return m === "application/pdf" || m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 }
 
 /** Convert a YouTube/Vimeo watch URL into its privacy-friendly iframe embed src, or null. */
