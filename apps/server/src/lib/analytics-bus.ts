@@ -19,6 +19,10 @@
 // then force the payload at every call site.
 
 export type ServerEventName =
+  | "document_read"
+  | "document_created"
+  | "document_saved"
+  | "search_performed"
   | "workspace_created"
   | "agent_mcp_call"
   | "agent_document_created"
