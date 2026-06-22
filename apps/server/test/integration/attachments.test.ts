@@ -130,7 +130,7 @@ describe("attachments", () => {
 
   it("accepts all allowed MIME types", async () => {
     const s = await baseScenario();
-    const allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf"];
+    const allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
     for (const mime of allowed) {
       const res = await upload(s.docId, s.adminCookie, `file.bin`, PNG, mime);
       expect(res.statusCode, `expected 202 for MIME ${mime}`).toBe(202);

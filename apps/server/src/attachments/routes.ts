@@ -5,8 +5,9 @@ import { requireAuth, requireTokenScope } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
-import { readBlob, writeBlob } from "../storage.js";
+import { readBlob, writeBlob, sweepOrphanObjects } from "../storage.js";
 import { kickScanWorker, recoverStuckScanJobs } from "./scanner.js";
+import { canManageWorkspace } from "../permissions/index.js";
 
 // Attachments belong to a document; access is governed entirely by the parent document's
 // permission (read to download/list, editor to upload/delete). Existence is hidden: a user
@@ -214,6 +215,72 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
   });
   });
 
+  // Admin: list quarantined attachments for a workspace.
+  app.get<{ Params: { workspaceId: string }; Querystring: { cursor?: string } }>(
+    "/api/workspaces/:workspaceId/attachments/quarantined",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      if (!(await canManageWorkspace(auth.userId, request.params.workspaceId))) return forbidden(reply);
+      const limit = 50;
+      const cursor = request.query.cursor ? new Date(request.query.cursor) : undefined;
+      const rows = await prisma.attachment.findMany({
+        where: {
+          workspaceId: request.params.workspaceId,
+          status: AttachmentStatus.QUARANTINED,
+          deletedAt: null,
+          ...(cursor ? { createdAt: { lt: cursor } } : {}),
+        },
+        include: {
+          document: { select: { title: true } },
+          uploadedBy: { select: { email: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit + 1,
+      });
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      return {
+        attachments: page.map((a) => ({
+          ...attachmentDto(a),
+          documentId: a.documentId,
+          documentTitle: a.document.title,
+          uploadedByEmail: a.uploadedBy.email,
+        })),
+        next: hasMore ? (page[page.length - 1]?.createdAt.toISOString() ?? null) : null,
+      };
+    },
+  );
+
+  // Admin: release a quarantined attachment back to SCANNING so it is re-scanned.
+  app.post<{ Params: { attachmentId: string } }>(
+    "/api/attachments/:attachmentId/unquarantine",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const attachment = await prisma.attachment.findFirst({
+        where: { id: request.params.attachmentId, status: AttachmentStatus.QUARANTINED, deletedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      if (!attachment) return notFound(reply, "Attachment not found.");
+      if (!(await canManageWorkspace(auth.userId, attachment.workspaceId))) return forbidden(reply);
+      await prisma.attachment.update({
+        where: { id: attachment.id },
+        data: { status: AttachmentStatus.SCANNING },
+      });
+      kickScanWorker();
+      return { ok: true };
+    },
+  );
+
   // Boot: kick the scan worker so any attachments stuck in SCANNING from a prior crash get processed.
   recoverStuckScanJobs();
+
+  // Schedule a daily orphan object sweep so quarantined/deleted attachment bytes don't accumulate.
+  const sweepInterval = setInterval(
+    () => void sweepOrphanObjects().catch((err) => console.error("[storage] orphan sweep failed:", err)),
+    24 * 60 * 60 * 1000,
+  );
+  sweepInterval.unref();
+  app.addHook("onClose", async () => clearInterval(sweepInterval));
 }
