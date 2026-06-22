@@ -130,7 +130,7 @@ describe("attachments", () => {
 
   it("accepts all allowed MIME types", async () => {
     const s = await baseScenario();
-    const allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf"];
+    const allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
     for (const mime of allowed) {
       const res = await upload(s.docId, s.adminCookie, `file.bin`, PNG, mime);
       expect(res.statusCode, `expected 202 for MIME ${mime}`).toBe(202);
@@ -241,6 +241,59 @@ describe("attachments", () => {
     expect((await req({ method: "DELETE", url: `/api/documents/${s.docId}`, cookies: s.adminCookie })).statusCode).toBe(200);
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(404);
     expect((await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie })).statusCode).toBe(404);
+  });
+
+  it("admin: list quarantined returns the quarantined row; non-admin gets 403", async () => {
+    const s = await baseScenario();
+    setScanner(async () => "infected");
+    const up = await upload(s.docId, s.adminCookie, "virus.png", EICAR, "image/png");
+    await drainScanWorker();
+
+    const list = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/attachments/quarantined`, cookies: s.adminCookie });
+    expect(list.statusCode).toBe(200);
+    const body = list.json() as { attachments: Array<{ id: string }>; next: string | null };
+    expect(body.attachments.map((a) => a.id)).toContain(up.json().id);
+    expect(body.next).toBeNull();
+
+    const member = await createUser("member@t.co");
+    await addMember(s.ws.id, member.id, "member");
+    const denied = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/attachments/quarantined`, cookies: sessionFor(member.id) });
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it("admin: unquarantine re-queues for scan and resolves to ready when scanner is clean", async () => {
+    const s = await baseScenario();
+    setScanner(async () => "infected");
+    const up = await upload(s.docId, s.adminCookie, "virus.png", EICAR, "image/png");
+    await drainScanWorker();
+    const id = up.json().id;
+
+    setScanner(async () => "clean");
+    const unq = await req({ method: "POST", url: `/api/attachments/${id}/unquarantine`, cookies: s.adminCookie });
+    expect(unq.statusCode).toBe(200);
+    expect(unq.json().ok).toBe(true);
+
+    await drainScanWorker();
+    const after = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
+    expect(after.json().status).toBe("ready");
+  });
+
+  it("unquarantine: 404 for non-existent or non-quarantined attachment", async () => {
+    const s = await baseScenario();
+    const notFound = await req({ method: "POST", url: "/api/attachments/no-such-id/unquarantine", cookies: s.adminCookie });
+    expect(notFound.statusCode).toBe(404);
+  });
+
+  it("unquarantine: non-admin gets 403", async () => {
+    const s = await baseScenario();
+    setScanner(async () => "infected");
+    const up = await upload(s.docId, s.adminCookie, "v2.png", EICAR, "image/png");
+    await drainScanWorker();
+
+    const member = await createUser("member2@t.co");
+    await addMember(s.ws.id, member.id, "member");
+    const denied = await req({ method: "POST", url: `/api/attachments/${up.json().id}/unquarantine`, cookies: sessionFor(member.id) });
+    expect(denied.statusCode).toBe(403);
   });
 
   it("cross-workspace: an outsider cannot read another workspace's attachment id (404)", async () => {

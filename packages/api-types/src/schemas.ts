@@ -796,3 +796,15 @@ export const attachmentSchema = z
   .strict();
 
 export const attachmentListSchema = z.object({ attachments: z.array(attachmentSchema) }).strict();
+
+export const quarantinedAttachmentSchema = attachmentSchema
+  .extend({
+    documentId: z.string(),
+    documentTitle: z.string(),
+    uploadedByEmail: z.string(),
+  })
+  .strict();
+
+export const quarantinedAttachmentListSchema = z
+  .object({ attachments: z.array(quarantinedAttachmentSchema), next: z.string().nullable() })
+  .strict();

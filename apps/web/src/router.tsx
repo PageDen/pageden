@@ -33,6 +33,7 @@ const AdminUsers = lazy(() => import("./features/admin/admin-users").then((m) =>
 const AdminGroups = lazy(() => import("./features/admin/admin-groups").then((m) => ({ default: m.AdminGroups })));
 const WorkspaceSettingsPage = lazy(() => import("./features/admin/workspace-settings-page").then((m) => ({ default: m.WorkspaceSettingsPage })));
 const AuditLogPage = lazy(() => import("./features/admin/audit-log-page").then((m) => ({ default: m.AuditLogPage })));
+const QuarantinePage = lazy(() => import("./features/admin/quarantine-page").then((m) => ({ default: m.QuarantinePage })));
 const DevicesPage = lazy(() => import("./features/admin/devices-page").then((m) => ({ default: m.DevicesPage })));
 
 function Lazy({ children }: { children: React.ReactNode }) {
@@ -324,6 +325,16 @@ const adminAuditRoute = createRoute({
   ),
 });
 
+const adminQuarantineRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "quarantine",
+  component: () => (
+    <Lazy>
+      <QuarantinePage />
+    </Lazy>
+  ),
+});
+
 const devicesRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/devices",
@@ -367,7 +378,7 @@ const routeTree = rootRoute.addChildren([
       agentsRoute,
       accountRoute,
       importRoute,
-      adminRoute.addChildren([adminUsersRoute, adminGroupsRoute, adminSettingsRoute, adminAuditRoute]),
+      adminRoute.addChildren([adminUsersRoute, adminGroupsRoute, adminSettingsRoute, adminAuditRoute, adminQuarantineRoute]),
     ]),
   ]),
 ]);
