@@ -6,6 +6,7 @@ import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
 import { readBlob, writeBlob } from "../storage.js";
+import { kickScanWorker, recoverStuckScanJobs } from "./scanner.js";
 
 // Attachments belong to a document; access is governed entirely by the parent document's
 // permission (read to download/list, editor to upload/delete). Existence is hidden: a user
@@ -63,7 +64,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
 
   // Upload an attachment to a document. Raw bytes in the body; filename via ?filename= (or the
   // x-filename header); content type from the Content-Type header.
-  // Returns 202 Accepted; status is "ready" in PR 1 (no async scan yet — ClamAV lands in PR 2).
+  // Returns 202 Accepted with status "scanning". Scan worker promotes to "ready" or "quarantined".
     instance.post<{ Params: { id: string }; Querystring: { filename?: string } }>(
     "/api/documents/:id/attachments",
     { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 },
@@ -117,9 +118,10 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
           sha256: hex,
           storageKey,
           uploadedById: auth.userId,
-          status: AttachmentStatus.READY,
+          status: AttachmentStatus.SCANNING,
         },
       });
+      kickScanWorker();
       await writeAuditEvent({
         workspaceId: doc.workspaceId,
         userId: auth.userId,
@@ -172,6 +174,9 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     if (!attachment) return notFound(reply, "Attachment not found.");
     const role = await resolveDocumentRole(auth.userId, attachment.documentId);
     if (role === null) return notFound(reply, "Attachment not found."); // hide existence
+    if (attachment.status === AttachmentStatus.SCANNING) {
+      return reply.code(503).header("retry-after", "5").send({ error: "scan_pending", message: "Attachment is being scanned. Try again shortly." });
+    }
     if (attachment.status === AttachmentStatus.QUARANTINED) return forbidden(reply);
     const bytes = await readBlob(attachment.storageKey);
     return reply
@@ -208,4 +213,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     return { ok: true };
   });
   });
+
+  // Boot: kick the scan worker so any attachments stuck in SCANNING from a prior crash get processed.
+  recoverStuckScanJobs();
 }
