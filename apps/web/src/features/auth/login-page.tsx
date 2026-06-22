@@ -8,6 +8,15 @@ import { Input } from "../../components/ui/input";
 import { PasswordInput } from "../../components/ui/password-input";
 import { track } from "../../lib/analytics-bus";
 
+/** A failed OAuth round-trip lands back here as ?error=google. Surface it. */
+function oauthErrorMessage(): string | null {
+  if (typeof window === "undefined") return null;
+  const code = new URLSearchParams(window.location.search).get("error");
+  if (!code) return null;
+  if (code === "google") return "Couldn't sign in with Google. Try again, or sign in with your email and password.";
+  return "Sign-in failed. Please try again.";
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -24,7 +33,7 @@ export function LoginPage() {
   });
 
   const error = mutation.error;
-  const message =
+  const mutationMessage =
     error instanceof ApiError
       ? error.status === 429
         ? "Too many attempts. Try again in a minute."
@@ -34,6 +43,7 @@ export function LoginPage() {
       : error
         ? "Could not sign in."
         : null;
+  const message = mutationMessage ?? oauthErrorMessage();
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();

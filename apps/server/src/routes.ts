@@ -19,6 +19,7 @@ import { registerAttachmentRoutes } from "./attachments/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 import { registerImportRoutes } from "./import/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
+import { resolveReturnOrigin, sharedCookieDomain } from "./auth-origin.js";
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
 import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
 import { registerWorkspaceLogoRoutes, workspaceLogoUrl } from "./workspaces/logo.js";
@@ -55,11 +56,16 @@ function isValidEmailShape(email: string): boolean {
   return true;
 }
 
+// Cloud: share auth across every workspace subdomain of the base domain so a
+// sign-in completed on the apex callback is valid on the originating subdomain.
+// Undefined off-cloud (self-host keeps host-only cookies).
+const COOKIE_DOMAIN = sharedCookieDomain(env);
 const COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: "lax" as const,
   secure: env.nodeEnv === "production",
   path: "/",
+  ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
 };
 
 function userDto(user: { id: string; email: string; name: string }) {
@@ -246,7 +252,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/api/auth/logout", async (request, reply) => {
     const auth = await requireAuth(request);
-    reply.clearCookie(SESSION_COOKIE, { path: "/" });
+    reply.clearCookie(SESSION_COOKIE, { path: "/", ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}) });
     await writeAuditEvent({
       userId: auth.userId,
       action: "logout",
@@ -606,7 +612,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     secure: env.nodeEnv === "production",
     path: "/api/auth/google",
     maxAge: 600,
+    ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
   };
+  const OAUTH_CLEAR_OPTIONS = { path: "/api/auth/google", ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}) };
 
   // Begin Google sign-in: stash state + PKCE verifier in short-lived cookies, redirect to Google.
   app.get("/api/auth/google/start", async (request, reply) => {
@@ -616,6 +624,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const codeVerifier = generateCodeVerifier();
     reply.setCookie("pm_oauth_state", state, OAUTH_COOKIE_OPTIONS);
     reply.setCookie("pm_oauth_verifier", codeVerifier, OAUTH_COOKIE_OPTIONS);
+    // Remember which workspace host the user started on; validated on the way back.
+    reply.setCookie("pm_oauth_origin", requestHost(request), OAUTH_COOKIE_OPTIONS);
     return reply.redirect(client.createAuthorizationURL(state, codeVerifier).toString());
   });
 
@@ -626,9 +636,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const { code, state } = request.query;
     const cookieState = request.cookies.pm_oauth_state;
     const codeVerifier = request.cookies.pm_oauth_verifier;
-    reply.clearCookie("pm_oauth_state", { path: "/api/auth/google" });
-    reply.clearCookie("pm_oauth_verifier", { path: "/api/auth/google" });
-    const fail = () => reply.redirect(`${env.webOrigin}/login?error=google`);
+    // The origin cookie is untrusted input — re-validate the host before redirecting.
+    const returnOrigin = resolveReturnOrigin(request.cookies.pm_oauth_origin, env);
+    reply.clearCookie("pm_oauth_state", OAUTH_CLEAR_OPTIONS);
+    reply.clearCookie("pm_oauth_verifier", OAUTH_CLEAR_OPTIONS);
+    reply.clearCookie("pm_oauth_origin", OAUTH_CLEAR_OPTIONS);
+    const fail = () => reply.redirect(`${returnOrigin}/login?error=google`);
     if (!code || !state || !cookieState || !codeVerifier || state !== cookieState) return fail();
 
     let profile: GoogleProfile;
@@ -656,7 +669,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       userAgent: request.headers["user-agent"],
     });
     reply.setCookie(SESSION_COOKIE, sealSession(userId, user.sessionVersion, env.sessionSecret), COOKIE_OPTIONS);
-    return reply.redirect(env.webOrigin);
+    return reply.redirect(returnOrigin);
   });
 
   app.get("/api/me", async (request) => {
