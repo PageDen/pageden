@@ -42,10 +42,12 @@ describe("isAllowedEmbedSrc", () => {
 });
 
 describe("isUploadableType", () => {
-  it("accepts image/* and video/*", () => {
+  it("accepts image/*, video/*, PDF, and DOCX", () => {
     expect(isUploadableType("image/png")).toBe(true);
     expect(isUploadableType("video/mp4")).toBe(true);
-    expect(isUploadableType("application/pdf")).toBe(false);
+    expect(isUploadableType("application/pdf")).toBe(true);
+    expect(isUploadableType("application/vnd.openxmlformats-officedocument.wordprocessingml.document")).toBe(true);
     expect(isUploadableType("image/svg+xml")).toBe(false);
+    expect(isUploadableType("application/octet-stream")).toBe(false);
   });
 });
