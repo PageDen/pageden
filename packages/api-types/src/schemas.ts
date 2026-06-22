@@ -780,7 +780,9 @@ export const searchSchema = z
 
 export const reindexResultSchema = z.object({ reindexed: z.number(), skipped: z.number() }).strict();
 
-// Attachments (M6)
+// Attachments (M6 + status lifecycle)
+export const attachmentStatusSchema = z.enum(["scanning", "ready", "quarantined"]);
+
 export const attachmentSchema = z
   .object({
     id: z.string(),
@@ -788,6 +790,7 @@ export const attachmentSchema = z
     contentType: z.string(),
     size: z.number(),
     sha256: z.string(),
+    status: attachmentStatusSchema,
     createdAt: z.string(),
   })
   .strict();

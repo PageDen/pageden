@@ -453,21 +453,28 @@ model AuditCheckpoint {
   @@index([createdAt])
 }
 
+enum AttachmentStatus {
+  SCANNING
+  READY
+  QUARANTINED
+}
+
 model Attachment {
-  id           String    @id @default(cuid())
+  id           String           @id @default(cuid())
   workspaceId  String
   documentId   String
   filename     String
   contentType  String
   size         Int
-  sha256       String // sha256 hex of the stored bytes
-  storageKey   String // content-addressed posix key under attachments/
+  sha256       String           // sha256 hex of the stored bytes
+  storageKey   String           // content-addressed posix key under attachments/
   uploadedById String
+  status       AttachmentStatus @default(SCANNING)
   deletedAt    DateTime?
-  createdAt    DateTime  @default(now())
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  uploadedBy   User      @relation("AttachmentUploadedBy", fields: [uploadedById], references: [id])
+  createdAt    DateTime         @default(now())
+  workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document     Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploadedBy   User             @relation("AttachmentUploadedBy", fields: [uploadedById], references: [id])
 
   @@index([documentId, deletedAt])
   @@index([workspaceId])

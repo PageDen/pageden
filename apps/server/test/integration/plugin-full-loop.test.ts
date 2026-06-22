@@ -48,7 +48,7 @@ describe("headless Obsidian plugin ↔ server full loop", () => {
       headers: { ...auth, "content-type": "image/png" },
       payload: Buffer.from([137, 80, 78, 71]),
     });
-    expect(upload.statusCode).toBe(201);
+    expect(upload.statusCode).toBe(202);
 
     const list = await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, headers: auth });
     expect(list.statusCode).toBe(200);
