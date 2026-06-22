@@ -68,6 +68,9 @@ export const authConfigSchema = z
     // True when this deployment is the multi-tenant cloud host. Gates cloud-only
     // UI (workspace URL/subdomain field, logo upload).
     cloudHosted: z.boolean(),
+    // Canonical apex origin (WEB_ORIGIN). Lets the web build cross-host links to
+    // workspaces that have no subdomain. Optional for back-compat.
+    appOrigin: z.string().nullish(),
   })
   .strict();
 export const okDeletedSchema = z.object({ ok: z.literal(true), deletedAt: iso }).strict();
