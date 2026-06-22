@@ -55,8 +55,8 @@ describe("contract conformance — status + shape + hygiene on every response", 
     check(folderMoveSchema, 200, await req({ method: "POST", url: `/api/folders/${ops.json().id}/move`, cookies: c, payload: { parentFolderId: s.folderId } }));
     check(permissionsListSchema, 200, await req({ method: "GET", url: `/api/documents/${s.docId}/permissions`, cookies: c }));
     check(permissionsWriteSchema, 200, await req({ method: "PUT", url: `/api/folders/${s.folderId}/permissions`, cookies: c, payload: { permissions: [] } }));
-    const att = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=c.bin`, headers: { "content-type": "application/octet-stream" }, cookies: c, payload: Buffer.from("contract-bytes") });
-    check(attachmentSchema, 201, att);
+    const att = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=c.png`, headers: { "content-type": "image/png" }, cookies: c, payload: Buffer.from("contract-bytes") });
+    check(attachmentSchema, 202, att);
     check(attachmentListSchema, 200, await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: c }));
   });
 

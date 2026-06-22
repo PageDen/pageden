@@ -12,7 +12,7 @@ beforeEach(async () => { await resetDb(); });
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452deadbeef", "hex");
 
-async function upload(docId: string, auth: Record<string, string>, name: string, body: Buffer, contentType = "application/octet-stream") {
+async function upload(docId: string, auth: Record<string, string>, name: string, body: Buffer, contentType = "image/png") {
   const isBearer = "authorization" in auth;
   return req({
     method: "POST",
@@ -27,12 +27,13 @@ describe("attachments", () => {
   it("uploads, lists, and downloads bytes (manager)", async () => {
     const s = await baseScenario();
     const up = await upload(s.docId, s.adminCookie, "diagram.png", PNG, "image/png");
-    expect(up.statusCode).toBe(201);
+    expect(up.statusCode).toBe(202);
     const meta = up.json();
     expect(meta.filename).toBe("diagram.png");
     expect(meta.contentType).toBe("image/png");
     expect(meta.size).toBe(PNG.length);
     expect(typeof meta.sha256).toBe("string");
+    expect(meta.status).toBe("ready");
 
     const list = await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie });
     expect(list.statusCode).toBe(200);
@@ -44,10 +45,55 @@ describe("attachments", () => {
     expect(Buffer.compare(dl.rawPayload, PNG)).toBe(0);
   });
 
+  it("upload response includes status field", async () => {
+    const s = await baseScenario();
+    const up = await upload(s.docId, s.adminCookie, "test.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    expect(up.json().status).toBe("ready");
+  });
+
+  it("meta polling endpoint returns attachment metadata with status", async () => {
+    const s = await baseScenario();
+    const up = await upload(s.docId, s.adminCookie, "poll.png", PNG, "image/png");
+    const id = up.json().id;
+
+    const meta = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
+    expect(meta.statusCode).toBe(200);
+    const body = meta.json();
+    expect(body.id).toBe(id);
+    expect(body.status).toBe("ready");
+    expect(body.filename).toBe("poll.png");
+  });
+
+  it("meta polling endpoint is permission-gated (non-member gets 404)", async () => {
+    const s = await baseScenario();
+    const up = await upload(s.docId, s.adminCookie, "secret.png", PNG, "image/png");
+    const id = up.json().id;
+    const outsider = await createUser("out@t.co");
+    await addMember(s.ws.id, outsider.id, "member");
+    const res = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: sessionFor(outsider.id) });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects disallowed MIME type with 415", async () => {
+    const s = await baseScenario();
+    const res = await upload(s.docId, s.adminCookie, "bad.bin", PNG, "application/octet-stream");
+    expect(res.statusCode).toBe(415);
+  });
+
+  it("accepts all allowed MIME types", async () => {
+    const s = await baseScenario();
+    const allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf"];
+    for (const mime of allowed) {
+      const res = await upload(s.docId, s.adminCookie, `file.bin`, PNG, mime);
+      expect(res.statusCode, `expected 202 for MIME ${mime}`).toBe(202);
+    }
+  });
+
   it("dedupes identical bytes to one storage object", async () => {
     const s = await baseScenario();
-    const a = await upload(s.docId, s.adminCookie, "a.bin", PNG);
-    const b = await upload(s.docId, s.adminCookie, "b.bin", PNG);
+    const a = await upload(s.docId, s.adminCookie, "a.png", PNG);
+    const b = await upload(s.docId, s.adminCookie, "b.png", PNG);
     const [ra, rb] = await Promise.all([
       prisma.attachment.findUniqueOrThrow({ where: { id: a.json().id }, select: { storageKey: true } }),
       prisma.attachment.findUniqueOrThrow({ where: { id: b.json().id }, select: { storageKey: true } }),
@@ -58,9 +104,9 @@ describe("attachments", () => {
 
   it("rejects empty body and missing filename", async () => {
     const s = await baseScenario();
-    const empty = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=x.bin`, headers: { "content-type": "application/octet-stream" }, cookies: s.adminCookie, payload: Buffer.alloc(0) });
+    const empty = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=x.png`, headers: { "content-type": "image/png" }, cookies: s.adminCookie, payload: Buffer.alloc(0) });
     expect(empty.statusCode).toBe(400);
-    const noName = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments`, headers: { "content-type": "application/octet-stream" }, cookies: s.adminCookie, payload: PNG });
+    const noName = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments`, headers: { "content-type": "image/png" }, cookies: s.adminCookie, payload: PNG });
     expect(noName.statusCode).toBe(400);
   });
 
@@ -70,15 +116,15 @@ describe("attachments", () => {
     const viewer = await createUser("viewer@t.co");
     await addMember(s.ws.id, viewer.id, "member");
     await grant(s.ws.id, "user", viewer.id, "folder", s.folderId, "viewer");
-    const vUp = await upload(s.docId, sessionFor(viewer.id), "v.bin", PNG);
+    const vUp = await upload(s.docId, sessionFor(viewer.id), "v.png", PNG);
     expect(vUp.statusCode).toBe(403);
 
     // editor can upload
     const editor = await createUser("editor@t.co");
     await addMember(s.ws.id, editor.id, "member");
     await grant(s.ws.id, "user", editor.id, "folder", s.folderId, "editor");
-    const eUp = await upload(s.docId, sessionFor(editor.id), "e.bin", PNG);
-    expect(eUp.statusCode).toBe(201);
+    const eUp = await upload(s.docId, sessionFor(editor.id), "e.png", PNG);
+    expect(eUp.statusCode).toBe(202);
     const attId = eUp.json().id;
 
     // viewer can download (read) but not delete
@@ -90,12 +136,12 @@ describe("attachments", () => {
     await addMember(s.ws.id, outsider.id, "member");
     expect((await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: sessionFor(outsider.id) })).statusCode).toBe(404);
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: sessionFor(outsider.id) })).statusCode).toBe(404);
-    expect((await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=o.bin`, headers: { "content-type": "application/octet-stream" }, cookies: sessionFor(outsider.id), payload: PNG })).statusCode).toBe(404);
+    expect((await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=o.png`, headers: { "content-type": "image/png" }, cookies: sessionFor(outsider.id), payload: PNG })).statusCode).toBe(404);
   });
 
   it("soft-delete removes it from list and download", async () => {
     const s = await baseScenario();
-    const up = await upload(s.docId, s.adminCookie, "gone.bin", PNG);
+    const up = await upload(s.docId, s.adminCookie, "gone.png", PNG);
     const attId = up.json().id;
     expect((await req({ method: "DELETE", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(200);
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(404);
@@ -106,8 +152,8 @@ describe("attachments", () => {
     const s = await baseScenario();
     const raw = createRawToken();
     await prisma.apiToken.create({ data: { userId: s.admin.id, name: "plugin", tokenHash: hashToken(raw, env.tokenHashSecret) } });
-    const up = await upload(s.docId, bearer(raw), "plugin.bin", PNG);
-    expect(up.statusCode).toBe(201);
+    const up = await upload(s.docId, bearer(raw), "plugin.png", PNG);
+    expect(up.statusCode).toBe(202);
     const dl = await req({ method: "GET", url: `/api/attachments/${up.json().id}`, headers: bearer(raw) });
     expect(dl.statusCode).toBe(200);
     expect(Buffer.compare(dl.rawPayload, PNG)).toBe(0);
@@ -115,7 +161,7 @@ describe("attachments", () => {
 
   it("download sets X-Content-Type-Options: nosniff", async () => {
     const s = await baseScenario();
-    const up = await upload(s.docId, s.adminCookie, "x.bin", PNG);
+    const up = await upload(s.docId, s.adminCookie, "x.png", PNG);
     const dl = await req({ method: "GET", url: `/api/attachments/${up.json().id}`, cookies: s.adminCookie });
     expect(dl.headers["x-content-type-options"]).toBe("nosniff");
   });
@@ -123,7 +169,7 @@ describe("attachments", () => {
   it("rejects an oversized upload with 413", async () => {
     const s = await baseScenario();
     const big = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 1);
-    const res = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=big.bin`, headers: { "content-type": "application/octet-stream" }, cookies: s.adminCookie, payload: big });
+    const res = await req({ method: "POST", url: `/api/documents/${s.docId}/attachments?filename=big.png`, headers: { "content-type": "image/png" }, cookies: s.adminCookie, payload: big });
     expect(res.statusCode).toBe(413);
   });
 
@@ -137,7 +183,7 @@ describe("attachments", () => {
 
   it("attachments of a soft-deleted document become 404", async () => {
     const s = await baseScenario();
-    const up = await upload(s.docId, s.adminCookie, "doomed.bin", PNG);
+    const up = await upload(s.docId, s.adminCookie, "doomed.png", PNG);
     const attId = up.json().id;
     expect((await req({ method: "DELETE", url: `/api/documents/${s.docId}`, cookies: s.adminCookie })).statusCode).toBe(200);
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(404);
@@ -153,8 +199,8 @@ describe("attachments", () => {
     const c2 = sessionFor(admin2.id);
     const folder2 = await req({ method: "POST", url: "/api/folders", cookies: c2, payload: { workspaceId: ws2.id, name: "F2", slug: "f2" } });
     const doc2 = await req({ method: "POST", url: "/api/documents", cookies: c2, payload: { workspaceId: ws2.id, folderId: folder2.json().id, title: "D2", slug: "d2", content: "x" } });
-    const up2 = await upload(doc2.json().id, c2, "secret2.bin", PNG);
-    expect(up2.statusCode).toBe(201);
+    const up2 = await upload(doc2.json().id, c2, "secret2.png", PNG);
+    expect(up2.statusCode).toBe(202);
     // s.admin is not a member of ws2 → 404, not 403.
     expect((await req({ method: "GET", url: `/api/attachments/${up2.json().id}`, cookies: s.adminCookie })).statusCode).toBe(404);
     expect((await req({ method: "DELETE", url: `/api/attachments/${up2.json().id}`, cookies: s.adminCookie })).statusCode).toBe(404);

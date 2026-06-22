@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { AttachmentStatus } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireTokenScope } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
@@ -10,15 +11,26 @@ import { readBlob, writeBlob } from "../storage.js";
 // permission (read to download/list, editor to upload/delete). Existence is hidden: a user
 // who cannot read the document gets 404, not 403, so attachment ids don't leak.
 
-export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MiB
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024; // 50 MB
 const MAX_FILENAME_LEN = 255;
+
+const ALLOWED_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "video/mp4",
+  "video/webm",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
 
 // Strip directory components, control characters, and bidi/format overrides so the stored and
 // served name is a safe single path segment (defends Content-Disposition + any later FS use).
 function sanitizeFilename(raw: string): string {
   const base = raw.split(/[\\/]/).pop() ?? "";
   // eslint-disable-next-line no-control-regex -- intentionally strip control + bidi/format chars
-  return base.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, "").trim().slice(0, MAX_FILENAME_LEN);
+  return base.replace(/[\x00-\x1f\x7f‪-‮⁦-⁩]/g, "").trim().slice(0, MAX_FILENAME_LEN);
 }
 
 function attachmentDto(a: {
@@ -27,6 +39,7 @@ function attachmentDto(a: {
   contentType: string;
   size: number;
   sha256: string;
+  status: AttachmentStatus;
   createdAt: Date;
 }) {
   return {
@@ -35,6 +48,7 @@ function attachmentDto(a: {
     contentType: a.contentType,
     size: a.size,
     sha256: a.sha256,
+    status: a.status.toLowerCase() as "scanning" | "ready" | "quarantined",
     createdAt: a.createdAt.toISOString(),
   };
 }
@@ -49,6 +63,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
 
   // Upload an attachment to a document. Raw bytes in the body; filename via ?filename= (or the
   // x-filename header); content type from the Content-Type header.
+  // Returns 202 Accepted; status is "ready" in PR 1 (no async scan yet — ClamAV lands in PR 2).
     instance.post<{ Params: { id: string }; Querystring: { filename?: string } }>(
     "/api/documents/:id/attachments",
     { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 },
@@ -80,6 +95,12 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
       const contentType =
         (typeof ctHeader === "string" && ctHeader.split(";")[0]?.trim()) || "application/octet-stream";
 
+      if (!ALLOWED_MIME_TYPES.has(contentType)) {
+        return reply
+          .code(415)
+          .send({ error: "unsupported_media_type", message: `Content type "${contentType}" is not allowed.` });
+      }
+
       const doc = await prisma.document.findUniqueOrThrow({
         where: { id: request.params.id },
         select: { workspaceId: true },
@@ -96,6 +117,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
           sha256: hex,
           storageKey,
           uploadedById: auth.userId,
+          status: AttachmentStatus.READY,
         },
       });
       await writeAuditEvent({
@@ -108,7 +130,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
         userAgent: request.headers["user-agent"],
         metadata: { documentId: request.params.id, filename, size },
       });
-      return reply.code(201).send(attachmentDto(attachment));
+      return reply.code(202).send(attachmentDto(attachment));
     },
   );
 
@@ -125,7 +147,22 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     return { attachments: attachments.map(attachmentDto) };
   });
 
+  // Metadata polling endpoint: returns JSON status for a single attachment without streaming bytes.
+  // Registered before the download route so Fastify sees the more-specific path first.
+    instance.get<{ Params: { attachmentId: string } }>("/api/attachments/:attachmentId/meta", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "attachments");
+    const attachment = await prisma.attachment.findFirst({
+      where: { id: request.params.attachmentId, deletedAt: null },
+    });
+    if (!attachment) return notFound(reply, "Attachment not found.");
+    const role = await resolveDocumentRole(auth.userId, attachment.documentId);
+    if (role === null) return notFound(reply, "Attachment not found."); // hide existence
+    return attachmentDto(attachment);
+  });
+
   // Download an attachment's bytes (read on the parent document required).
+  // QUARANTINED attachments are not downloadable.
     instance.get<{ Params: { attachmentId: string } }>("/api/attachments/:attachmentId", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "attachments");
@@ -135,6 +172,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     if (!attachment) return notFound(reply, "Attachment not found.");
     const role = await resolveDocumentRole(auth.userId, attachment.documentId);
     if (role === null) return notFound(reply, "Attachment not found."); // hide existence
+    if (attachment.status === AttachmentStatus.QUARANTINED) return forbidden(reply);
     const bytes = await readBlob(attachment.storageKey);
     return reply
       .header("content-type", attachment.contentType)
