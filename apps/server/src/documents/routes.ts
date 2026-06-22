@@ -34,6 +34,24 @@ import { lockFolderTree } from "../db.js";
 import { clampSearchLimit, searchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { trackServerEvent } from "../lib/analytics-bus.js";
 
+// Server-side human read tracking is blocker-resilient (ad blockers drop the
+// client SDK). Suppress repeat reads of the same doc by the same user within a
+// short window so refetches don't inflate document_read volume. The hooked
+// metric counts distinct active days, so this only trims raw noise.
+const READ_DEDUPE_TTL_MS = 10 * 60 * 1000;
+const recentReads = new Map<string, number>();
+function shouldEmitRead(userId: string, docId: string): boolean {
+  const key = `${userId}:${docId}`;
+  const now = Date.now();
+  const last = recentReads.get(key);
+  if (last !== undefined && now - last < READ_DEDUPE_TTL_MS) return false;
+  recentReads.set(key, now);
+  if (recentReads.size > 5000) {
+    for (const [k, t] of recentReads) if (now - t > READ_DEDUPE_TTL_MS) recentReads.delete(k);
+  }
+  return true;
+}
+
 type Tx = Prisma.TransactionClient;
 
 const DOCUMENT_STATUS_VALUES: DocumentStatus[] = ["canonical", "draft", "superseded", "archived"];
@@ -356,6 +374,16 @@ export async function applyDocumentWrite(opts: {
         },
       );
     }
+    // Human web save (not a no-op — no-op branches return earlier). Server-side
+    // so blockers can't drop it; agent/token writes emit agent_document_saved.
+    if (opts.changeSource === "web_app" && !opts.auth.tokenId) {
+      trackServerEvent(
+        "document_saved",
+        doc.workspaceId,
+        { userId: opts.auth.userId, tokenId: null },
+        { doc_id: doc.id, change_source: "web_app" },
+      );
+    }
     await writeStatusTransitionAudit(tx, {
       workspaceId: doc.workspaceId,
       userId,
@@ -466,6 +494,9 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         limit: clampSearchLimit(request.query.limit),
         canonicalOnly: request.query.canonicalOnly === "true" || request.query.canonicalOnly === "1",
       });
+      if (!auth.tokenId) {
+        trackServerEvent("search_performed", workspaceId, { userId: auth.userId, tokenId: null }, { length: q.length });
+      }
       return { results: results.map(({ updatedAt: _updatedAt, ...result }) => result) };
     },
   );
@@ -638,6 +669,16 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
         : null;
     const implementationReadiness = implementationReadinessFor({ status: doc.status, context });
+    // Human browser opens are tracked server-side so ad/tracker blockers can't
+    // drop the signal. Token/agent reads emit agent_document_read via MCP instead.
+    if (!auth.tokenId && shouldEmitRead(auth.userId, doc.id)) {
+      trackServerEvent(
+        "document_read",
+        doc.workspaceId,
+        { userId: auth.userId, tokenId: null },
+        { doc_id: doc.id, change_source: "web_app" },
+      );
+    }
     return {
       id: doc.id,
       workspaceId: doc.workspaceId,
@@ -868,6 +909,14 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       if (result.status === "forbidden") return forbidden(reply);
       if (result.status === "collision") {
         return validationError(reply, { slug: "A document with this slug already exists in the folder." });
+      }
+      if (!auth.tokenId) {
+        trackServerEvent(
+          "document_created",
+          workspaceId!,
+          { userId: auth.userId, tokenId: null },
+          { doc_id: result.id, change_source: "web_app" },
+        );
       }
       return reply.code(201).send({ id: result.id, version: result.version, checksum: result.checksum, path: result.path });
     } catch (error) {

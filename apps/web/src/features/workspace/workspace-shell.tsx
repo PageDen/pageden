@@ -126,13 +126,6 @@ export function WorkspaceShell() {
     setWorkspaceContext(workspaceId || null);
   }, [workspaceId]);
 
-  useEffect(() => {
-    // Fire one search_performed per debounced query (not per keystroke) so
-    // we can measure intent without flooding analytics. Skip empty searches
-    // and the initial "no query yet" mount.
-    if (!debouncedSearch || debouncedSearch.length === 0) return;
-    track("search_performed", { length: debouncedSearch.length });
-  }, [debouncedSearch]);
 
   const workspace = me.data?.workspaces.find((w) => w.id === workspaceId);
   const workspaceInitial = getWorkspaceInitial(workspace?.name);
