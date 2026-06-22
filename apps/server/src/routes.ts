@@ -604,6 +604,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     googleEnabled: getGoogleClient() !== null,
     captcha: getSignupGuardCaptcha(),
     cloudHosted: env.cloudHosted,
+    appOrigin: env.webOrigin,
   }));
 
   const OAUTH_COOKIE_OPTIONS = {
