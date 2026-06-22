@@ -96,6 +96,7 @@ model User {
   permissions             Permission[]             @relation("PermissionUser")
   documentShares          DocumentShare[]          @relation("DocumentShareCreator")
   importJobs              ImportJob[]
+  createdAllowedEmailDomains WorkspaceAllowedEmailDomain[] @relation("AllowedEmailDomainCreatedBy")
 }
 
 model Workspace {
@@ -137,6 +138,7 @@ model Workspace {
   claims                 DocumentClaim[]
   shares                 DocumentShare[]
   importJobs             ImportJob[]
+  allowedEmailDomains    WorkspaceAllowedEmailDomain[]
 }
 
 model WorkspaceMembership {
@@ -578,4 +580,23 @@ model ImportJob {
   @@index([userId, status])
   @@index([status])
   @@index([finishedAt])
+}
+
+
+/// Email-domain allowlist for a workspace. Empty list = subdomain self-join is
+/// off (invite / admin-add only); a non-empty list = those domains may self-join.
+/// PR 1 ships the table + helpers only; enforcement is the cloud self-join flow.
+model WorkspaceAllowedEmailDomain {
+  id          String   @id @default(cuid())
+  workspaceId String
+  domain      String
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("AllowedEmailDomainCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, domain])
+  @@index([workspaceId])
 }
