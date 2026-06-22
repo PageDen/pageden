@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword } from "./passwords.js";
 import { prisma } from "./prisma.js";
 import { sealSession, SESSION_COOKIE } from "./session.js";
 import { env } from "./env.js";
+import { trackServerEvent } from "./lib/analytics-bus.js";
 import { isTokenScope, requireAuth, TOKEN_SCOPES } from "./auth.js";
 import { createRawToken, hashToken } from "./tokens.js";
 import { writeAuditEvent } from "./audit.js";
@@ -154,9 +155,12 @@ async function resolveGoogleUser(profile: GoogleProfile, ip: string): Promise<st
     });
     await tx.workspaceMembership.create({ data: { workspaceId: workspace.id, userId: user.id, role: "admin" } });
     await tx.oAuthAccount.create({ data: { userId: user.id, provider: "google", providerAccountId: profile.sub } });
-    return user;
+    return { user, workspaceId: workspace.id };
   });
-  return created.id;
+  // Google sign-up mints the workspace server-side (no web round-trip), so the
+  // web `workspace_created` emit never fires for this path — emit it here.
+  trackServerEvent("workspace_created", created.workspaceId, { userId: created.user.id, tokenId: null }, { source: "google_signup" });
+  return created.user.id;
 }
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
