@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { env } from "./env.js";
+import { isTrustedWebOrigin } from "./auth-origin.js";
 import { SESSION_COOKIE } from "./session.js";
 
 const UNSAFE = new Set(["POST", "PUT", "DELETE", "PATCH"]);
@@ -31,6 +32,7 @@ export function csrfGuard(request: FastifyRequest, reply: FastifyReply, done: (e
   const isBearer = /^Bearer\s+/i.test(request.headers.authorization ?? "");
   if (!hasSessionCookie && isBearer) return done();
   const candidate = (request.headers.origin as string | undefined) ?? originOf(request.headers.referer);
-  if (candidate !== null && candidate === env.webOrigin) return done();
+  // Accept the apex or any real workspace subdomain/custom origin of this deployment.
+  if (isTrustedWebOrigin(candidate, env)) return done();
   reply.code(403).send({ error: "forbidden", message: "Invalid or missing request origin." });
 }

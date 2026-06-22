@@ -61,3 +61,20 @@ export function resolveReturnOrigin(host: string | undefined, env: AuthOriginEnv
   }
   return fallback;
 }
+
+/**
+ * True if an Origin/Referer origin string belongs to this deployment — the apex
+ * or a real cloud workspace subdomain of the base domain. Used by the CSRF guard
+ * so cookie-authenticated mutations work on subdomains, not just the apex.
+ */
+export function isTrustedWebOrigin(candidate: string | null | undefined, env: AuthOriginEnv): boolean {
+  if (!candidate) return false;
+  if (candidate === env.webOrigin) return true;
+  let host: string;
+  try {
+    host = new URL(candidate).host;
+  } catch {
+    return false;
+  }
+  return resolveReturnOrigin(host, env) === candidate;
+}
