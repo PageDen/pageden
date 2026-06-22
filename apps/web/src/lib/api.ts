@@ -267,6 +267,8 @@ export const api = {
   deleteComment: (commentId: string) => request("DELETE", `/comments/${encodeURIComponent(commentId)}`, { schema: okSchema }),
   attachments: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/attachments`, { schema: attachmentListSchema }),
+  attachmentMeta: (id: string) =>
+    request("GET", `/attachments/${encodeURIComponent(id)}/meta`, { schema: attachmentSchema }),
   attachmentUrl: (id: string) => `${BASE}/attachments/${encodeURIComponent(id)}`,
   // Absolute URL for embedding in stored Markdown (works in the web app and in Obsidian when
   // online). If BASE is already absolute (dev override) use it as-is, else prefix the origin.
@@ -297,7 +299,7 @@ export const api = {
     documentId: string,
     file: File,
     onProgress: (percent: number) => void,
-  ): Promise<{ id: string; filename: string; contentType: string; size: number; sha256: string; createdAt: string }> => {
+  ): Promise<z.infer<typeof attachmentSchema>> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.withCredentials = true;

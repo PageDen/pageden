@@ -49,6 +49,7 @@ import {
   MAX_MEDIA_BYTES,
   classifyMediaUrl,
   isAllowedEmbedSrc,
+  isDocumentType,
   isUploadableType,
   normalizeEmbedUrl,
 } from "./media";
@@ -313,7 +314,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
     for (const file of Array.from(files)) {
       if (!isUploadableType(file.type)) continue;
       if (file.size > MAX_MEDIA_BYTES) {
-        showNotice("warning", `"${file.name}" exceeds the 25 MB limit.`);
+        showNotice("warning", `"${file.name}" exceeds the 50 MB limit.`);
         continue;
       }
       const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -324,11 +325,34 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
           file,
           (percent) => setUploads((prev) => prev.map((u) => (u.id === uploadId ? { ...u, progress: percent } : u))),
         );
+        // Wait for ClamAV scan to complete (server sets SCANNING immediately after upload).
+        if (attachment.status === "scanning") {
+          setUploads((prev) => prev.map((u) => (u.id === uploadId ? { ...u, progress: 100, scanning: true } : u)));
+          let status: "scanning" | "ready" | "quarantined" = attachment.status;
+          for (let i = 0; i < 60 && status === "scanning"; i++) {
+            await new Promise<void>((r) => window.setTimeout(r, 2_000));
+            const meta = await api.attachmentMeta(attachment.id);
+            status = meta.status;
+          }
+          if (status === "quarantined") {
+            showNotice("error", `"${file.name}" was blocked by the antivirus scan.`);
+            continue;
+          }
+        }
         const src = api.absoluteAttachmentUrl(attachment.id);
         const chain = ed.chain().focus();
         if (typeof at === "number") chain.setTextSelection(at);
-        if (file.type.startsWith("image/")) chain.insertContent({ type: "image", attrs: { src, "data-align": "center" } }).run();
-        else chain.insertContent({ type: "video", attrs: { src } }).run();
+        if (file.type.startsWith("image/")) {
+          chain.insertContent({ type: "image", attrs: { src, "data-align": "center" } }).run();
+        } else if (file.type.startsWith("video/")) {
+          chain.insertContent({ type: "video", attrs: { src } }).run();
+        } else if (isDocumentType(file.type)) {
+          // PDF/DOCX: insert as a download link paragraph
+          chain.insertContent({
+            type: "paragraph",
+            content: [{ type: "text", text: file.name, marks: [{ type: "link", attrs: { href: src, target: "_blank", rel: "noopener noreferrer nofollow" } }] }],
+          }).run();
+        }
       } catch (err) {
         console.error("Upload failed:", err);
         showNotice("error", `Failed to upload "${file.name}".`);
@@ -618,7 +642,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/*"
+        accept="image/*,video/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         multiple
         className="hidden"
         onChange={(e) => {
@@ -644,6 +668,19 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
                   file,
                   (percent) => setUploads((prev) => prev.map((u) => (u.id === uploadId ? { ...u, progress: percent } : u))),
                 );
+                if (attachment.status === "scanning") {
+                  setUploads((prev) => prev.map((u) => (u.id === uploadId ? { ...u, progress: 100, scanning: true } : u)));
+                  let status: "scanning" | "ready" | "quarantined" = attachment.status;
+                  for (let i = 0; i < 60 && status === "scanning"; i++) {
+                    await new Promise<void>((r) => window.setTimeout(r, 2_000));
+                    const meta = await api.attachmentMeta(attachment.id);
+                    status = meta.status;
+                  }
+                  if (status === "quarantined") {
+                    showNotice("error", `"${file.name}" was blocked by the antivirus scan.`);
+                    return;
+                  }
+                }
                 updateSelectedImage({ src: api.absoluteAttachmentUrl(attachment.id) });
               } catch (err) {
                 console.error("Replace image upload failed:", err);
