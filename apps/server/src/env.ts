@@ -62,6 +62,8 @@ export const env = {
   // Where Google redirects back to (must match the Google Cloud console). Defaults to the API origin.
   googleRedirectUri:
     process.env.GOOGLE_REDIRECT_URI ?? `${normalizeOrigin(process.env.APP_URL ?? process.env.WEB_ORIGIN ?? "http://localhost:4000")}/api/auth/google/callback`,
+  // Optional server-to-server credential used by Hermes for account-linking endpoints.
+  hermesServiceSecret: process.env.HERMES_SERVICE_SECRET,
 };
 
 export const googleConfigured = Boolean(env.googleClientId && env.googleClientSecret);

@@ -3,6 +3,8 @@ import { prisma } from "../../src/prisma.js";
 const TABLES = [
   "AuditCheckpoint",
   "AuditEvent",
+  "HermesConnectSession",
+  "ExternalAccountLink",
   "McpOAuthCode",
   "DeviceAuthRequest",
   "DocumentRevision",
