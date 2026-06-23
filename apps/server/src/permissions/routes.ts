@@ -584,6 +584,8 @@ async function listPermissions(reply: FastifyReply, workspaceId: string, resourc
     ...rowSubject(row),
     role: row.role,
     subject: buildSubject(row),
+    effectiveRole: row.role,
+    effectiveSource: "explicit" as const,
     inheritedFrom: { folderId: row.folderId, folderPath: row.folderPath, folderName: row.folderName },
   }));
   return reply.send({
