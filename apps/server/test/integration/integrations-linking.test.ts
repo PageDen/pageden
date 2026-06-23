@@ -2,7 +2,7 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { getApp, closeApp, req, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
-import { addMember, createUser, createWorkspace } from "../fixtures/seed.js";
+import { addMember, baseScenario, createUser, createWorkspace } from "../fixtures/seed.js";
 
 beforeAll(async () => {
   await getApp();
@@ -295,5 +295,149 @@ describe("REST-mode external integration account linking", () => {
     });
     expect(status.statusCode).toBe(200);
     expect(status.json().linked).toBe(false);
+  });
+});
+
+describe("REST-mode document action endpoints", () => {
+  async function setupActions() {
+    const s = await baseScenario();
+    const iRes = await req({
+      method: "POST",
+      url: `/api/workspaces/${s.ws.id}/integrations`,
+      cookies: s.adminCookie,
+      payload: { providerKey: "hermes", runtimeMode: "rest", name: "Hermes", scopes: ["connect:write", "links:read", "documents:read"] },
+    });
+    expect(iRes.statusCode).toBe(201);
+    const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
+    const auth = basic(integration.clientId, clientSecret);
+
+    const sRes = await req({
+      method: "POST",
+      url: "/api/integrations/connect-sessions",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+    });
+    expect(sRes.statusCode).toBe(201);
+    const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
+    await confirm(sessionId, tokenFromConnectUrl(connectUrl), s.admin.id);
+
+    return { s, auth };
+  }
+
+  it("document-read: 403 account_not_linked with connectUrl for unknown external account", async () => {
+    const { s, auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "nobody", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("account_not_linked");
+    expect(res.json().connectUrl).toMatch(/\/integrations\/connect\?token=/);
+  });
+
+  it("document-read: 200 with document content for linked user with access", async () => {
+    const { s, auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.id).toBe(s.docId);
+    expect(res.json().document.content).toContain("# Runbook");
+  });
+
+  it("document-read: 404 when document does not exist", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: "does-not-exist" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("document-read: 400 when both documentId and path are missing", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("document-read: 400 when externalProvider or externalAccountId is missing", async () => {
+    const { s, auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("document-read: 403 when integration lacks documents:read scope", async () => {
+    const { auth } = await createIntegration(["connect:write", "links:read"]);
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: "any" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("document-search: 403 account_not_linked with connectUrl for unknown external account", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-search",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "nobody", query: "runbook" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("account_not_linked");
+    expect(res.json().connectUrl).toMatch(/\/integrations\/connect\?token=/);
+  });
+
+  it("document-search: 200 with results for linked user", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-search",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", query: "Runbook" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results).toBeInstanceOf(Array);
+  });
+
+  it("document-search: 400 when query is missing", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-search",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("document-search: 403 when integration lacks documents:read scope", async () => {
+    const { auth } = await createIntegration(["connect:write", "links:read"]);
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-search",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", query: "test" },
+    });
+    expect(res.statusCode).toBe(403);
   });
 });
