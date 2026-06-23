@@ -97,6 +97,7 @@ model User {
   documentShares          DocumentShare[]          @relation("DocumentShareCreator")
   importJobs              ImportJob[]
   createdAllowedEmailDomains WorkspaceAllowedEmailDomain[] @relation("AllowedEmailDomainCreatedBy")
+  createdWorkspaceIntegrations WorkspaceIntegration[] @relation("WorkspaceIntegrationCreatedBy")
   externalAccountLinks    ExternalAccountLink[]
 }
 
@@ -133,6 +134,9 @@ model Workspace {
   permissions            Permission[]
   auditEvents            AuditEvent[]
   attachments            Attachment[]
+  integrations           WorkspaceIntegration[]
+  externalAccountLinks   ExternalAccountLink[]
+  externalConnectSessions ExternalConnectSession[]
   mcpOAuthCodes          McpOAuthCode[]
   comments               DocumentComment[]
   readCursors            TokenReadCursor[]
@@ -609,40 +613,78 @@ model WorkspaceAllowedEmailDomain {
   @@index([workspaceId])
 }
 
-/// External chat/user identity linked to a PageDen user so integrations such
-/// as Hermes can act through PageDen permission checks as the linked user.
+/// Workspace-scoped external integration credential for REST/operator clients
+/// such as OpenClaw or custom platform bots.
+model WorkspaceIntegration {
+  id               String    @id @default(cuid())
+  workspaceId      String
+  providerKey      String
+  runtimeMode      String    @default("rest")
+  name             String
+  clientId         String    @unique
+  clientSecretHash String
+  scopes           String[]  @default([])
+  createdById      String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  lastUsedAt       DateTime?
+  revokedAt        DateTime?
+
+  workspace       Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy       User                     @relation("WorkspaceIntegrationCreatedBy", fields: [createdById], references: [id])
+  externalLinks   ExternalAccountLink[]
+  connectSessions ExternalConnectSession[]
+
+  @@index([workspaceId])
+  @@index([providerKey])
+  @@index([runtimeMode])
+  @@index([revokedAt])
+}
+
+/// External chat/user identity linked to a PageDen user for one workspace
+/// integration. REST-mode integrations resolve this link before PageDen checks
+/// the linked user's document permissions.
 model ExternalAccountLink {
   id                String    @id @default(cuid())
+  workspaceId       String
+  integrationId     String
   userId            String
-  provider          String
-  providerAccountId String
-  providerUsername  String?
-  providerMetadata  Json?
+  externalProvider  String
+  externalAccountId String
+  externalUsername  String?
+  externalMetadata  Json?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   lastUsedAt        DateTime?
   revokedAt         DateTime?
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration WorkspaceIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([provider, providerAccountId])
-  @@index([userId])
-  @@index([provider, providerAccountId])
+  @@unique([integrationId, externalProvider, externalAccountId])
+  @@index([workspaceId, userId])
+  @@index([integrationId, revokedAt])
 }
 
 /// Short-lived, single-use browser handoff token for linking an external
 /// platform account to the currently signed-in PageDen user.
-model HermesConnectSession {
+model ExternalConnectSession {
   id                String    @id @default(cuid())
+  workspaceId       String
+  integrationId     String
   tokenHash         String    @unique
-  provider          String
-  providerAccountId String
-  providerUsername  String?
-  providerMetadata  Json?
+  externalProvider  String
+  externalAccountId String
+  externalUsername  String?
+  externalMetadata  Json?
   createdAt         DateTime  @default(now())
   expiresAt         DateTime
   usedAt            DateTime?
 
-  @@index([provider, providerAccountId])
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration WorkspaceIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@index([integrationId, externalProvider, externalAccountId])
   @@index([expiresAt])
 }

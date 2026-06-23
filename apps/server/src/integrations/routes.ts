@@ -1,0 +1,566 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { isUniqueViolation, validationError } from "../errors.js";
+import { requireAuth } from "../auth.js";
+import { env } from "../env.js";
+import { prisma } from "../prisma.js";
+
+const CONNECT_TTL_MS = 15 * 60 * 1000;
+const KEY_RE = /^[a-z][a-z0-9_-]{1,31}$/;
+const CLIENT_ID_PREFIX = "pd_int_";
+const SECRET_PREFIX = "pd_secret_";
+const CONNECT_TOKEN_PREFIX = "pd_connect_";
+const MAX_NAME = 120;
+const MAX_EXTERNAL_ACCOUNT_ID = 128;
+const MAX_EXTERNAL_USERNAME = 128;
+const RUNTIME_MODES = new Set(["rest", "openresponses", "custom"]);
+const ALLOWED_SCOPES = new Set(["connect:write", "links:read", "documents:read", "documents:write", "comments:write"]);
+
+type IntegrationAuth = {
+  id: string;
+  workspaceId: string;
+  providerKey: string;
+  runtimeMode: string;
+  name: string;
+  scopes: string[];
+};
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function createSecret(prefix: string): string {
+  return `${prefix}${randomBytes(32).toString("base64url")}`;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function parseBasicAuth(request: FastifyRequest): { clientId: string; clientSecret: string } | null {
+  const header = request.headers.authorization;
+  if (!header?.toLowerCase().startsWith("basic ")) return null;
+  const encoded = header.slice(6).trim();
+  let decoded: string;
+  try {
+    decoded = Buffer.from(encoded, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+  const separator = decoded.indexOf(":");
+  if (separator <= 0) return null;
+  const clientId = decoded.slice(0, separator);
+  const clientSecret = decoded.slice(separator + 1);
+  return clientId && clientSecret ? { clientId, clientSecret } : null;
+}
+
+async function requireIntegrationAuth(request: FastifyRequest, reply: FastifyReply, requiredScope: string): Promise<IntegrationAuth | null> {
+  const credentials = parseBasicAuth(request);
+  if (!credentials) {
+    reply.code(401).send({ error: "unauthorized", message: "Integration credentials required." });
+    return null;
+  }
+  const integration = await prisma.workspaceIntegration.findUnique({
+    where: { clientId: credentials.clientId },
+    select: { id: true, workspaceId: true, providerKey: true, runtimeMode: true, name: true, clientSecretHash: true, scopes: true, revokedAt: true },
+  });
+  if (!integration || integration.revokedAt || !safeEqual(sha256(credentials.clientSecret), integration.clientSecretHash)) {
+    reply.code(401).send({ error: "unauthorized", message: "Integration credentials required." });
+    return null;
+  }
+  if (!integration.scopes.includes(requiredScope)) {
+    reply.code(403).send({ error: "forbidden", message: `Integration requires ${requiredScope} scope.` });
+    return null;
+  }
+  await prisma.workspaceIntegration.update({ where: { id: integration.id }, data: { lastUsedAt: new Date() } });
+  return {
+    id: integration.id,
+    workspaceId: integration.workspaceId,
+    providerKey: integration.providerKey,
+    runtimeMode: integration.runtimeMode,
+    name: integration.name,
+    scopes: integration.scopes,
+  };
+}
+
+async function requireWorkspaceAdmin(request: FastifyRequest, reply: FastifyReply, workspaceId: string): Promise<string | null> {
+  const auth = await requireAuth(request);
+  const membership = await prisma.workspaceMembership.findUnique({
+    where: { workspaceId_userId: { workspaceId, userId: auth.userId } },
+    select: { role: true },
+  });
+  if (membership?.role !== "admin") {
+    reply.code(404).send({ error: "not_found", message: "Workspace not found." });
+    return null;
+  }
+  return auth.userId;
+}
+
+function normalizeKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return KEY_RE.test(normalized) ? normalized : null;
+}
+
+function normalizeName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_NAME ? trimmed : null;
+}
+
+function normalizeRuntimeMode(value: unknown): string | null {
+  if (value === undefined) return "rest";
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return RUNTIME_MODES.has(normalized) ? normalized : null;
+}
+
+function normalizeScopes(value: unknown): string[] | null {
+  if (value === undefined) return ["connect:write", "links:read"];
+  if (!Array.isArray(value)) return null;
+  const scopes: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !ALLOWED_SCOPES.has(item)) return null;
+    if (!scopes.includes(item)) scopes.push(item);
+  }
+  return scopes;
+}
+
+function normalizeExternalAccountId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.trim();
+  return id.length > 0 && id.length <= MAX_EXTERNAL_ACCOUNT_ID ? id : null;
+}
+
+function normalizeOptionalString(value: unknown, maxLength: number): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length <= maxLength ? trimmed : undefined;
+}
+
+function parseIntegrationBody(body: unknown):
+  | { providerKey: string; runtimeMode: string; name: string; scopes: string[] }
+  | { fields: Record<string, string> } {
+  const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const providerKey = normalizeKey(input.providerKey);
+  const runtimeMode = normalizeRuntimeMode(input.runtimeMode);
+  const name = normalizeName(input.name);
+  const scopes = normalizeScopes(input.scopes);
+  const fields: Record<string, string> = {};
+  if (!providerKey) fields.providerKey = "Expected a provider key like openclaw or custom-agent.";
+  if (!runtimeMode) fields.runtimeMode = "Expected runtimeMode to be rest, openresponses, or custom.";
+  if (!name) fields.name = "Expected a non-empty name up to 120 characters.";
+  if (!scopes) fields.scopes = "Expected an array of valid scopes.";
+  if (Object.keys(fields).length > 0) return { fields };
+  return { providerKey: providerKey!, runtimeMode: runtimeMode!, name: name!, scopes: scopes! };
+}
+
+function parseExternalIdentity(inputValue: unknown):
+  | { externalProvider: string; externalAccountId: string; externalUsername?: string | null; externalMetadata?: object | null }
+  | { fields: Record<string, string> } {
+  const input = inputValue && typeof inputValue === "object" ? (inputValue as Record<string, unknown>) : {};
+  const externalProvider = normalizeKey(input.externalProvider);
+  const externalAccountId = normalizeExternalAccountId(input.externalAccountId);
+  const externalUsername = normalizeOptionalString(input.externalUsername, MAX_EXTERNAL_USERNAME);
+  const externalMetadata =
+    input.externalMetadata === undefined || input.externalMetadata === null
+      ? null
+      : typeof input.externalMetadata === "object" && !Array.isArray(input.externalMetadata)
+        ? (input.externalMetadata as object)
+        : undefined;
+  const fields: Record<string, string> = {};
+  if (!externalProvider) fields.externalProvider = "Expected an external provider like discord or openclaw.";
+  if (!externalAccountId) fields.externalAccountId = "Expected a stable external account id.";
+  if (externalUsername === undefined && "externalUsername" in input) fields.externalUsername = "Expected a short display name.";
+  if (externalMetadata === undefined) fields.externalMetadata = "Expected an object.";
+  if (Object.keys(fields).length > 0) return { fields };
+  return { externalProvider: externalProvider!, externalAccountId: externalAccountId!, externalUsername, externalMetadata };
+}
+
+function integrationDto(integration: {
+  id: string;
+  workspaceId: string;
+  providerKey: string;
+  runtimeMode: string;
+  name: string;
+  clientId: string;
+  scopes: string[];
+  createdAt: Date;
+  updatedAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}) {
+  return {
+    id: integration.id,
+    workspaceId: integration.workspaceId,
+    providerKey: integration.providerKey,
+    runtimeMode: integration.runtimeMode,
+    name: integration.name,
+    clientId: integration.clientId,
+    scopes: integration.scopes,
+    createdAt: integration.createdAt.toISOString(),
+    updatedAt: integration.updatedAt.toISOString(),
+    lastUsedAt: integration.lastUsedAt ? integration.lastUsedAt.toISOString() : null,
+    revokedAt: integration.revokedAt ? integration.revokedAt.toISOString() : null,
+  };
+}
+
+function linkDto(link: {
+  id: string;
+  workspaceId: string;
+  integrationId: string;
+  userId?: string;
+  externalProvider: string;
+  externalAccountId: string;
+  externalUsername: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+  integration?: { id: string; providerKey: string; runtimeMode: string; name: string } | null;
+  workspace?: { id: string; name: string; slug: string } | null;
+}) {
+  return {
+    id: link.id,
+    workspaceId: link.workspaceId,
+    integrationId: link.integrationId,
+    externalProvider: link.externalProvider,
+    externalAccountId: link.externalAccountId,
+    externalUsername: link.externalUsername,
+    createdAt: link.createdAt.toISOString(),
+    updatedAt: link.updatedAt.toISOString(),
+    lastUsedAt: link.lastUsedAt ? link.lastUsedAt.toISOString() : null,
+    revokedAt: link.revokedAt ? link.revokedAt.toISOString() : null,
+    ...(link.integration ? { integration: link.integration } : {}),
+    ...(link.workspace ? { workspace: link.workspace } : {}),
+  };
+}
+
+async function confirmConnectSession(input: { sessionId: string; rawToken: string; userId: string }) {
+  const now = new Date();
+  const tokenHash = sha256(input.rawToken);
+
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.externalConnectSession.findUnique({
+      where: { id: input.sessionId },
+      select: {
+        id: true,
+        workspaceId: true,
+        integrationId: true,
+        tokenHash: true,
+        externalProvider: true,
+        externalAccountId: true,
+        externalUsername: true,
+        externalMetadata: true,
+        expiresAt: true,
+        usedAt: true,
+        integration: { select: { name: true } },
+      },
+    });
+    if (!session || session.tokenHash !== tokenHash || session.usedAt || session.expiresAt <= now) return { status: "not_found" as const };
+
+    const membership = await tx.workspaceMembership.findUnique({
+      where: { workspaceId_userId: { workspaceId: session.workspaceId, userId: input.userId } },
+      select: { userId: true },
+    });
+    if (!membership) return { status: "not_member" as const };
+
+    const existing = await tx.externalAccountLink.findUnique({
+      where: {
+        integrationId_externalProvider_externalAccountId: {
+          integrationId: session.integrationId,
+          externalProvider: session.externalProvider,
+          externalAccountId: session.externalAccountId,
+        },
+      },
+      select: { id: true, userId: true, revokedAt: true },
+    });
+    if (existing && existing.userId !== input.userId && !existing.revokedAt) {
+      return { status: "linked_elsewhere" as const, externalProvider: session.externalProvider };
+    }
+
+    let link;
+    if (existing) {
+      link = await tx.externalAccountLink.update({
+        where: { id: existing.id },
+        data: {
+          userId: input.userId,
+          externalUsername: session.externalUsername,
+          externalMetadata: session.externalMetadata ?? undefined,
+          revokedAt: null,
+          lastUsedAt: now,
+        },
+      });
+    } else {
+      try {
+        link = await tx.externalAccountLink.create({
+          data: {
+            workspaceId: session.workspaceId,
+            integrationId: session.integrationId,
+            userId: input.userId,
+            externalProvider: session.externalProvider,
+            externalAccountId: session.externalAccountId,
+            externalUsername: session.externalUsername,
+            externalMetadata: session.externalMetadata ?? undefined,
+            lastUsedAt: now,
+          },
+        });
+      } catch (error) {
+        if (isUniqueViolation(error)) return { status: "linked_elsewhere" as const, externalProvider: session.externalProvider };
+        throw error;
+      }
+    }
+
+    await tx.externalConnectSession.update({ where: { id: session.id }, data: { usedAt: now } });
+    return { status: "linked" as const, link };
+  });
+}
+
+function sendConfirmResult(
+  reply: FastifyReply,
+  result: Awaited<ReturnType<typeof confirmConnectSession>>,
+  options: { html?: boolean } = {},
+) {
+  if (result.status === "not_found") {
+    if (options.html) return reply.code(404).type("text/html").send("<h1>Connect link expired</h1>");
+    return reply.code(404).send({ error: "not_found", message: "Connect session not found or expired." });
+  }
+  if (result.status === "not_member") {
+    if (options.html) return reply.code(403).type("text/html").send("<h1>Workspace membership required</h1>");
+    return reply.code(403).send({ error: "forbidden", message: "You must be a workspace member to link this account." });
+  }
+  if (result.status === "linked_elsewhere") {
+    const message = `This ${result.externalProvider} account is already linked to another PageDen account.`;
+    if (options.html) return reply.code(409).type("text/html").send(`<h1>Already linked</h1><p>${escapeHtml(message)}</p>`);
+    return reply.code(409).send({ error: "already_linked", message });
+  }
+  if (options.html) return reply.type("text/html").send("<h1>Integration connected</h1><p>You can return to the external app.</p>");
+  return reply.send({ link: linkDto(result.link) });
+}
+
+export async function registerIntegrationRoutes(app: FastifyInstance): Promise<void> {
+  app.post<{ Params: { workspaceId: string }; Body: unknown }>("/api/workspaces/:workspaceId/integrations", async (request, reply) => {
+    const userId = await requireWorkspaceAdmin(request, reply, request.params.workspaceId);
+    if (!userId) return;
+    const parsed = parseIntegrationBody(request.body);
+    if ("fields" in parsed) return validationError(reply, parsed.fields);
+
+    const clientId = createSecret(CLIENT_ID_PREFIX);
+    const clientSecret = createSecret(SECRET_PREFIX);
+    const integration = await prisma.workspaceIntegration.create({
+      data: {
+        workspaceId: request.params.workspaceId,
+        providerKey: parsed.providerKey,
+        runtimeMode: parsed.runtimeMode,
+        name: parsed.name,
+        clientId,
+        clientSecretHash: sha256(clientSecret),
+        scopes: parsed.scopes,
+        createdById: userId,
+      },
+    });
+    return reply.code(201).send({ integration: integrationDto(integration), clientSecret });
+  });
+
+  app.get<{ Params: { workspaceId: string } }>("/api/workspaces/:workspaceId/integrations", async (request, reply) => {
+    const userId = await requireWorkspaceAdmin(request, reply, request.params.workspaceId);
+    if (!userId) return;
+    const integrations = await prisma.workspaceIntegration.findMany({
+      where: { workspaceId: request.params.workspaceId },
+      orderBy: [{ revokedAt: "asc" }, { createdAt: "desc" }],
+    });
+    return { integrations: integrations.map(integrationDto) };
+  });
+
+  app.post<{ Params: { workspaceId: string; id: string } }>("/api/workspaces/:workspaceId/integrations/:id/rotate-secret", async (request, reply) => {
+    const userId = await requireWorkspaceAdmin(request, reply, request.params.workspaceId);
+    if (!userId) return;
+    const clientSecret = createSecret(SECRET_PREFIX);
+    const updated = await prisma.workspaceIntegration.updateMany({
+      where: { id: request.params.id, workspaceId: request.params.workspaceId, revokedAt: null },
+      data: { clientSecretHash: sha256(clientSecret) },
+    });
+    if (updated.count === 0) return reply.code(404).send({ error: "not_found", message: "Integration not found." });
+    const integration = await prisma.workspaceIntegration.findUniqueOrThrow({ where: { id: request.params.id } });
+    return { integration: integrationDto(integration), clientSecret };
+  });
+
+  app.delete<{ Params: { workspaceId: string; id: string } }>("/api/workspaces/:workspaceId/integrations/:id", async (request, reply) => {
+    const userId = await requireWorkspaceAdmin(request, reply, request.params.workspaceId);
+    if (!userId) return;
+    const existing = await prisma.workspaceIntegration.findFirst({ where: { id: request.params.id, workspaceId: request.params.workspaceId } });
+    if (!existing) return reply.code(404).send({ error: "not_found", message: "Integration not found." });
+    const integration = await prisma.workspaceIntegration.update({
+      where: { id: existing.id },
+      data: { revokedAt: existing.revokedAt ?? new Date() },
+    });
+    return { integration: integrationDto(integration) };
+  });
+
+  app.post<{ Body: unknown }>("/api/integrations/connect-sessions", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "connect:write");
+    if (!integration) return;
+    const parsed = parseExternalIdentity(request.body);
+    if ("fields" in parsed) return validationError(reply, parsed.fields);
+
+    const rawToken = createSecret(CONNECT_TOKEN_PREFIX);
+    const session = await prisma.externalConnectSession.create({
+      data: {
+        workspaceId: integration.workspaceId,
+        integrationId: integration.id,
+        tokenHash: sha256(rawToken),
+        externalProvider: parsed.externalProvider,
+        externalAccountId: parsed.externalAccountId,
+        externalUsername: parsed.externalUsername,
+        externalMetadata: parsed.externalMetadata ?? undefined,
+        expiresAt: new Date(Date.now() + CONNECT_TTL_MS),
+      },
+      select: { id: true, expiresAt: true },
+    });
+
+    return reply.code(201).send({
+      sessionId: session.id,
+      connectUrl: `${env.appUrl}/integrations/connect?token=${encodeURIComponent(rawToken)}`,
+      expiresAt: session.expiresAt.toISOString(),
+    });
+  });
+
+  app.get<{ Querystring: { token?: string } }>("/integrations/connect", async (request, reply) => {
+    const token = typeof request.query.token === "string" ? request.query.token : "";
+    const session = token
+      ? await prisma.externalConnectSession.findUnique({
+          where: { tokenHash: sha256(token) },
+          select: {
+            id: true,
+            workspaceId: true,
+            externalProvider: true,
+            externalAccountId: true,
+            externalUsername: true,
+            expiresAt: true,
+            usedAt: true,
+            workspace: { select: { name: true } },
+            integration: { select: { name: true } },
+          },
+        })
+      : null;
+    if (!session || session.usedAt || session.expiresAt <= new Date()) {
+      return reply.code(404).type("text/html").send("<h1>Connect link expired</h1>");
+    }
+
+    const auth = await requireAuth(request);
+    const membership = await prisma.workspaceMembership.findUnique({
+      where: { workspaceId_userId: { workspaceId: session.workspaceId, userId: auth.userId } },
+      select: { user: { select: { email: true } } },
+    });
+    if (!membership) return reply.code(403).type("text/html").send("<h1>Workspace membership required</h1>");
+
+    reply.header("Referrer-Policy", "no-referrer");
+    return reply.type("text/html").send(`<!doctype html>
+<html><head><meta charset="utf-8"><title>Connect PageDen</title></head>
+<body>
+  <h1>Connect PageDen</h1>
+  <p>Link PageDen account ${escapeHtml(membership.user.email)} to ${escapeHtml(session.externalProvider)} user ${escapeHtml(session.externalUsername ?? session.externalAccountId)} for ${escapeHtml(session.integration.name)} in ${escapeHtml(session.workspace.name)}?</p>
+  <form method="get" action="/api/integrations/connect-sessions/${encodeURIComponent(session.id)}/confirm">
+    <input type="hidden" name="token" value="${escapeHtml(token)}">
+    <button type="submit">Connect</button>
+  </form>
+</body></html>`);
+  });
+
+  app.post<{ Params: { id: string }; Body: { token?: string }; Querystring: { token?: string } }>(
+    "/api/integrations/connect-sessions/:id/confirm",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      const rawToken = request.body?.token ?? request.query.token ?? "";
+      if (!rawToken) return validationError(reply, { token: "Connect token is required." });
+      return sendConfirmResult(reply, await confirmConnectSession({ sessionId: request.params.id, rawToken, userId: auth.userId }));
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { token?: string } }>("/api/integrations/connect-sessions/:id/confirm", async (request, reply) => {
+    const auth = await requireAuth(request);
+    const rawToken = request.query.token ?? "";
+    if (!rawToken) return reply.code(400).type("text/html").send("<h1>Missing connect token</h1>");
+    return sendConfirmResult(reply, await confirmConnectSession({ sessionId: request.params.id, rawToken, userId: auth.userId }), { html: true });
+  });
+
+  app.get<{ Querystring: { externalProvider?: string; externalAccountId?: string } }>("/api/integrations/link-status", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "links:read");
+    if (!integration) return;
+    const parsed = parseExternalIdentity(request.query);
+    if ("fields" in parsed) return validationError(reply, parsed.fields);
+    const link = await prisma.externalAccountLink.findUnique({
+      where: {
+        integrationId_externalProvider_externalAccountId: {
+          integrationId: integration.id,
+          externalProvider: parsed.externalProvider,
+          externalAccountId: parsed.externalAccountId,
+        },
+      },
+      select: {
+        id: true,
+        workspaceId: true,
+        integrationId: true,
+        userId: true,
+        externalProvider: true,
+        externalAccountId: true,
+        externalUsername: true,
+        revokedAt: true,
+        lastUsedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    if (!link || link.revokedAt) return { linked: false, link: null };
+    const updated = await prisma.externalAccountLink.update({
+      where: { id: link.id },
+      data: { lastUsedAt: new Date() },
+      select: {
+        id: true,
+        workspaceId: true,
+        integrationId: true,
+        externalProvider: true,
+        externalAccountId: true,
+        externalUsername: true,
+        revokedAt: true,
+        lastUsedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    return { linked: true, link: linkDto(updated) };
+  });
+
+  app.get("/api/me/external-links", async (request) => {
+    const auth = await requireAuth(request);
+    const links = await prisma.externalAccountLink.findMany({
+      where: { userId: auth.userId },
+      include: {
+        workspace: { select: { id: true, name: true, slug: true } },
+        integration: { select: { id: true, providerKey: true, runtimeMode: true, name: true } },
+      },
+      orderBy: [{ revokedAt: "asc" }, { createdAt: "desc" }],
+    });
+    return { links: links.map(linkDto) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/me/external-links/:id", async (request, reply) => {
+    const auth = await requireAuth(request);
+    const link = await prisma.externalAccountLink.findFirst({ where: { id: request.params.id, userId: auth.userId } });
+    if (!link) return reply.code(404).send({ error: "not_found", message: "External account link not found." });
+    const updated = await prisma.externalAccountLink.update({
+      where: { id: link.id },
+      data: { revokedAt: link.revokedAt ?? new Date() },
+    });
+    return { link: linkDto(updated) };
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
