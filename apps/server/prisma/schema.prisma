@@ -97,6 +97,7 @@ model User {
   documentShares          DocumentShare[]          @relation("DocumentShareCreator")
   importJobs              ImportJob[]
   createdAllowedEmailDomains WorkspaceAllowedEmailDomain[] @relation("AllowedEmailDomainCreatedBy")
+  externalAccountLinks    ExternalAccountLink[]
 }
 
 model Workspace {
@@ -606,4 +607,42 @@ model WorkspaceAllowedEmailDomain {
 
   @@unique([workspaceId, domain])
   @@index([workspaceId])
+}
+
+/// External chat/user identity linked to a PageDen user so integrations such
+/// as Hermes can act through PageDen permission checks as the linked user.
+model ExternalAccountLink {
+  id                String    @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  providerUsername  String?
+  providerMetadata  Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  lastUsedAt        DateTime?
+  revokedAt         DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@index([provider, providerAccountId])
+}
+
+/// Short-lived, single-use browser handoff token for linking an external
+/// platform account to the currently signed-in PageDen user.
+model HermesConnectSession {
+  id                String    @id @default(cuid())
+  tokenHash         String    @unique
+  provider          String
+  providerAccountId String
+  providerUsername  String?
+  providerMetadata  Json?
+  createdAt         DateTime  @default(now())
+  expiresAt         DateTime
+  usedAt            DateTime?
+
+  @@index([provider, providerAccountId])
+  @@index([expiresAt])
 }
