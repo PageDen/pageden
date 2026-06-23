@@ -25,6 +25,9 @@ export function csrfGuard(request: FastifyRequest, reply: FastifyReply, done: (e
   // cookie-authenticated endpoint that IS Origin-checked.)
   const path = request.url.split("?")[0];
   if (path === "/api/auth/device/start" || path === "/api/auth/device/poll" || path === "/oauth/token") return done();
+  // Pre-signed attachment upload: authorized by the grant query param, not an
+  // ambient cookie, so it is not CSRF-able.
+  if (path === "/api/attachments/upload") return done();
   // Exempt ONLY genuine token clients: no session cookie AND a Bearer header. (Server auth
   // prefers the cookie, so any cookie-bearing request acts as the session user and must be
   // CSRF-checked even if an Authorization header is also present.)

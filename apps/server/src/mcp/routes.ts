@@ -29,7 +29,9 @@ import { createShare, listShares, revokeShare } from "../documents/shares.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { trackServerEvent } from "../lib/analytics-bus.js";
-import { createDocumentAttachment } from "../attachments/routes.js";
+import { ALLOWED_MIME_TYPES as ATTACHMENT_ALLOWED_MIME, MAX_ATTACHMENT_BYTES, createDocumentAttachment } from "../attachments/routes.js";
+import { signUploadGrant, UPLOAD_GRANT_TTL_SECONDS } from "../attachments/upload-grant.js";
+import { requestHost } from "../workspaces/domains.js";
 
 type JsonRpcRequest = {
   jsonrpc?: "2.0";
@@ -206,6 +208,20 @@ const tools = [
         contentBase64: { type: "string", description: "Base64-encoded file bytes." },
       },
       required: ["documentId", "filename", "contentType", "contentBase64"],
+    },
+  },
+  {
+    name: "pageden_request_attachment_upload",
+    description:
+      "Get a short-lived URL to upload a large file as an attachment. Returns { uploadUrl, method: 'PUT', maxBytes, expiresInSeconds }. PUT the RAW file bytes to uploadUrl with the given Content-Type (no base64). Prefer this over pageden_attach_file for files over ~500 KB. Requires the 'attachments' scope and editor access.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "Target document id." },
+        filename: { type: "string", description: "Original file name, e.g. 'Access Management.pdf'." },
+        contentType: { type: "string", description: "MIME type, e.g. 'application/pdf'." },
+      },
+      required: ["documentId", "filename", "contentType"],
     },
   },
   {
@@ -828,6 +844,7 @@ async function callTool(
   else if (name === "pageden_rewrite_wikilinks") data = await rewriteWikilinksByMcp(auth, args, request);
   else if (name === "pageden_create_document") data = await createDocument(auth, args, request);
   else if (name === "pageden_attach_file") data = await attachFile(auth, args, request);
+  else if (name === "pageden_request_attachment_upload") data = await requestAttachmentUpload(auth, args, request);
   else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
   else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
@@ -1590,6 +1607,44 @@ async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>
   };
 }
 
+async function requestAttachmentUpload(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "attachments");
+  const documentId = stringParam(args, "documentId");
+  const filename = stringParam(args, "filename");
+  const contentType = stringParam(args, "contentType").split(";")[0]?.trim() || "";
+  const role = await resolveDocumentRole(auth.userId, documentId);
+  if (role === null) throw new Error("Document not found.");
+  if (!atLeast(role, "editor")) throw new Error("Editor access is required to attach files.");
+  if (!ATTACHMENT_ALLOWED_MIME.has(contentType)) throw new Error(`Content type "${contentType}" is not allowed.`);
+  const doc = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, select: { workspaceId: true } });
+  const grant = signUploadGrant({
+    workspaceId: doc.workspaceId,
+    documentId,
+    userId: auth.userId,
+    filename,
+    contentType,
+    maxBytes: MAX_ATTACHMENT_BYTES,
+  });
+  const host = requestHost(request);
+  let scheme: string;
+  try {
+    scheme = new URL(env.webOrigin).protocol;
+  } catch {
+    scheme = "https:";
+  }
+  const uploadUrl = `${scheme}//${host}/api/attachments/upload?grant=${encodeURIComponent(grant)}`;
+  return {
+    workspaceId: doc.workspaceId,
+    uploadUrl,
+    method: "PUT" as const,
+    maxBytes: MAX_ATTACHMENT_BYTES,
+    expiresInSeconds: UPLOAD_GRANT_TTL_SECONDS,
+    headers: { "content-type": contentType },
+    instructions:
+      "PUT the raw file bytes to uploadUrl with the given Content-Type within expiresInSeconds. The response is the attachment metadata (status 'scanning').",
+  };
+}
+
 async function attachFile(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "attachments");
   const documentId = stringParam(args, "documentId");
@@ -1602,7 +1657,7 @@ async function attachFile(auth: AuthContext, args: Record<string, unknown>, requ
   const userAgent = request.headers["user-agent"];
   const { attachment, workspaceId } = await createDocumentAttachment({
     documentId,
-    auth,
+    userId: auth.userId,
     filename,
     contentType,
     body,

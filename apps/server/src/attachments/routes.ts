@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { AttachmentStatus } from "@prisma/client";
 import { prisma } from "../prisma.js";
-import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
+import { requireAuth, requireTokenScope } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
+import { verifyUploadGrant } from "./upload-grant.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
 import { readBlob, writeBlob, sweepOrphanObjects } from "../storage.js";
@@ -16,7 +17,7 @@ import { canManageWorkspace } from "../permissions/index.js";
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024; // 50 MB
 const MAX_FILENAME_LEN = 255;
 
-const ALLOWED_MIME_TYPES = new Set([
+export const ALLOWED_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/gif",
@@ -71,14 +72,14 @@ export class AttachmentError extends Error {
  */
 export async function createDocumentAttachment(opts: {
   documentId: string;
-  auth: AuthContext;
+  userId: string;
   filename: string;
   contentType: string;
   body: Buffer;
   ip?: string;
   userAgent?: string;
 }): Promise<{ attachment: ReturnType<typeof attachmentDto>; workspaceId: string }> {
-  const role = await resolveDocumentRole(opts.auth.userId, opts.documentId);
+  const role = await resolveDocumentRole(opts.userId, opts.documentId);
   if (role === null) throw new AttachmentError(404, "Document not found.");
   if (!atLeast(role, "editor")) throw new AttachmentError(403, "Editor access is required to attach files.");
 
@@ -112,14 +113,14 @@ export async function createDocumentAttachment(opts: {
       size,
       sha256: hex,
       storageKey,
-      uploadedById: opts.auth.userId,
+      uploadedById: opts.userId,
       status: AttachmentStatus.SCANNING,
     },
   });
   kickScanWorker();
   await writeAuditEvent({
     workspaceId: doc.workspaceId,
-    userId: opts.auth.userId,
+    userId: opts.userId,
     action: "attachment_uploaded",
     targetType: "attachment",
     targetId: attachment.id,
@@ -157,10 +158,51 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
       try {
         const { attachment } = await createDocumentAttachment({
           documentId: request.params.id,
-          auth,
+          userId: auth.userId,
           filename: rawName,
           contentType: typeof ctHeader === "string" ? ctHeader : "",
           body: Buffer.isBuffer(body) ? body : Buffer.alloc(0),
+          ip: request.ip,
+          userAgent: typeof userAgent === "string" ? userAgent : undefined,
+        });
+        return reply.code(202).send(attachment);
+      } catch (error) {
+        if (error instanceof AttachmentError) {
+          if (error.status === 404) return notFound(reply, error.message);
+          if (error.status === 403) return forbidden(reply);
+          if (error.status === 400) return validationError(reply, { file: error.message });
+          if (error.status === 413) return reply.code(413).send({ error: "payload_too_large", message: error.message });
+          if (error.status === 415) return reply.code(415).send({ error: "unsupported_media_type", message: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+    // Pre-signed binary upload: authorized by a short-lived grant (from the MCP
+    // request-attachment-upload tool), not by an ambient session/bearer — so an
+    // agent can PUT the raw file to 50 MB without base64. CSRF-exempt by path.
+    instance.put<{ Querystring: { grant?: string } }>(
+    "/api/attachments/upload",
+    { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 },
+    async (request, reply) => {
+      const grant = verifyUploadGrant(request.query.grant);
+      if (!grant) return reply.code(403).send({ error: "forbidden", message: "Invalid or expired upload grant." });
+      const body = request.body;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        return validationError(reply, { file: "Upload body must be non-empty binary content." });
+      }
+      if (body.length > grant.maxBytes) {
+        return reply.code(413).send({ error: "payload_too_large", message: `Upload exceeds ${grant.maxBytes} bytes.` });
+      }
+      const userAgent = request.headers["user-agent"];
+      try {
+        const { attachment } = await createDocumentAttachment({
+          documentId: grant.documentId,
+          userId: grant.userId,
+          filename: grant.filename,
+          contentType: grant.contentType,
+          body,
           ip: request.ip,
           userAgent: typeof userAgent === "string" ? userAgent : undefined,
         });

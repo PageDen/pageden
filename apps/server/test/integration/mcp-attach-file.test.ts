@@ -3,6 +3,7 @@ import { getApp, closeApp, req, bearer } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario } from "../fixtures/seed.js";
 import { drainScanWorker, setScanner } from "../../src/attachments/scanner.js";
+import { signUploadGrant, verifyUploadGrant, UPLOAD_GRANT_TTL_SECONDS } from "../../src/attachments/upload-grant.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
@@ -28,6 +29,15 @@ async function attach(token: string, args: Record<string, unknown>) {
     url: "/mcp",
     headers: bearer(token),
     payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "pageden_attach_file", arguments: args } },
+  });
+}
+
+async function attachRequest(token: string, args: Record<string, unknown>) {
+  return req({
+    method: "POST",
+    url: "/mcp",
+    headers: bearer(token),
+    payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "pageden_request_attachment_upload", arguments: args } },
   });
 }
 
@@ -81,3 +91,59 @@ describe("pageden_attach_file MCP tool", () => {
     expect(res.json().error).toBeTruthy();
   });
 });
+
+describe("upload grant signing", () => {
+  it("round-trips and rejects tampered or expired grants", () => {
+    const grant = { workspaceId: "w1", documentId: "d1", userId: "u1", filename: "a.pdf", contentType: "application/pdf", maxBytes: 1000 };
+    const token = signUploadGrant(grant);
+    expect(verifyUploadGrant(token)).toMatchObject(grant);
+    expect(verifyUploadGrant(token + "x")).toBeNull();
+    expect(verifyUploadGrant("garbage")).toBeNull();
+    const expired = signUploadGrant(grant, Date.now() - (UPLOAD_GRANT_TTL_SECONDS + 60) * 1000);
+    expect(verifyUploadGrant(expired)).toBeNull();
+  });
+});
+
+describe("pre-signed attachment upload (large files)", () => {
+  it("issues an upload URL and accepts a raw binary PUT", async () => {
+    const s = await baseScenario();
+    const token = await agentToken(s, ["attachments", "read"]);
+
+    const res = await attachRequest(token, {
+      documentId: s.docId,
+      filename: "Access Management.pdf",
+      contentType: "application/pdf",
+    });
+    expect(res.statusCode).toBe(200);
+    const grant = JSON.parse(res.json().result.content[0].text);
+    expect(grant.method).toBe("PUT");
+    expect(grant.maxBytes).toBeGreaterThan(1_000_000);
+
+    const u = new URL(grant.uploadUrl);
+    const put = await req({
+      method: "PUT",
+      url: u.pathname + u.search,
+      headers: { "content-type": "application/pdf" },
+      payload: Buffer.from("%PDF-1.4\nlarge-fake-pdf\n%%EOF"),
+    });
+    expect(put.statusCode).toBe(202);
+    const att = put.json();
+    expect(att.filename).toBe("Access Management.pdf");
+    expect(att.contentType).toBe("application/pdf");
+    expect(att.status).toBe("scanning");
+
+    const list = await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie });
+    expect((list.json().attachments as Array<{ id: string }>).map((a) => a.id)).toContain(att.id);
+  });
+
+  it("rejects an invalid grant on PUT", async () => {
+    const put = await req({
+      method: "PUT",
+      url: "/api/attachments/upload?grant=not-a-real-grant",
+      headers: { "content-type": "application/pdf" },
+      payload: Buffer.from("data"),
+    });
+    expect(put.statusCode).toBe(403);
+  });
+});
+
