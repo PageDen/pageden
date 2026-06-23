@@ -4,6 +4,9 @@ import { isUniqueViolation, validationError } from "../errors.js";
 import { requireAuth } from "../auth.js";
 import { env } from "../env.js";
 import { prisma } from "../prisma.js";
+import { resolveDocumentRole, atLeast } from "../permissions/index.js";
+import { searchDocuments, clampSearchLimit } from "../search/service.js";
+import { readContent } from "../storage.js";
 
 const CONNECT_TTL_MS = 15 * 60 * 1000;
 const KEY_RE = /^[a-z][a-z0-9_-]{1,31}$/;
@@ -559,6 +562,151 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     });
     return { link: linkDto(updated) };
   });
+
+  // ---------------------------------------------------------------------------
+  // REST actions (Phase 2) — called by external integrations (e.g. Hermes bot)
+  // ---------------------------------------------------------------------------
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      documentId?: string;
+      path?: string;
+    };
+  }>("/api/integrations/actions/document-read", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:read");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? "").trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    const documentId = request.body.documentId?.trim() || null;
+    const path = request.body.path?.trim() || null;
+
+    if (!externalProvider || !externalAccountId) {
+      return reply.code(400).send({ error: "bad_request", message: "externalProvider and externalAccountId are required." });
+    }
+    if (!documentId && !path) {
+      return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
+    }
+
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const doc = await prisma.document.findFirst({
+      where: documentId
+        ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
+        : { path: path!, workspaceId: integration.workspaceId, deletedAt: null },
+    });
+    if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
+
+    const role = await resolveDocumentRole(link.userId, doc.id);
+    if (!atLeast(role, "viewer")) return reply.code(403).send({ error: "forbidden", message: "You do not have access to this document." });
+
+    let content = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) content = await readContent(revision.storageKey);
+    }
+
+    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+
+    return {
+      document: {
+        id: doc.id,
+        title: doc.title,
+        path: doc.path,
+        status: doc.status,
+        version: doc.currentVersionId,
+        updatedAt: doc.updatedAt.toISOString(),
+        content,
+      },
+    };
+  });
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      query?: string;
+      limit?: number;
+      canonicalOnly?: boolean;
+    };
+  }>("/api/integrations/actions/document-search", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:read");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? "").trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    const query = (request.body.query ?? "").trim();
+
+    if (!externalProvider || !externalAccountId) {
+      return reply.code(400).send({ error: "bad_request", message: "externalProvider and externalAccountId are required." });
+    }
+    if (!query) return validationError(reply, { query: "query is required." });
+
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const limit = clampSearchLimit(request.body.limit, 10);
+    const results = await searchDocuments({
+      userId: link.userId,
+      workspaceId: integration.workspaceId,
+      query,
+      limit,
+      canonicalOnly: request.body.canonicalOnly ?? false,
+    });
+
+    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+
+    return { results };
+  });
+}
+
+async function resolveLink(
+  integration: IntegrationAuth,
+  externalProvider: string,
+  externalAccountId: string,
+  reply: FastifyReply,
+): Promise<{ id: string; userId: string } | null> {
+  const link = await prisma.externalAccountLink.findUnique({
+    where: {
+      integrationId_externalProvider_externalAccountId: {
+        integrationId: integration.id,
+        externalProvider,
+        externalAccountId,
+      },
+    },
+    select: { id: true, userId: true, revokedAt: true },
+  });
+
+  if (!link || link.revokedAt) {
+    const rawToken = createSecret(CONNECT_TOKEN_PREFIX);
+    const tokenHash = sha256(rawToken);
+    const expiresAt = new Date(Date.now() + CONNECT_TTL_MS);
+    await prisma.externalConnectSession.create({
+      data: {
+        workspaceId: integration.workspaceId,
+        integrationId: integration.id,
+        tokenHash,
+        externalProvider,
+        externalAccountId,
+        expiresAt,
+      },
+    });
+    const connectUrl = `${env.appUrl}/integrations/connect?token=${encodeURIComponent(rawToken)}`;
+    reply.code(403).send({
+      error: "account_not_linked",
+      message: "This external account is not linked to a PageDen account. Ask the user to connect their account first.",
+      connectUrl,
+    });
+    return null;
+  }
+
+  return { id: link.id, userId: link.userId };
 }
 
 function escapeHtml(value: string): string {
