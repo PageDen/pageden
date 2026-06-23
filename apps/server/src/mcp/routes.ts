@@ -29,6 +29,7 @@ import { createShare, listShares, revokeShare } from "../documents/shares.js";
 import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { trackServerEvent } from "../lib/analytics-bus.js";
+import { createDocumentAttachment } from "../attachments/routes.js";
 
 type JsonRpcRequest = {
   jsonrpc?: "2.0";
@@ -190,6 +191,21 @@ const tools = [
         content: { type: "string" },
       },
       required: ["folderId", "title", "slug"],
+    },
+  },
+  {
+    name: "pageden_attach_file",
+    description:
+      "Upload a file and attach it to a document. Pass the bytes base64-encoded. Allowed types: PNG, JPEG, GIF, WebP, MP4, WebM, PDF, DOCX (max 50 MB). Requires the 'attachments' scope and editor access on the document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string", description: "Target document id." },
+        filename: { type: "string", description: "Original file name, e.g. 'Password Policy.pdf'." },
+        contentType: { type: "string", description: "MIME type, e.g. 'application/pdf'." },
+        contentBase64: { type: "string", description: "Base64-encoded file bytes." },
+      },
+      required: ["documentId", "filename", "contentType", "contentBase64"],
     },
   },
   {
@@ -811,6 +827,7 @@ async function callTool(
   else if (name === "pageden_lint_wikilinks") data = await lintWikilinksByMcp(auth, args, request);
   else if (name === "pageden_rewrite_wikilinks") data = await rewriteWikilinksByMcp(auth, args, request);
   else if (name === "pageden_create_document") data = await createDocument(auth, args, request);
+  else if (name === "pageden_attach_file") data = await attachFile(auth, args, request);
   else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
   else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
@@ -1571,6 +1588,28 @@ async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>
     recentDocuments: recent.documents,
     agentEditScope,
   };
+}
+
+async function attachFile(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "attachments");
+  const documentId = stringParam(args, "documentId");
+  const filename = stringParam(args, "filename");
+  const contentType = stringParam(args, "contentType");
+  const contentBase64 = stringParam(args, "contentBase64").replace(/\s+/g, "");
+  if (!contentBase64) throw new Error("contentBase64 is required.");
+  const body = Buffer.from(contentBase64, "base64");
+  if (body.length === 0) throw new Error("contentBase64 did not decode to any content.");
+  const userAgent = request.headers["user-agent"];
+  const { attachment, workspaceId } = await createDocumentAttachment({
+    documentId,
+    auth,
+    filename,
+    contentType,
+    body,
+    ip: request.ip,
+    userAgent: typeof userAgent === "string" ? userAgent : undefined,
+  });
+  return { ...attachment, documentId, workspaceId };
 }
 
 async function createDocument(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {

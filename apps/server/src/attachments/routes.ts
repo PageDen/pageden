@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { AttachmentStatus } from "@prisma/client";
 import { prisma } from "../prisma.js";
-import { requireAuth, requireTokenScope } from "../auth.js";
+import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
@@ -55,6 +55,81 @@ function attachmentDto(a: {
   };
 }
 
+/** Thrown by createDocumentAttachment; carries the HTTP-equivalent status. */
+export class AttachmentError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "AttachmentError";
+  }
+}
+
+/**
+ * Validate + persist an attachment for a document and kick the scan worker.
+ * Shared by the REST upload route and the MCP attach-file tool. Throws
+ * AttachmentError(status, message) on validation/permission failures. Caller
+ * supplies already-read bytes (REST: raw body; MCP: decoded base64).
+ */
+export async function createDocumentAttachment(opts: {
+  documentId: string;
+  auth: AuthContext;
+  filename: string;
+  contentType: string;
+  body: Buffer;
+  ip?: string;
+  userAgent?: string;
+}): Promise<{ attachment: ReturnType<typeof attachmentDto>; workspaceId: string }> {
+  const role = await resolveDocumentRole(opts.auth.userId, opts.documentId);
+  if (role === null) throw new AttachmentError(404, "Document not found.");
+  if (!atLeast(role, "editor")) throw new AttachmentError(403, "Editor access is required to attach files.");
+
+  const filename = sanitizeFilename(opts.filename);
+  if (!filename) throw new AttachmentError(400, "A filename is required.");
+
+  if (!Buffer.isBuffer(opts.body) || opts.body.length === 0) {
+    throw new AttachmentError(400, "Attachment body must be non-empty binary content.");
+  }
+  if (opts.body.length > MAX_ATTACHMENT_BYTES) {
+    throw new AttachmentError(413, `Attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes.`);
+  }
+
+  const contentType = opts.contentType.split(";")[0]?.trim() || "application/octet-stream";
+  if (!ALLOWED_MIME_TYPES.has(contentType)) {
+    throw new AttachmentError(415, `Content type "${contentType}" is not allowed.`);
+  }
+
+  const doc = await prisma.document.findUniqueOrThrow({
+    where: { id: opts.documentId },
+    select: { workspaceId: true },
+  });
+  const { storageKey, hex, size } = await writeBlob(opts.body, doc.workspaceId);
+
+  const attachment = await prisma.attachment.create({
+    data: {
+      workspaceId: doc.workspaceId,
+      documentId: opts.documentId,
+      filename,
+      contentType,
+      size,
+      sha256: hex,
+      storageKey,
+      uploadedById: opts.auth.userId,
+      status: AttachmentStatus.SCANNING,
+    },
+  });
+  kickScanWorker();
+  await writeAuditEvent({
+    workspaceId: doc.workspaceId,
+    userId: opts.auth.userId,
+    action: "attachment_uploaded",
+    targetType: "attachment",
+    targetId: attachment.id,
+    ipAddress: opts.ip,
+    userAgent: opts.userAgent,
+    metadata: { documentId: opts.documentId, filename, size },
+  });
+  return { attachment: attachmentDto(attachment), workspaceId: doc.workspaceId };
+}
+
 export async function registerAttachmentRoutes(app: FastifyInstance): Promise<void> {
   // Encapsulate the raw-body parser inside this plugin scope so it only affects attachment
   // routes; every other route keeps Fastify's JSON-only parsing and the default body limit.
@@ -72,68 +147,34 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     async (request, reply) => {
       const auth = await requireAuth(request);
       requireTokenScope(auth, "attachments");
-      const role = await resolveDocumentRole(auth.userId, request.params.id);
-      if (role === null) return notFound(reply, "Document not found.");
-      if (!atLeast(role, "editor")) return forbidden(reply);
 
-      // request.query.filename is already percent-decoded once by the query parser; the header is
-      // treated as literal text. No extra decodeURIComponent (it can throw and double-decode).
       const headerName = request.headers["x-filename"];
       const rawName = request.query.filename ?? (typeof headerName === "string" ? headerName : "");
-      const filename = sanitizeFilename(rawName);
-      if (!filename) return validationError(reply, { filename: "A filename is required." });
-
-      const body = request.body;
-      if (!Buffer.isBuffer(body) || body.length === 0) {
-        return validationError(reply, { file: "Attachment body must be non-empty binary content." });
-      }
-      if (body.length > MAX_ATTACHMENT_BYTES) {
-        return reply
-          .code(413)
-          .send({ error: "payload_too_large", message: `Attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes.` });
-      }
-
       const ctHeader = request.headers["content-type"];
-      const contentType =
-        (typeof ctHeader === "string" && ctHeader.split(";")[0]?.trim()) || "application/octet-stream";
+      const userAgent = request.headers["user-agent"];
+      const body = request.body;
 
-      if (!ALLOWED_MIME_TYPES.has(contentType)) {
-        return reply
-          .code(415)
-          .send({ error: "unsupported_media_type", message: `Content type "${contentType}" is not allowed.` });
-      }
-
-      const doc = await prisma.document.findUniqueOrThrow({
-        where: { id: request.params.id },
-        select: { workspaceId: true },
-      });
-      const { storageKey, hex, size } = await writeBlob(body, doc.workspaceId);
-
-      const attachment = await prisma.attachment.create({
-        data: {
-          workspaceId: doc.workspaceId,
+      try {
+        const { attachment } = await createDocumentAttachment({
           documentId: request.params.id,
-          filename,
-          contentType,
-          size,
-          sha256: hex,
-          storageKey,
-          uploadedById: auth.userId,
-          status: AttachmentStatus.SCANNING,
-        },
-      });
-      kickScanWorker();
-      await writeAuditEvent({
-        workspaceId: doc.workspaceId,
-        userId: auth.userId,
-        action: "attachment_uploaded",
-        targetType: "attachment",
-        targetId: attachment.id,
-        ipAddress: request.ip,
-        userAgent: request.headers["user-agent"],
-        metadata: { documentId: request.params.id, filename, size },
-      });
-      return reply.code(202).send(attachmentDto(attachment));
+          auth,
+          filename: rawName,
+          contentType: typeof ctHeader === "string" ? ctHeader : "",
+          body: Buffer.isBuffer(body) ? body : Buffer.alloc(0),
+          ip: request.ip,
+          userAgent: typeof userAgent === "string" ? userAgent : undefined,
+        });
+        return reply.code(202).send(attachment);
+      } catch (error) {
+        if (error instanceof AttachmentError) {
+          if (error.status === 404) return notFound(reply, error.message);
+          if (error.status === 403) return forbidden(reply);
+          if (error.status === 400) return validationError(reply, { file: error.message });
+          if (error.status === 413) return reply.code(413).send({ error: "payload_too_large", message: error.message });
+          if (error.status === 415) return reply.code(415).send({ error: "unsupported_media_type", message: error.message });
+        }
+        throw error;
+      }
     },
   );
 
