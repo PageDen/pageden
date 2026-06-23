@@ -28,6 +28,7 @@ import { registerAuditLogRoutes } from "./workspaces/audit-log.js";
 import { registerCommentRoutes } from "./documents/comments.js";
 import { registerClaimRoutes } from "./documents/claims.js";
 import { registerPublicShareRoutes, registerShareRoutes } from "./documents/shares.js";
+import { registerIntegrationRoutes } from "./integrations/routes.js";
 
 const MIN_PASSWORD_LENGTH = 8;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -179,6 +180,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerPublicShareRoutes(app);
   await registerWorkspaceLogoRoutes(app);
   await registerAuditLogRoutes(app);
+  await registerIntegrationRoutes(app);
 
   app.get<{ Querystring: { subdomain?: string } }>("/api/workspaces/availability", async (request) => {
     const subdomain = normalizeWorkspaceSubdomain(request.query.subdomain ?? "");
