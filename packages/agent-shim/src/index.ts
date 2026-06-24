@@ -137,10 +137,11 @@ const TOOLS = [
         },
         documentId: { type: "string", description: "PageDen document ID." },
         path: { type: "string", description: "Document path. Used when documentId is unknown." },
-        fileUrl: { type: "string", description: "Public URL of the file to attach." },
-        filename: { type: "string", description: "Optional filename override. Defaults to the last path segment of fileUrl." },
+        fileUrl: { type: "string", description: "Public URL of the file to attach. Use this when you have a URL." },
+        filePath: { type: "string", description: "Local filesystem path of the file to attach. Use this when the file is available locally (e.g. a cached Discord attachment)." },
+        filename: { type: "string", description: "Optional filename override. Defaults to the last path segment of fileUrl or filePath." },
       },
-      required: ["externalAccountId", "fileUrl"],
+      required: ["externalAccountId"],
     },
   },
 ];
@@ -263,18 +264,38 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<{ c
     const externalAccountId = String(args["externalAccountId"] ?? "");
     if (!externalAccountId) return text("externalAccountId is required.");
     const documentId = args["documentId"] ? String(args["documentId"]) : undefined;
-    const path = args["path"] ? String(args["path"]) : undefined;
-    const fileUrl = String(args["fileUrl"] ?? "");
-    if (!documentId && !path) return text("Provide documentId or path.");
-    if (!fileUrl) return text("fileUrl is required.");
+    const docPath = args["path"] ? String(args["path"]) : undefined;
+    const fileUrl = args["fileUrl"] ? String(args["fileUrl"]) : undefined;
+    const filePath = args["filePath"] ? String(args["filePath"]) : undefined;
+    if (!documentId && !docPath) return text("Provide documentId or path.");
+    if (!fileUrl && !filePath) return text("Provide fileUrl or filePath.");
 
-    const result = await callAction("/api/integrations/actions/file-attach", {
+    let payload: Record<string, unknown> = {
       externalProvider,
       externalAccountId,
-      fileUrl,
-      ...(documentId ? { documentId } : { path }),
-      ...(args["filename"] ? { filename: String(args["filename"]) } : {}),
-    });
+      ...(documentId ? { documentId } : { path: docPath }),
+    };
+
+    if (filePath) {
+      let fileBytes: Buffer;
+      try {
+        const { readFileSync } = await import("node:fs");
+        fileBytes = Buffer.from(readFileSync(filePath));
+      } catch {
+        return text(`Could not read file at path: ${filePath}`);
+      }
+      const { basename } = await import("node:path");
+      const filename = args["filename"] ? String(args["filename"]) : basename(filePath);
+      payload = { ...payload, fileContent: fileBytes.toString("base64"), filename };
+    } else {
+      payload = {
+        ...payload,
+        fileUrl,
+        ...(args["filename"] ? { filename: String(args["filename"]) } : {}),
+      };
+    }
+
+    const result = await callAction("/api/integrations/actions/file-attach", payload);
     return formatActionResult(result);
   }
 
