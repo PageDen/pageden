@@ -27,7 +27,70 @@ const TOOLS = [
   {
     name: "pageden_read_document",
     description:
-      "Read a PageDen document on behalf of the calling user. Returns the full document content and metadata. Use documentId when known; fall back to path otherwise.",
+      "Read a PageDen document. Without externalAccountId, reads any canonical document within the workspace's allowed folders (no login required). With externalAccountId, reads any document the user has access to.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        externalAccountId: {
+          type: "string",
+          description: `Optional. The calling user's account ID on this platform (e.g. ${externalProvider} user ID). Required to read non-canonical documents or documents outside the configured allowed folders.`,
+        },
+        documentId: { type: "string", description: "PageDen document ID." },
+        path: {
+          type: "string",
+          description: 'PageDen document path (e.g. "/projects/roadmap"). Use when documentId is unknown.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "pageden_search_documents",
+    description:
+      "Full-text search across PageDen documents. Without externalAccountId, searches canonical documents within the workspace's allowed folders. With externalAccountId, searches all documents the user has access to.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        externalAccountId: {
+          type: "string",
+          description: `Optional. The calling user's account ID on this platform (e.g. ${externalProvider} user ID). Required to search documents outside the configured allowed folders.`,
+        },
+        query: { type: "string", description: "Search query." },
+        limit: { type: "number", description: "Maximum results to return (1–50, default 10)." },
+        canonicalOnly: {
+          type: "boolean",
+          description: "When true, only return documents in canonical status. Default true when no externalAccountId is provided.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "pageden_create_document",
+    description:
+      "Create a new PageDen document. Requires the calling user to be linked to PageDen and have editor access to the destination folder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        externalAccountId: {
+          type: "string",
+          description: `The calling user's account ID on this platform (e.g. ${externalProvider} user ID). Must be linked to a PageDen account.`,
+        },
+        path: {
+          type: "string",
+          description:
+            'Desired document path, without .md extension (e.g. "/handbook/notes/my-note"). The folder must already exist. Slug must be lowercase letters, numbers, and hyphens.',
+        },
+        title: { type: "string", description: "Document title." },
+        content: { type: "string", description: "Optional initial Markdown content." },
+      },
+      required: ["externalAccountId", "path", "title"],
+    },
+  },
+  {
+    name: "pageden_append_to_document",
+    description:
+      "Append Markdown content to the end of an existing PageDen document. Requires the calling user to have editor access.",
     inputSchema: {
       type: "object",
       properties: {
@@ -36,18 +99,16 @@ const TOOLS = [
           description: `The calling user's account ID on this platform (e.g. ${externalProvider} user ID).`,
         },
         documentId: { type: "string", description: "PageDen document ID." },
-        path: {
-          type: "string",
-          description: 'PageDen document path (e.g. "/projects/roadmap"). Use when documentId is unknown.',
-        },
+        path: { type: "string", description: "Document path. Used when documentId is unknown." },
+        content: { type: "string", description: "Markdown content to append." },
       },
-      required: ["externalAccountId"],
+      required: ["externalAccountId", "content"],
     },
   },
   {
-    name: "pageden_search_documents",
+    name: "pageden_update_document",
     description:
-      "Full-text search across PageDen documents accessible to the calling user. Returns ranked results with title, path, and a content snippet.",
+      "Replace the content (and optionally the title) of an existing PageDen document. Requires editor access. To make a targeted edit, first read the document, modify the content, then call this tool.",
     inputSchema: {
       type: "object",
       properties: {
@@ -55,14 +116,31 @@ const TOOLS = [
           type: "string",
           description: `The calling user's account ID on this platform (e.g. ${externalProvider} user ID).`,
         },
-        query: { type: "string", description: "Search query." },
-        limit: { type: "number", description: "Maximum results to return (1–50, default 10)." },
-        canonicalOnly: {
-          type: "boolean",
-          description: "When true, only return documents in canonical status (excludes drafts and superseded).",
-        },
+        documentId: { type: "string", description: "PageDen document ID." },
+        path: { type: "string", description: "Document path. Used when documentId is unknown." },
+        content: { type: "string", description: "New full Markdown content. If omitted, only the title is updated." },
+        title: { type: "string", description: "New document title. Optional." },
       },
-      required: ["externalAccountId", "query"],
+      required: ["externalAccountId"],
+    },
+  },
+  {
+    name: "pageden_attach_file",
+    description:
+      "Download a file from a URL and attach it to a PageDen document. Requires editor access to the document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        externalAccountId: {
+          type: "string",
+          description: `The calling user's account ID on this platform (e.g. ${externalProvider} user ID).`,
+        },
+        documentId: { type: "string", description: "PageDen document ID." },
+        path: { type: "string", description: "Document path. Used when documentId is unknown." },
+        fileUrl: { type: "string", description: "Public URL of the file to attach." },
+        filename: { type: "string", description: "Optional filename override. Defaults to the last path segment of fileUrl." },
+      },
+      required: ["externalAccountId", "fileUrl"],
     },
   },
 ];
@@ -100,34 +178,102 @@ async function callAction(path: string, payload: Record<string, unknown>): Promi
 // ---------------------------------------------------------------------------
 
 async function runTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const externalAccountId = String(args["externalAccountId"] ?? "");
-  if (!externalAccountId) {
-    return text("externalAccountId is required.");
-  }
-
   if (name === "pageden_read_document") {
+    const externalAccountId = args["externalAccountId"] ? String(args["externalAccountId"]) : undefined;
     const documentId = args["documentId"] ? String(args["documentId"]) : undefined;
     const path = args["path"] ? String(args["path"]) : undefined;
     if (!documentId && !path) return text("Provide documentId or path.");
 
     const result = await callAction("/api/integrations/actions/document-read", {
-      externalProvider,
-      externalAccountId,
+      ...(externalAccountId ? { externalProvider, externalAccountId } : {}),
       ...(documentId ? { documentId } : { path }),
     });
     return formatActionResult(result);
   }
 
   if (name === "pageden_search_documents") {
+    const externalAccountId = args["externalAccountId"] ? String(args["externalAccountId"]) : undefined;
     const query = String(args["query"] ?? "");
     if (!query) return text("query is required.");
 
     const result = await callAction("/api/integrations/actions/document-search", {
-      externalProvider,
-      externalAccountId,
+      ...(externalAccountId ? { externalProvider, externalAccountId } : {}),
       query,
       ...(args["limit"] !== undefined ? { limit: Number(args["limit"]) } : {}),
       ...(args["canonicalOnly"] !== undefined ? { canonicalOnly: Boolean(args["canonicalOnly"]) } : {}),
+    });
+    return formatActionResult(result);
+  }
+
+  if (name === "pageden_create_document") {
+    const externalAccountId = String(args["externalAccountId"] ?? "");
+    if (!externalAccountId) return text("externalAccountId is required to create documents.");
+    const path = String(args["path"] ?? "");
+    const title = String(args["title"] ?? "");
+    if (!path) return text("path is required.");
+    if (!title) return text("title is required.");
+
+    const result = await callAction("/api/integrations/actions/document-create", {
+      externalProvider,
+      externalAccountId,
+      path,
+      title,
+      ...(args["content"] !== undefined ? { content: String(args["content"]) } : {}),
+    });
+    return formatActionResult(result);
+  }
+
+  if (name === "pageden_append_to_document") {
+    const externalAccountId = String(args["externalAccountId"] ?? "");
+    if (!externalAccountId) return text("externalAccountId is required.");
+    const documentId = args["documentId"] ? String(args["documentId"]) : undefined;
+    const path = args["path"] ? String(args["path"]) : undefined;
+    const content = String(args["content"] ?? "");
+    if (!documentId && !path) return text("Provide documentId or path.");
+    if (!content) return text("content is required.");
+
+    const result = await callAction("/api/integrations/actions/document-append", {
+      externalProvider,
+      externalAccountId,
+      content,
+      ...(documentId ? { documentId } : { path }),
+    });
+    return formatActionResult(result);
+  }
+
+  if (name === "pageden_update_document") {
+    const externalAccountId = String(args["externalAccountId"] ?? "");
+    if (!externalAccountId) return text("externalAccountId is required.");
+    const documentId = args["documentId"] ? String(args["documentId"]) : undefined;
+    const path = args["path"] ? String(args["path"]) : undefined;
+    if (!documentId && !path) return text("Provide documentId or path.");
+    if (args["content"] === undefined && !args["title"]) return text("Provide content or title to update.");
+
+    const result = await callAction("/api/integrations/actions/document-update", {
+      externalProvider,
+      externalAccountId,
+      ...(documentId ? { documentId } : { path }),
+      ...(args["content"] !== undefined ? { content: String(args["content"]) } : {}),
+      ...(args["title"] ? { title: String(args["title"]) } : {}),
+    });
+    return formatActionResult(result);
+  }
+
+  if (name === "pageden_attach_file") {
+    const externalAccountId = String(args["externalAccountId"] ?? "");
+    if (!externalAccountId) return text("externalAccountId is required.");
+    const documentId = args["documentId"] ? String(args["documentId"]) : undefined;
+    const path = args["path"] ? String(args["path"]) : undefined;
+    const fileUrl = String(args["fileUrl"] ?? "");
+    if (!documentId && !path) return text("Provide documentId or path.");
+    if (!fileUrl) return text("fileUrl is required.");
+
+    const result = await callAction("/api/integrations/actions/file-attach", {
+      externalProvider,
+      externalAccountId,
+      fileUrl,
+      ...(documentId ? { documentId } : { path }),
+      ...(args["filename"] ? { filename: String(args["filename"]) } : {}),
     });
     return formatActionResult(result);
   }
@@ -159,37 +305,25 @@ function text(message: string): { content: Array<{ type: "text"; text: string }>
 }
 
 // ---------------------------------------------------------------------------
-// MCP stdio framing (JSON-RPC 2.0 over Content-Length frames)
+// MCP stdio framing (JSON-RPC 2.0 over newline-delimited JSON)
+// Compatible with Python MCP SDK v1.x (mcp>=1.0) used by Hermes.
 // ---------------------------------------------------------------------------
 
 type JsonRpcRequest = { id: string | number; method: string; params?: unknown };
 type JsonRpcNotification = { method: string; params?: unknown };
 
-let buffer = Buffer.alloc(0);
+let lineBuffer = "";
 
-process.stdin.on("data", (chunk: Buffer) => {
-  buffer = Buffer.concat([buffer, chunk]);
-  void drain();
-});
-
-async function drain(): Promise<void> {
-  for (;;) {
-    const headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd === -1) return;
-    const header = buffer.slice(0, headerEnd).toString("utf8");
-    const match = /^Content-Length:\s*(\d+)/im.exec(header);
-    if (!match) {
-      process.stderr.write("Invalid MCP frame: missing Content-Length\n");
-      process.exit(1);
-    }
-    const length = Number(match[1]);
-    const bodyStart = headerEnd + 4;
-    if (buffer.length < bodyStart + length) return;
-    const body = buffer.slice(bodyStart, bodyStart + length).toString("utf8");
-    buffer = buffer.slice(bodyStart + length);
-    await handle(body);
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk: string) => {
+  lineBuffer += chunk;
+  const lines = lineBuffer.split("\n");
+  lineBuffer = lines.pop() ?? "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed) void handle(trimmed);
   }
-}
+});
 
 async function handle(raw: string): Promise<void> {
   let msg: JsonRpcRequest | JsonRpcNotification;
@@ -210,7 +344,7 @@ async function handle(raw: string): Promise<void> {
       respond(req.id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "pageden-agent-shim", version: "0.1.0" },
+        serverInfo: { name: "pageden-agent-shim", version: "0.2.0" },
       });
       break;
 
@@ -244,5 +378,5 @@ function respondError(id: string | number, code: number, message: string): void 
 }
 
 function writeFrame(body: string): void {
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
+  process.stdout.write(body + "\n");
 }
