@@ -1,8 +1,8 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeAuditEvent } from "../audit.js";
-import { isTokenScope, requireAuth, requireTokenScope, TOKEN_SCOPES, type AuthContext } from "../auth.js";
+import { authenticate, isTokenScope, requireAuth, requireTokenScope, TOKEN_SCOPES, type AuthContext } from "../auth.js";
 import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
@@ -759,6 +759,19 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
     ].join("\n");
   });
 
+  app.get("/mcp", async (request, reply) => {
+    const auth = await authenticate(request);
+    if (auth) {
+      return reply.send({
+        ok: true,
+        transport: "streamable-http",
+        authType: auth.authType,
+        tokenWorkspaceId: auth.tokenWorkspaceId ?? null,
+      });
+    }
+    return mcpAuthenticationRequired(request, reply);
+  });
+
   app.post("/mcp", async (request, reply) => {
     const auth = await requireAuth(request);
     const body = request.body;
@@ -770,6 +783,18 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
     if (!response) return reply.code(202).send();
     return response;
   });
+}
+
+function mcpAuthenticationRequired(request: FastifyRequest, reply: FastifyReply) {
+  const resourceMetadata = `${requestOrigin(request)}/.well-known/oauth-protected-resource`;
+  return reply
+    .code(401)
+    .header("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}"`)
+    .send({
+      error: "unauthorized",
+      message: "Authentication required.",
+      resource_metadata: resourceMetadata,
+    });
 }
 
 async function handleJsonRpc(

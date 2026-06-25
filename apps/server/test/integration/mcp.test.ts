@@ -45,6 +45,32 @@ describe("MCP agent access", () => {
   it("exposes llms.txt and handles MCP protocol helpers", async () => {
     const s = await agentToken(["search", "read"]);
 
+    const unauthenticatedGet = await req({ method: "GET", url: "/mcp" });
+    expect(unauthenticatedGet.statusCode).toBe(401);
+    expect(unauthenticatedGet.headers["www-authenticate"]).toContain(
+      'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource"',
+    );
+    expect(unauthenticatedGet.json()).toMatchObject({
+      error: "unauthorized",
+      resource_metadata: "http://localhost/.well-known/oauth-protected-resource",
+    });
+
+    const invalidAuthenticatedGet = await req({ method: "GET", url: "/mcp", headers: bearer("not-a-real-token") });
+    expect(invalidAuthenticatedGet.statusCode).toBe(401);
+    expect(invalidAuthenticatedGet.headers["www-authenticate"]).toContain(
+      'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource"',
+    );
+
+    const authenticatedGet = await req({ method: "GET", url: "/mcp", headers: bearer(s.token) });
+    expect(authenticatedGet.statusCode).toBe(200);
+    expect(authenticatedGet.headers["www-authenticate"]).toBeUndefined();
+    expect(authenticatedGet.json()).toMatchObject({
+      ok: true,
+      transport: "streamable-http",
+      authType: "token",
+      tokenWorkspaceId: s.ws.id,
+    });
+
     const llms = await req({ method: "GET", url: "/llms.txt" });
     expect(llms.statusCode).toBe(200);
     expect(llms.body).toContain("Pageden");
