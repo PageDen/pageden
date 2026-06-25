@@ -1,7 +1,21 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const email = process.env.BOOTSTRAP_ADMIN_EMAIL ?? "admin@e2e.test";
 const password = process.env.BOOTSTRAP_ADMIN_PASSWORD ?? "";
+
+async function login(page: Page) {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  const homeLink = page.getByRole("link", { name: "Home" });
+  const workspaceChooser = page.getByRole("heading", { name: "Choose a workspace" });
+  await expect(homeLink.or(workspaceChooser).first()).toBeVisible();
+  if (await workspaceChooser.isVisible()) {
+    await page.getByRole("link", { name: /Default Workspace/i }).click();
+  }
+  await expect(homeLink).toBeVisible();
+}
 
 test("tree actions: rename, move, permissions, delete via the row menu", async ({ page }) => {
   const suffix = Date.now().toString(36);
@@ -10,11 +24,7 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   const original = `Draft ${suffix}`;
   const renamed = `Final ${suffix}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("link", { name: "Home" })).toBeVisible();
+  await login(page);
 
   // Two top-level folders; a document in the first.
   const newFolder = async (name: string) => {
@@ -78,6 +88,34 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   await expect(page.locator("nav").getByRole("link", { name: renamed })).toHaveCount(0);
 });
 
+test("tree actions: does not expose cloud-only workspace transfer", async ({ page }) => {
+  const suffix = Date.now().toString(36);
+  const folderName = `Self Hosted ${suffix}`;
+  const docTitle = `Local Only ${suffix}`;
+
+  await login(page);
+
+  await page.getByRole("button", { name: "+ New top-level folder" }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Name" }).fill(folderName);
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText(folderName, { exact: true })).toBeVisible();
+
+  const folderRow = page.getByText(folderName, { exact: true }).locator("xpath=ancestor::div[contains(@class, 'group')][1]");
+  await folderRow.locator('summary[aria-label="More actions"]').click();
+  await expect(folderRow.getByRole("button", { name: "Move to workspace" })).toHaveCount(0);
+  await folderRow.getByRole("button", { name: "New document" }).click();
+
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Title" }).fill(docTitle);
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("nav").getByRole("link", { name: docTitle })).toBeVisible();
+
+  const docRow = page.locator("nav").getByRole("link", { name: docTitle }).locator("xpath=ancestor::li[1]");
+  await docRow.locator('summary[aria-label="More actions"]').click();
+  await expect(docRow.getByRole("button", { name: "Move to workspace" })).toHaveCount(0);
+});
+
 test("tree folders render in natural sorted order", async ({ page }) => {
   const suffix = Date.now().toString(36);
   const parentName = `Sort Parent ${suffix}`;
@@ -91,11 +129,7 @@ test("tree folders render in natural sorted order", async ({ page }) => {
     `Phase 3 ${suffix}`,
   ];
 
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("link", { name: "Home" })).toBeVisible();
+  await login(page);
 
   await page.getByRole("button", { name: "+ New top-level folder" }).click();
   let dialog = page.getByRole("dialog");
