@@ -77,3 +77,50 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   await dialog.getByRole("button", { name: "Delete" }).click();
   await expect(page.locator("nav").getByRole("link", { name: renamed })).toHaveCount(0);
 });
+
+test("tree folders render in natural sorted order", async ({ page }) => {
+  const suffix = Date.now().toString(36);
+  const parentName = `Sort Parent ${suffix}`;
+  const childNames = [
+    `Phase 5 ${suffix}`,
+    `Phase 4 ${suffix}`,
+    `Governance ${suffix}`,
+    `Phase 1 ${suffix}`,
+    `Phase 10 ${suffix}`,
+    `Phase 2 ${suffix}`,
+    `Phase 3 ${suffix}`,
+  ];
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("link", { name: "Home" })).toBeVisible();
+
+  await page.getByRole("button", { name: "+ New top-level folder" }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Name" }).fill(parentName);
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText(parentName, { exact: true })).toBeVisible();
+
+  const parentRow = page.getByText(parentName, { exact: true }).locator("xpath=ancestor::div[contains(@class, 'group')][1]");
+  for (const childName of childNames) {
+    await parentRow.locator('summary[aria-label="More actions"]').click();
+    await parentRow.getByRole("button", { name: "New subfolder" }).click();
+    dialog = page.getByRole("dialog");
+    await dialog.getByRole("textbox", { name: "Name" }).fill(childName);
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText(childName, { exact: true })).toBeVisible();
+  }
+
+  const parentItem = page.getByText(parentName, { exact: true }).locator("xpath=ancestor::li[1]");
+  await expect(parentItem.locator("xpath=./ul/li/div/button/span")).toHaveText([
+    `Governance ${suffix}`,
+    `Phase 1 ${suffix}`,
+    `Phase 2 ${suffix}`,
+    `Phase 3 ${suffix}`,
+    `Phase 4 ${suffix}`,
+    `Phase 5 ${suffix}`,
+    `Phase 10 ${suffix}`,
+  ]);
+});

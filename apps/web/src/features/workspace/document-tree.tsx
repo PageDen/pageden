@@ -272,6 +272,16 @@ export interface DocClaimSummary {
   expiresAt: string;
 }
 
+const treeCollator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+function compareFolders(a: Folder, b: Folder): number {
+  return treeCollator.compare(a.name, b.name) || treeCollator.compare(a.path, b.path) || a.id.localeCompare(b.id);
+}
+
+function compareDocs(a: Doc, b: Doc): number {
+  return treeCollator.compare(a.title, b.title) || treeCollator.compare(a.path, b.path) || a.id.localeCompare(b.id);
+}
+
 export function DocumentTree({
   workspaceId,
   folders,
@@ -293,6 +303,8 @@ export function DocumentTree({
     bucket.push(f);
     childFolders.set(f.parentFolderId, bucket);
   }
+  for (const bucket of childFolders.values()) bucket.sort(compareFolders);
+
   const folderIds = new Set(folders.map((f) => f.id));
   const docsByFolder = new Map<string, Doc[]>();
   const orphanDocs: Doc[] = [];
@@ -305,6 +317,8 @@ export function DocumentTree({
       orphanDocs.push(d);
     }
   }
+  for (const bucket of docsByFolder.values()) bucket.sort(compareDocs);
+  orphanDocs.sort(compareDocs);
 
   const roots = childFolders.get(null) ?? [];
   if (roots.length === 0 && documents.length === 0) {

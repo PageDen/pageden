@@ -25,6 +25,71 @@ describe("documents — endpoints & validation", () => {
     expect(tree.json().documents).toHaveLength(1);
   });
 
+  it("returns the document tree in deterministic natural path order", async () => {
+    const s = await baseScenario();
+    const parent = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, name: "Product Lifecycle Policy 2", slug: "product-lifecycle-policy-2" },
+    });
+    expect(parent.statusCode).toBe(201);
+    const parentId = parent.json().id as string;
+
+    const childFolders = [
+      ["Phase 5 - Launch and Production", "phase-5-launch-and-production"],
+      ["Phase 4 - Pre-Release and Validation", "phase-4-pre-release-and-validation"],
+      ["Governance", "governance"],
+      ["Phase 1 - Requirements and Planning", "phase-1-requirements-and-planning"],
+      ["Phase 10 - Later Review", "phase-10-later-review"],
+      ["Phase 2 - Development", "phase-2-development"],
+      ["Phase 3 - Verification and Testing", "phase-3-verification-and-testing"],
+    ] as const;
+    for (const [name, slug] of childFolders) {
+      const created = await req({
+        method: "POST",
+        url: "/api/folders",
+        cookies: s.adminCookie,
+        payload: { workspaceId: s.ws.id, parentFolderId: parentId, name, slug },
+      });
+      expect(created.statusCode).toBe(201);
+    }
+
+    const docs = [
+      ["Reference 10", "reference-10"],
+      ["Reference 2", "reference-2"],
+      ["Reference 1", "reference-1"],
+    ] as const;
+    for (const [title, slug] of docs) {
+      const created = await req({
+        method: "POST",
+        url: "/api/documents",
+        cookies: s.adminCookie,
+        payload: { workspaceId: s.ws.id, folderId: parentId, title, slug, content: "x" },
+      });
+      expect(created.statusCode).toBe(201);
+    }
+
+    const tree = await req({ method: "GET", url: `/api/documents/tree?workspaceId=${s.ws.id}`, cookies: s.adminCookie });
+    expect(tree.statusCode).toBe(200);
+    const folderNames = (tree.json().folders as Array<{ parentFolderId: string | null; name: string }>)
+      .filter((folder) => folder.parentFolderId === parentId)
+      .map((folder) => folder.name);
+    expect(folderNames).toEqual([
+      "Governance",
+      "Phase 1 - Requirements and Planning",
+      "Phase 2 - Development",
+      "Phase 3 - Verification and Testing",
+      "Phase 4 - Pre-Release and Validation",
+      "Phase 5 - Launch and Production",
+      "Phase 10 - Later Review",
+    ]);
+    const documentTitles = (tree.json().documents as Array<{ folderId: string; title: string }>)
+      .filter((document) => document.folderId === parentId)
+      .map((document) => document.title);
+    expect(documentTitles).toEqual(["Reference 1", "Reference 2", "Reference 10"]);
+  });
+
   it("requires workspaceId on list", async () => {
     const s = await baseScenario();
     const res = await req({ method: "GET", url: "/api/documents", cookies: s.adminCookie });
