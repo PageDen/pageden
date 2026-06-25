@@ -64,6 +64,7 @@ export async function buildWorkspaceResolver(
   const folders = await prisma.folder.findMany({
     where: { workspaceId, deletedAt: null },
     select: { id: true, parentFolderId: true, name: true, slug: true, path: true, defaultRole: true },
+    orderBy: [{ path: "asc" }, { id: "asc" }],
   });
   const parentOf = new Map<string, string | null>();
   const defaultRoleOf = new Map<string, Role | null>();

@@ -439,6 +439,12 @@ async function writeStatusTransitionAudit(
 // Per-workspace single-flight guard for reindex so an admin can't pile up concurrent full scans.
 const reindexInFlight = new Set<string>();
 
+const treeCollator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+function compareTreePath(a: { path: string; id: string }, b: { path: string; id: string }): number {
+  return treeCollator.compare(a.path, b.path) || a.id.localeCompare(b.id);
+}
+
 export async function registerDocumentRoutes(app: FastifyInstance): Promise<void> {
   // List documents (metadata only), permission-filtered.
   app.get<{ Querystring: { workspaceId?: string; folderId?: string } }>(
@@ -618,20 +624,23 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         path: folder.path,
         permission: resolver.folderRole(folder.id),
         defaultRole: folderDefaultRoles.get(folder.id) ?? null,
-      }));
+      }))
+      .sort(compareTreePath);
 
-    const documents = visibleDocs.map(({ doc, role }) => ({
-      id: doc.id,
-      folderId: doc.folderId,
-      title: doc.title,
-      path: doc.path,
-      permission: role,
-      capabilities: capabilitiesFor(role),
-      version: doc.currentVersionId,
-      checksum: doc.currentChecksum,
-      status: doc.status,
-      updatedAt: doc.updatedAt.toISOString(),
-    }));
+    const documents = visibleDocs
+      .map(({ doc, role }) => ({
+        id: doc.id,
+        folderId: doc.folderId,
+        title: doc.title,
+        path: doc.path,
+        permission: role,
+        capabilities: capabilitiesFor(role),
+        version: doc.currentVersionId,
+        checksum: doc.currentChecksum,
+        status: doc.status,
+        updatedAt: doc.updatedAt.toISOString(),
+      }))
+      .sort(compareTreePath);
     return { folders, documents };
   });
 
