@@ -4,9 +4,14 @@ import { isUniqueViolation, validationError } from "../errors.js";
 import { requireAuth } from "../auth.js";
 import { env } from "../env.js";
 import { prisma } from "../prisma.js";
-import { resolveDocumentRole, atLeast } from "../permissions/index.js";
+import { resolveDocumentRole, resolveFolderRole, atLeast } from "../permissions/index.js";
 import { searchDocuments, clampSearchLimit } from "../search/service.js";
-import { readContent } from "../storage.js";
+import { readContent, writeContent } from "../storage.js";
+import { applyDocumentWrite, metadataFromContent, searchTextFor } from "../documents/routes.js";
+import { createDocumentAttachment, MAX_ATTACHMENT_BYTES } from "../attachments/routes.js";
+import { buildDocumentPath, isValidSlug } from "../paths.js";
+import { checksum as computeChecksum } from "../checksum.js";
+import { lockFolderTree } from "../db.js";
 
 const CONNECT_TTL_MS = 15 * 60 * 1000;
 const KEY_RE = /^[a-z][a-z0-9_-]{1,31}$/;
@@ -27,6 +32,16 @@ type IntegrationAuth = {
   name: string;
   scopes: string[];
 };
+
+function parsePath(rawPath: string): { folderPath: string; slug: string } | null {
+  const normalized = rawPath.replace(/^\//, "").replace(/\.md$/, "").trim();
+  if (!normalized) return null;
+  const lastSlash = normalized.lastIndexOf("/");
+  const slug = lastSlash === -1 ? normalized : normalized.slice(lastSlash + 1);
+  const folderPath = lastSlash === -1 ? "" : normalized.slice(0, lastSlash);
+  if (!isValidSlug(slug)) return null;
+  return { folderPath, slug };
+}
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -663,6 +678,311 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
 
     return { results };
+  });
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      path?: string;
+      title?: string;
+      content?: string;
+    };
+  }>("/api/integrations/actions/document-create", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:write");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    if (!externalAccountId) {
+      return reply.code(400).send({ error: "bad_request", message: "externalAccountId is required to create documents." });
+    }
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const rawPath = (request.body.path ?? "").trim();
+    const title = (request.body.title ?? "").trim();
+    if (!rawPath) return reply.code(400).send({ error: "bad_request", message: "path is required." });
+    if (!title) return reply.code(400).send({ error: "bad_request", message: "title is required." });
+
+    const parsed = parsePath(rawPath);
+    if (!parsed) {
+      return reply.code(400).send({
+        error: "bad_request",
+        message: "Invalid path. Use lowercase letters, numbers, and hyphens (e.g. /handbook/notes/my-note).",
+      });
+    }
+    const { folderPath, slug } = parsed;
+
+    const folder = await prisma.folder.findFirst({
+      where: { path: folderPath, workspaceId: integration.workspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!folder) return reply.code(404).send({ error: "not_found", message: `Folder not found at path: ${folderPath || "(root)"}` });
+
+    const folderRole = await resolveFolderRole(link.userId, folder.id);
+    if (!atLeast(folderRole, "editor")) {
+      return reply.code(403).send({ error: "forbidden", message: "You need editor access to create documents in this folder." });
+    }
+
+    const content = request.body.content ?? "";
+    const sum = computeChecksum(content);
+    const { storageKey } = await writeContent(content, integration.workspaceId);
+
+    try {
+      const doc = await prisma.$transaction(async (tx) => {
+        await lockFolderTree(tx, integration.workspaceId);
+        const lockedFolder = await tx.folder.findFirst({
+          where: { id: folder.id, workspaceId: integration.workspaceId, deletedAt: null },
+          select: { path: true },
+        });
+        if (!lockedFolder) throw Object.assign(new Error("folder_missing"), { code: "folder_missing" });
+        const docPath = buildDocumentPath(lockedFolder.path, slug);
+        const taken = await tx.document.findFirst({ where: { folderId: folder.id, slug, deletedAt: null } });
+        if (taken) throw Object.assign(new Error("collision"), { code: "collision" });
+
+        const created = await tx.document.create({
+          data: {
+            workspaceId: integration.workspaceId,
+            folderId: folder.id,
+            title,
+            slug,
+            path: docPath,
+            createdById: link.userId,
+            updatedById: link.userId,
+          },
+        });
+        const revision = await tx.documentRevision.create({
+          data: {
+            documentId: created.id,
+            versionNumber: 1,
+            storageKey,
+            checksum: sum,
+            createdById: link.userId,
+            changeSource: "agent",
+            contributorIds: [link.userId],
+          },
+        });
+        const meta = await metadataFromContent(tx, integration.workspaceId, content, created.id);
+        return tx.document.update({
+          where: { id: created.id },
+          data: {
+            currentVersionId: revision.id,
+            currentChecksum: sum,
+            searchText: searchTextFor(content),
+            status: meta.status,
+            supersededById: meta.supersededById,
+            updatedById: link.userId,
+          },
+        });
+      });
+      await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+      return { document: { id: doc.id, title: doc.title, path: doc.path, status: doc.status, version: doc.currentVersionId } };
+    } catch (error: unknown) {
+      const code = (error as { code?: string }).code;
+      if (code === "collision") return reply.code(409).send({ error: "conflict", message: `A document with slug '${slug}' already exists in that folder.` });
+      if (code === "folder_missing") return reply.code(404).send({ error: "not_found", message: "Folder was deleted concurrently." });
+      throw error;
+    }
+  });
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      documentId?: string;
+      path?: string;
+      content?: string;
+    };
+  }>("/api/integrations/actions/document-append", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:write");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    if (!externalAccountId) return reply.code(400).send({ error: "bad_request", message: "externalAccountId is required." });
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const documentId = request.body.documentId?.trim() || null;
+    const docPath = request.body.path?.trim() || null;
+    const appendContent = (request.body.content ?? "").trim();
+    if (!documentId && !docPath) return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
+    if (!appendContent) return reply.code(400).send({ error: "bad_request", message: "content is required." });
+
+    const doc = await prisma.document.findFirst({
+      where: documentId
+        ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
+        : { path: docPath!, workspaceId: integration.workspaceId, deletedAt: null },
+      select: { id: true, currentVersionId: true },
+    });
+    if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
+
+    let existingContent = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({ where: { id: doc.currentVersionId }, select: { storageKey: true } });
+      if (revision) existingContent = await readContent(revision.storageKey);
+    }
+
+    const newContent = existingContent ? `${existingContent}\n\n${appendContent}` : appendContent;
+    const outcome = await applyDocumentWrite({
+      documentId: doc.id,
+      auth: { userId: link.userId, authType: "token" },
+      baseVersion: doc.currentVersionId ?? "",
+      content: newContent,
+      changeSource: "agent",
+    });
+
+    if (!outcome.ok) {
+      if (outcome.status === "conflict") return reply.code(409).send({ error: "conflict", message: "Document was modified concurrently. Retry with the latest version." });
+      if (outcome.status === "not_found") return reply.code(404).send({ error: "not_found", message: "Document not found." });
+      if (outcome.status === "forbidden") return reply.code(403).send({ error: "forbidden", message: "You do not have editor access to this document." });
+      if (outcome.status === "not_canonical") return reply.code(409).send({ error: "not_canonical", message: "Document must be in canonical status to edit." });
+      return reply.code(500).send({ error: "internal", message: "Write failed." });
+    }
+
+    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+    return { document: { id: doc.id, version: outcome.version } };
+  });
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      documentId?: string;
+      path?: string;
+      content?: string;
+      title?: string;
+    };
+  }>("/api/integrations/actions/document-update", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:write");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    if (!externalAccountId) return reply.code(400).send({ error: "bad_request", message: "externalAccountId is required." });
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const documentId = request.body.documentId?.trim() || null;
+    const docPath = request.body.path?.trim() || null;
+    const content = request.body.content;
+    const title = request.body.title?.trim();
+    if (!documentId && !docPath) return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
+    if (content === undefined && !title) return reply.code(400).send({ error: "bad_request", message: "content or title is required." });
+
+    const doc = await prisma.document.findFirst({
+      where: documentId
+        ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
+        : { path: docPath!, workspaceId: integration.workspaceId, deletedAt: null },
+      select: { id: true, currentVersionId: true },
+    });
+    if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
+
+    let resolvedContent = content;
+    if (resolvedContent === undefined) {
+      if (doc.currentVersionId) {
+        const revision = await prisma.documentRevision.findUnique({ where: { id: doc.currentVersionId }, select: { storageKey: true } });
+        if (revision) resolvedContent = await readContent(revision.storageKey);
+      }
+      resolvedContent = resolvedContent ?? "";
+    }
+
+    const outcome = await applyDocumentWrite({
+      documentId: doc.id,
+      auth: { userId: link.userId, authType: "token" },
+      baseVersion: doc.currentVersionId ?? "",
+      content: resolvedContent,
+      title,
+      changeSource: "agent",
+    });
+
+    if (!outcome.ok) {
+      if (outcome.status === "conflict") return reply.code(409).send({ error: "conflict", message: "Document was modified concurrently. Retry with the latest version." });
+      if (outcome.status === "not_found") return reply.code(404).send({ error: "not_found", message: "Document not found." });
+      if (outcome.status === "forbidden") return reply.code(403).send({ error: "forbidden", message: "You do not have editor access to this document." });
+      if (outcome.status === "not_canonical") return reply.code(409).send({ error: "not_canonical", message: "Document must be in canonical status to edit." });
+      return reply.code(500).send({ error: "internal", message: "Write failed." });
+    }
+
+    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+    return { document: { id: doc.id, version: outcome.version } };
+  });
+
+  const fileAttachBodyLimit = Math.ceil(MAX_ATTACHMENT_BYTES * (4 / 3)) + 65536;
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      documentId?: string;
+      path?: string;
+      fileContent?: string;
+      filename?: string;
+    };
+  }>("/api/integrations/actions/file-attach", { bodyLimit: fileAttachBodyLimit }, async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:write");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    if (!externalAccountId) return reply.code(400).send({ error: "bad_request", message: "externalAccountId is required." });
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const documentId = request.body.documentId?.trim() || null;
+    const docPath = request.body.path?.trim() || null;
+    const fileContent = request.body.fileContent?.trim() || null;
+    if (!documentId && !docPath) return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
+    if (!fileContent) return reply.code(400).send({ error: "bad_request", message: "fileContent is required." });
+
+    const doc = await prisma.document.findFirst({
+      where: documentId
+        ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
+        : { path: docPath!, workspaceId: integration.workspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
+
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = Buffer.from(fileContent, "base64");
+    } catch {
+      return reply.code(400).send({ error: "bad_request", message: "fileContent is not valid base64." });
+    }
+    const detectedFilename = request.body.filename?.trim() || "attachment";
+    const ext = detectedFilename.split(".").pop()?.toLowerCase() || "";
+    const mime: Record<string, string> = {
+      pdf: "application/pdf",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      mp4: "video/mp4",
+      txt: "text/plain",
+      md: "text/markdown",
+      csv: "text/csv",
+      json: "application/json",
+      zip: "application/zip",
+    };
+    const contentType = mime[ext] ?? "application/octet-stream";
+
+    try {
+      const { attachment } = await createDocumentAttachment({
+        documentId: doc.id,
+        userId: link.userId,
+        filename: detectedFilename,
+        contentType,
+        body: fileBuffer,
+      });
+      await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+      return { attachment };
+    } catch (error: unknown) {
+      const status = (error as { status?: number }).status ?? 500;
+      const message = (error as { message?: string }).message ?? "Attachment failed.";
+      return reply.code(status).send({ error: "attachment_error", message });
+    }
   });
 }
 

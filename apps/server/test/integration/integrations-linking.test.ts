@@ -441,3 +441,213 @@ describe("REST-mode document action endpoints", () => {
     expect(res.statusCode).toBe(403);
   });
 });
+
+async function setupWriteActions() {
+  const s = await baseScenario();
+  const iRes = await req({
+    method: "POST",
+    url: `/api/workspaces/${s.ws.id}/integrations`,
+    cookies: s.adminCookie,
+    payload: {
+      providerKey: "hermes",
+      runtimeMode: "rest",
+      name: "Hermes",
+      scopes: ["connect:write", "links:read", "documents:read", "documents:write"],
+    },
+  });
+  expect(iRes.statusCode).toBe(201);
+  const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
+  const auth = basic(integration.clientId, clientSecret);
+
+  const sRes = await req({
+    method: "POST",
+    url: "/api/integrations/connect-sessions",
+    headers: auth,
+    payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+  });
+  expect(sRes.statusCode).toBe(201);
+  const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
+  const confirmed = await confirm(sessionId, tokenFromConnectUrl(connectUrl), s.admin.id);
+  expect(confirmed.statusCode).toBe(200);
+
+  return { s, auth };
+}
+
+describe("REST-mode write action endpoints", () => {
+  it("document-create: 403 when integration lacks documents:write scope", async () => {
+    const { auth } = await createIntegration(["connect:write", "links:read", "documents:read"]);
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/engineering/test-doc", title: "Test" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("document-create: validates linked user and path before creating", async () => {
+    const { auth } = await setupWriteActions();
+
+    const missingAccount = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "discord", path: "/engineering/test-doc", title: "Test" },
+    });
+    expect(missingAccount.statusCode).toBe(400);
+
+    const invalidPath = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/engineering/My Doc", title: "My Doc" },
+    });
+    expect(invalidPath.statusCode).toBe(400);
+
+    const missingFolder = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/missing/new-doc", title: "New Doc" },
+    });
+    expect(missingFolder.statusCode).toBe(404);
+  });
+
+  it("document-create: creates a document through the linked user's permissions", async () => {
+    const { auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: {
+        externalProvider: "discord",
+        externalAccountId: "discord-admin-1",
+        path: "/engineering/new-runbook",
+        title: "New Runbook",
+        content: "# New Runbook\n\nCreated through an integration.",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.title).toBe("New Runbook");
+    expect(res.json().document.path).toBe("engineering/new-runbook.md");
+
+    const duplicate = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/engineering/new-runbook", title: "Duplicate" },
+    });
+    expect(duplicate.statusCode).toBe(409);
+  });
+
+  it("document-append: appends content to an existing document", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId, content: "## Appended Section\n\nNew content." },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.id).toBe(s.docId);
+
+    const updated = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(updated.json().document.content).toContain("## Appended Section");
+  });
+
+  it("document-append: validates content and document lookup", async () => {
+    const { s, auth } = await setupWriteActions();
+    const missingContent = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(missingContent.statusCode).toBe(400);
+
+    const missingDoc = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: "missing", content: "hello" },
+    });
+    expect(missingDoc.statusCode).toBe(404);
+  });
+
+  it("document-update: updates content and title", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-update",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId, content: "# Updated\n\nNew body.", title: "Updated Runbook" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.id).toBe(s.docId);
+
+    const updated = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(updated.json().document.title).toBe("Updated Runbook");
+    expect(updated.json().document.content).toContain("# Updated");
+  });
+
+  it("document-update: requires content or title", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-update",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("file-attach: accepts base64 content and creates a scanning attachment", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/file-attach",
+      headers: auth,
+      payload: {
+        externalProvider: "discord",
+        externalAccountId: "discord-admin-1",
+        documentId: s.docId,
+        filename: "evidence.pdf",
+        fileContent: Buffer.from("%PDF-1.4\n%PageDen test\n").toString("base64"),
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().attachment.filename).toBe("evidence.pdf");
+    expect(res.json().attachment.status).toBe("scanning");
+  });
+
+  it("file-attach: validates missing file content and rejects URL-only uploads", async () => {
+    const { s, auth } = await setupWriteActions();
+    const missingFile = await req({
+      method: "POST",
+      url: "/api/integrations/actions/file-attach",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(missingFile.statusCode).toBe(400);
+    expect(missingFile.json().message).toContain("fileContent");
+
+    const urlOnly = await req({
+      method: "POST",
+      url: "/api/integrations/actions/file-attach",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId, fileUrl: "http://127.0.0.1:19999/missing.pdf" },
+    });
+    expect(urlOnly.statusCode).toBe(400);
+    expect(urlOnly.json().message).toContain("fileContent");
+  });
+});
