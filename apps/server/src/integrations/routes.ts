@@ -6,7 +6,7 @@ import { env } from "../env.js";
 import { prisma } from "../prisma.js";
 import { resolveDocumentRole, resolveFolderRole, atLeast } from "../permissions/index.js";
 import { searchDocuments, clampSearchLimit } from "../search/service.js";
-import { readContent, writeContent } from "../storage.js";
+import { readContent, writeContent, readBlob } from "../storage.js";
 import { applyDocumentWrite, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { createDocumentAttachment, MAX_ATTACHMENT_BYTES } from "../attachments/routes.js";
 import { buildDocumentPath, isValidSlug } from "../paths.js";
@@ -989,6 +989,60 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       const message = (error as { message?: string }).message ?? "Attachment failed.";
       return reply.code(status).send({ error: "attachment_error", message });
     }
+  });
+
+  app.post<{
+    Body: {
+      externalProvider?: string;
+      externalAccountId?: string;
+      attachmentId?: string;
+    };
+  }>("/api/integrations/actions/attachment-read", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:read");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    const attachmentId = (request.body.attachmentId ?? "").trim();
+
+    if (!attachmentId) return reply.code(400).send({ error: "bad_request", message: "attachmentId is required." });
+    if (!externalAccountId) return reply.code(400).send({ error: "bad_request", message: "externalAccountId is required." });
+
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const attachment = await prisma.attachment.findFirst({
+      where: { id: attachmentId, deletedAt: null },
+    });
+    if (!attachment) return reply.code(404).send({ error: "not_found", message: "Attachment not found." });
+
+    if (attachment.workspaceId !== integration.workspaceId) {
+      return reply.code(404).send({ error: "not_found", message: "Attachment not found." });
+    }
+
+    const role = await resolveDocumentRole(link.userId, attachment.documentId);
+    if (!atLeast(role, "viewer")) return reply.code(404).send({ error: "not_found", message: "Attachment not found." });
+
+    if (attachment.status === "SCANNING") {
+      return reply.code(503).send({ error: "scan_pending", message: "Attachment is being scanned, try again shortly." });
+    }
+    if (attachment.status === "QUARANTINED") {
+      return reply.code(403).send({ error: "forbidden", message: "Attachment is not available." });
+    }
+
+    const bytes = await readBlob(attachment.storageKey);
+    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+
+    return {
+      attachment: {
+        id: attachment.id,
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        sha256: attachment.sha256,
+        contentBase64: bytes.toString("base64"),
+      },
+    };
   });
 }
 
