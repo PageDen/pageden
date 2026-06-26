@@ -26,6 +26,11 @@ export const ALLOWED_MIME_TYPES = new Set([
   "video/webm",
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
 ]);
 
 // Strip directory components, control characters, and bidi/format overrides so the stored and

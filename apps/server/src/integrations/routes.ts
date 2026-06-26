@@ -965,6 +965,12 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       csv: "text/csv",
       json: "application/json",
       zip: "application/zip",
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      doc: "application/msword",
+      xls: "application/vnd.ms-excel",
+      ppt: "application/vnd.ms-powerpoint",
     };
     const contentType = mime[ext] ?? "application/octet-stream";
 
