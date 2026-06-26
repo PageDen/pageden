@@ -20,6 +20,7 @@ import { TableOfContents, headingId } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
 import { documentDeepLink, documentReadablePath, documentReviewNote, workspaceRelativePath } from "../../lib/document-links";
+import { timeAgo } from "../../lib/format";
 import { relatedDocLinksForValue, resolveWikiLinks } from "./obsidian-links";
 import { useDismissableMenu } from "../../lib/use-dismissable-menu";
 import { track } from "../../lib/analytics-bus";
@@ -193,6 +194,11 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
           <div className="min-w-0 pt-0.5">
             <h1 className="break-words text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:truncate">{doc.title}</h1>
             <p className="mt-1 truncate text-xs text-slate-400">{doc.path}</p>
+            <p className="mt-0.5 text-xs text-slate-400">
+              {doc.updatedByName ? <span className="font-medium text-slate-500">{doc.updatedByName}</span> : null}
+              {doc.updatedByName ? " updated " : "Updated "}
+              {timeAgo(doc.updatedAt)}
+            </p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
             <span className="inline-flex">

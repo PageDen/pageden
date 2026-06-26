@@ -448,6 +448,7 @@ export const documentWithContentSchema = documentMetaSchema
     implementationReadiness: implementationReadinessSchema,
     supersededBy: documentRefSchema.nullable(),
     capabilities: capabilitiesSchema,
+    updatedByName: z.string().nullable(),
   })
   .strict();
 
