@@ -650,7 +650,10 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     requireTokenScope(auth, "read");
     const doc = await prisma.document.findFirst({
       where: { id: request.params.id, deletedAt: null },
-      include: { supersededBy: { select: { id: true, title: true, path: true, deletedAt: true } } },
+      include: {
+        supersededBy: { select: { id: true, title: true, path: true, deletedAt: true } },
+        updatedBy: { select: { name: true } },
+      },
     });
     if (!doc) return notFound(reply, "Document not found.");
     const role = await resolveDocumentRole(auth.userId, doc.id);
@@ -704,6 +707,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       aiReadiness,
       implementationReadiness,
       updatedAt: doc.updatedAt.toISOString(),
+      updatedByName: doc.updatedBy?.name ?? null,
     };
   });
 
