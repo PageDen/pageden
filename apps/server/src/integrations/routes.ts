@@ -627,6 +627,12 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       if (revision) content = await readContent(revision.storageKey);
     }
 
+    const attachments = await prisma.attachment.findMany({
+      where: { documentId: doc.id, deletedAt: null },
+      select: { id: true, filename: true, contentType: true, size: true },
+      orderBy: { createdAt: "asc" },
+    });
+
     await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
 
     return {
@@ -638,6 +644,7 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
         version: doc.currentVersionId,
         updatedAt: doc.updatedAt.toISOString(),
         content,
+        attachments: attachments.map((a) => ({ id: a.id, filename: a.filename, contentType: a.contentType, size: a.size })),
       },
     };
   });

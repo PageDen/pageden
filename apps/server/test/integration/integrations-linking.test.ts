@@ -1,8 +1,9 @@
-import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { getApp, closeApp, req, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { addMember, baseScenario, createUser, createWorkspace } from "../fixtures/seed.js";
+import { drainScanWorker, setScanner } from "../../src/attachments/scanner.js";
 
 beforeAll(async () => {
   await getApp();
@@ -10,6 +11,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await closeApp();
   await prisma.$disconnect();
+});
+afterEach(() => {
+  setScanner(undefined);
 });
 beforeEach(async () => {
   await resetDb();
@@ -649,5 +653,220 @@ describe("REST-mode write action endpoints", () => {
     });
     expect(urlOnly.statusCode).toBe(400);
     expect(urlOnly.json().message).toContain("fileContent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachment-read action endpoint
+// ---------------------------------------------------------------------------
+
+const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452deadbeef", "hex");
+
+async function uploadAttachment(docId: string, adminCookie: Record<string, string>, filename: string, body: Buffer, contentType = "image/png") {
+  return req({
+    method: "POST",
+    url: `/api/documents/${docId}/attachments?filename=${encodeURIComponent(filename)}`,
+    headers: { "content-type": contentType },
+    cookies: adminCookie,
+    payload: body,
+  });
+}
+
+async function setupAttachmentActions() {
+  const s = await baseScenario();
+  const iRes = await req({
+    method: "POST",
+    url: `/api/workspaces/${s.ws.id}/integrations`,
+    cookies: s.adminCookie,
+    payload: { providerKey: "discord", runtimeMode: "rest", name: "Hermes", scopes: ["connect:write", "links:read", "documents:read"] },
+  });
+  const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
+  const auth = { authorization: `Basic ${Buffer.from(`${integration.clientId}:${clientSecret}`).toString("base64")}` };
+
+  const sRes = await req({
+    method: "POST",
+    url: "/api/integrations/connect-sessions",
+    headers: auth,
+    payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+  });
+  const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
+  const parsed = new URL(connectUrl);
+  const token = parsed.searchParams.get("token")!;
+  await req({
+    method: "POST",
+    url: `/api/integrations/connect-sessions/${sessionId}/confirm`,
+    cookies: sessionFor(s.admin.id),
+    payload: { token },
+  });
+
+  return { s, auth };
+}
+
+describe("REST-mode attachment-read action endpoint", () => {
+  it("400 when attachmentId is missing", async () => {
+    const { auth } = await setupAttachmentActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("bad_request");
+  });
+
+  it("400 when externalAccountId is missing", async () => {
+    const { auth } = await setupAttachmentActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", attachmentId: "some-id" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("bad_request");
+  });
+
+  it("403 account_not_linked for unknown external account", async () => {
+    const { auth } = await setupAttachmentActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "nobody", attachmentId: "some-id" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("account_not_linked");
+    expect(res.json().connectUrl).toMatch(/\/integrations\/connect\?token=/);
+  });
+
+  it("404 when attachment does not exist", async () => {
+    const { auth } = await setupAttachmentActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId: "nonexistent-id" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("not_found");
+  });
+
+  it("200 returns base64 bytes and metadata for a ready attachment", async () => {
+    const { s, auth } = await setupAttachmentActions();
+    const up = await uploadAttachment(s.docId, s.adminCookie, "diagram.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    const attachmentId = up.json().id as string;
+    await drainScanWorker();
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.attachment.id).toBe(attachmentId);
+    expect(body.attachment.filename).toBe("diagram.png");
+    expect(body.attachment.contentType).toBe("image/png");
+    expect(body.attachment.size).toBe(PNG.length);
+    expect(typeof body.attachment.sha256).toBe("string");
+    expect(Buffer.from(body.attachment.contentBase64 as string, "base64").equals(PNG)).toBe(true);
+  });
+
+  it("503 when attachment is still in SCANNING state", async () => {
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+    setScanner(async () => { await blocked; return "clean"; });
+
+    const { s, auth } = await setupAttachmentActions();
+    const up = await uploadAttachment(s.docId, s.adminCookie, "scan.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    const attachmentId = up.json().id as string;
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe("scan_pending");
+
+    // Unblock scanner so the worker finishes before the next test calls drainScanWorker
+    unblock();
+    await drainScanWorker();
+  });
+
+  it("403 when attachment is QUARANTINED", async () => {
+    const { s, auth } = await setupAttachmentActions();
+    const up = await uploadAttachment(s.docId, s.adminCookie, "bad.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    const attachmentId = up.json().id as string;
+    await prisma.attachment.update({ where: { id: attachmentId }, data: { status: "QUARANTINED" } });
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("forbidden");
+  });
+
+  it("404 when attachment belongs to a different workspace", async () => {
+    const ws1 = await setupAttachmentActions();
+    // Use createIntegration for ws2 — it creates a workspace with a UUID slug so there's no slug collision
+    const ws2 = await createIntegration(["connect:write", "links:read", "documents:read", "documents:write"]);
+    const f2 = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: ws2.adminCookie,
+      payload: { workspaceId: ws2.workspace.id, name: "Engineering", slug: "engineering" },
+    });
+    expect(f2.statusCode).toBe(201);
+    const d2 = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: ws2.adminCookie,
+      payload: { workspaceId: ws2.workspace.id, folderId: f2.json().id as string, title: "Doc", slug: "doc", content: "# Doc" },
+    });
+    expect(d2.statusCode).toBe(201);
+    const up = await uploadAttachment(d2.json().id as string, ws2.adminCookie, "secret.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    await drainScanWorker();
+    const attachmentId = up.json().id as string;
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: ws1.auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("not_found");
+  });
+
+  it("document-read includes attachments list", async () => {
+    const { s, auth } = await setupAttachmentActions();
+    const up = await uploadAttachment(s.docId, s.adminCookie, "chart.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    await drainScanWorker();
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(200);
+    const attachments = res.json().document.attachments as Array<{ id: string; filename: string; contentType: string; size: number }>;
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].filename).toBe("chart.png");
+    expect(attachments[0].contentType).toBe("image/png");
+    expect(attachments[0].size).toBe(PNG.length);
+    expect(typeof attachments[0].id).toBe("string");
   });
 });
