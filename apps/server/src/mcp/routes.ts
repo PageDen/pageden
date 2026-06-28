@@ -867,7 +867,7 @@ async function callTool(
 ): Promise<{ content: McpContent[]; structuredContent?: unknown }> {
   let data: unknown;
   if (name === "pageden_search") data = await searchDocuments(auth, args, request);
-  else if (name === "pageden_list_documents") data = await listDocuments(auth, await resolveWorkspaceId(auth, maybeString(args.workspaceId), request));
+  else if (name === "pageden_list_documents") data = await listDocumentsMcp(auth, args);
   else if (name === "pageden_read_document") data = await readDocumentChunked(auth, args);
   else if (name === "pageden_recent_changes") data = await recentChanges(auth, args, request);
   else if (name === "pageden_answer_from_docs") data = await answerFromDocs(auth, args, request);
@@ -956,6 +956,29 @@ async function listWorkspaces(auth: AuthContext) {
     orderBy: { name: "asc" },
   });
   return { workspaces };
+}
+
+async function listDocumentsMcp(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "read");
+  const workspaceIds = await resolveWorkspaceIds(auth, maybeString(args.workspaceId));
+
+  if (workspaceIds.length === 1) return listDocuments(auth, workspaceIds[0]!);
+
+  const settled = await Promise.allSettled(workspaceIds.map((wsId) => listDocuments(auth, wsId)));
+  const folders: { id: string; parentFolderId: string | null; name: string; path: string; workspaceId: string }[] = [];
+  const documents: { id: string; folderId: string | null; title: string; path: string; workspaceId: string; permission: unknown; version: string | null; checksum: string | null; status: string; updatedAt: string }[] = [];
+  const errors: { workspaceId: string; reason: string }[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]!;
+    const wsId = workspaceIds[i]!;
+    if (outcome.status === "fulfilled") {
+      for (const f of outcome.value.folders) folders.push({ ...f, workspaceId: wsId });
+      for (const d of outcome.value.documents) documents.push({ ...d, workspaceId: wsId });
+    } else {
+      errors.push({ workspaceId: wsId, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+    }
+  }
+  return { folders, documents, errors };
 }
 
 async function listDocuments(auth: AuthContext, workspaceId: string) {
@@ -1441,27 +1464,46 @@ async function resolveSectionComment(auth: AuthContext, args: Record<string, unk
   return result.comment;
 }
 
-async function myUnread(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
-  requireTokenScope(auth, "read");
-  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
-  const limit = Math.min(clampLimit(args.limit), 100);
+async function myUnreadForWorkspace(auth: AuthContext, workspaceId: string, limit: number) {
   const docs = await unreadDocuments(auth, workspaceId);
-  // Permission-filter so we never leak titles/paths the caller can't see.
   const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
-  const visible = docs.filter((doc) => resolver.documentRole({ id: doc.id, folderId: doc.folderId }) !== null).slice(0, limit);
-  return {
-    workspaceId,
-    documents: visible.map((doc) => ({
+  return docs
+    .filter((doc) => resolver.documentRole({ id: doc.id, folderId: doc.folderId }) !== null)
+    .slice(0, limit)
+    .map((doc) => ({
       id: doc.id,
       title: doc.title,
       path: doc.path,
+      workspaceId,
       status: doc.status,
       version: doc.version,
       updatedAt: doc.updatedAt.toISOString(),
       lastReadAt: doc.lastReadAt ? doc.lastReadAt.toISOString() : null,
       lastReadVersion: doc.lastReadVersion,
-    })),
-  };
+    }));
+}
+
+async function myUnread(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const limit = Math.min(clampLimit(args.limit), 100);
+  const workspaceIds = await resolveWorkspaceIds(auth, maybeString(args.workspaceId));
+
+  if (workspaceIds.length === 1) {
+    const workspaceId = workspaceIds[0]!;
+    const documents = await myUnreadForWorkspace(auth, workspaceId, limit);
+    return { workspaceId, documents: documents.map(({ workspaceId: _ws, ...d }) => d) };
+  }
+
+  const settled = await Promise.allSettled(workspaceIds.map((wsId) => myUnreadForWorkspace(auth, wsId, limit)));
+  const documents: Awaited<ReturnType<typeof myUnreadForWorkspace>> = [];
+  const errors: { workspaceId: string; reason: string }[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]!;
+    if (outcome.status === "fulfilled") documents.push(...outcome.value);
+    else errors.push({ workspaceId: workspaceIds[i]!, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+  }
+  documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return { documents: documents.slice(0, limit), errors };
 }
 
 async function claimByMcp(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
@@ -1547,37 +1589,54 @@ async function getTaskPacket(auth: AuthContext, args: Record<string, unknown>) {
 }
 
 
-async function recentChanges(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
-  requireTokenScope(auth, "read");
-  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
-  const limit = clampLimit(args.limit);
+async function recentChangesForWorkspace(auth: AuthContext, workspaceId: string, limit: number) {
   const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
   const docs = await prisma.document.findMany({ where: { workspaceId, deletedAt: null }, orderBy: { updatedAt: "desc" }, take: 100 });
-  return {
-    workspaceId,
-    documents: docs
-      .map((doc) => ({ doc, role: resolver.documentRole(doc) }))
-      .filter((entry) => entry.role !== null)
-      .slice(0, limit)
-      .map(({ doc, role }) => ({
-        id: doc.id,
-        title: doc.title,
-        path: doc.path,
-        permission: role,
-        version: doc.currentVersionId,
-        status: doc.status,
-        updatedAt: doc.updatedAt.toISOString(),
-      })),
-  };
+  return docs
+    .map((doc) => ({ doc, role: resolver.documentRole(doc) }))
+    .filter((entry) => entry.role !== null)
+    .slice(0, limit)
+    .map(({ doc, role }) => ({
+      id: doc.id,
+      title: doc.title,
+      path: doc.path,
+      workspaceId,
+      permission: role,
+      version: doc.currentVersionId,
+      status: doc.status,
+      updatedAt: doc.updatedAt.toISOString(),
+    }));
+}
+
+async function recentChanges(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const limit = clampLimit(args.limit);
+  const workspaceIds = await resolveWorkspaceIds(auth, maybeString(args.workspaceId));
+
+  if (workspaceIds.length === 1) {
+    const workspaceId = workspaceIds[0]!;
+    const documents = await recentChangesForWorkspace(auth, workspaceId, limit);
+    return { workspaceId, documents: documents.map(({ workspaceId: _ws, ...d }) => d) };
+  }
+
+  const settled = await Promise.allSettled(workspaceIds.map((wsId) => recentChangesForWorkspace(auth, wsId, limit)));
+  const documents: Awaited<ReturnType<typeof recentChangesForWorkspace>> = [];
+  const errors: { workspaceId: string; reason: string }[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]!;
+    if (outcome.status === "fulfilled") documents.push(...outcome.value);
+    else errors.push({ workspaceId: workspaceIds[i]!, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+  }
+  documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return { documents: documents.slice(0, limit), errors };
 }
 
 async function answerFromDocs(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "search");
   requireTokenScope(auth, "read");
-  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
   const question = stringParam(args, "question").trim().slice(0, MAX_QUERY);
   const limit = Math.min(clampLimit(args.limit), 20);
-  const search = await searchDocuments(auth, { workspaceId, query: question, limit }, request);
+  const search = await searchDocuments(auth, { workspaceId: maybeString(args.workspaceId), query: question, limit }, request);
   const citations = [];
   for (const result of search.results.slice(0, limit)) {
     const doc = await readDocument(auth, { documentId: result.id });
@@ -1585,6 +1644,7 @@ async function answerFromDocs(auth: AuthContext, args: Record<string, unknown>, 
       id: doc.id,
       title: doc.title,
       path: doc.path,
+      workspaceId: doc.workspaceId,
       updatedAt: doc.updatedAt,
       headings: doc.headings,
       frontmatter: doc.frontmatter,
@@ -1593,7 +1653,6 @@ async function answerFromDocs(auth: AuthContext, args: Record<string, unknown>, 
     });
   }
   return {
-    workspaceId,
     question,
     instruction: "Answer the user using only these citations. If the citations are not enough, say what is missing.",
     citations,
@@ -1659,12 +1718,9 @@ async function rewriteWikilinksByMcp(auth: AuthContext, args: Record<string, unk
   return rewriteWikilinks(workspaceId, replacements, dryRun, auth);
 }
 
-async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
-  requireTokenScope(auth, "read");
-  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
-  const limit = Math.min(clampLimit(args.limit), 20);
+async function workspaceSummaryForOne(auth: AuthContext, workspaceId: string, limit: number) {
   const listed = await listDocuments(auth, workspaceId);
-  const recent = await recentChanges(auth, { workspaceId, limit }, request);
+  const recent = await recentChangesForWorkspace(auth, workspaceId, limit);
   const topFolders = listed.folders
     .map((folder) => ({
       ...folder,
@@ -1672,26 +1728,39 @@ async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>
     }))
     .sort((a, b) => b.documentCount - a.documentCount || a.path.localeCompare(b.path))
     .slice(0, limit);
-  // Phase C2: surface the workspace's agent edit scope so the calling agent
-  // can pre-flight write tools instead of probing per-folder. Both the folder
-  // id and its path are returned for human-readable affordance in logs.
   const workspace = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    select: {
-      agentEditScopeFolderId: true,
-      agentEditScopeFolder: { select: { path: true } },
-    },
+    select: { name: true, agentEditScopeFolderId: true, agentEditScopeFolder: { select: { path: true } } },
   });
   const agentEditScope = workspace?.agentEditScopeFolderId
     ? { folderId: workspace.agentEditScopeFolderId, folderPath: workspace.agentEditScopeFolder?.path ?? null }
     : null;
   return {
     workspaceId,
+    workspaceName: workspace?.name ?? workspaceId,
     totals: { folders: listed.folders.length, documents: listed.documents.length },
     topFolders,
-    recentDocuments: recent.documents,
+    recentDocuments: recent.map(({ workspaceId: _ws, ...d }) => d),
     agentEditScope,
   };
+}
+
+async function workspaceSummary(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
+  requireTokenScope(auth, "read");
+  const limit = Math.min(clampLimit(args.limit), 20);
+  const workspaceIds = await resolveWorkspaceIds(auth, maybeString(args.workspaceId));
+
+  if (workspaceIds.length === 1) return workspaceSummaryForOne(auth, workspaceIds[0]!, limit);
+
+  const settled = await Promise.allSettled(workspaceIds.map((wsId) => workspaceSummaryForOne(auth, wsId, limit)));
+  const workspaces: Awaited<ReturnType<typeof workspaceSummaryForOne>>[] = [];
+  const errors: { workspaceId: string; reason: string }[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]!;
+    if (outcome.status === "fulfilled") workspaces.push(outcome.value);
+    else errors.push({ workspaceId: workspaceIds[i]!, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+  }
+  return { workspaces, errors };
 }
 
 async function requestAttachmentUpload(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
