@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
-import { getApp, closeApp, req, bearer } from "../helpers/app.js";
+import { getApp, closeApp, req, bearer, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { createUser, createWorkspace, addMember } from "../fixtures/seed.js";
 import { createRawToken, hashToken } from "../../src/tokens.js";
@@ -162,5 +162,33 @@ describe("pageden_list_documents fan-out", () => {
     expect(wsIds.has(ws1.id)).toBe(true);
     expect(wsIds.has(ws2.id)).toBe(true);
     expect(res.errors ?? []).toHaveLength(0);
+  });
+
+  it("scopes to a single workspace when workspaceId is given on an unscoped token", async () => {
+    const { ws1, ws2, token } = await multiWorkspaceScenario();
+    await req({ method: "POST", url: "/api/folders", headers: bearer(token), payload: { workspaceId: ws1.id, name: "Eng", slug: "eng" } });
+    await req({ method: "POST", url: "/api/folders", headers: bearer(token), payload: { workspaceId: ws2.id, name: "Ops", slug: "ops" } });
+
+    // Explicit workspaceId → single-workspace path (folders have no workspaceId field)
+    const res = toolJson(await tool(token, "pageden_list_documents", { workspaceId: ws1.id }));
+    expect(res.folders).toBeDefined();
+    const names = (res.folders as Array<{ name: string }>).map((f) => f.name);
+    expect(names).toContain("Eng");
+    expect(names).not.toContain("Ops");
+  });
+});
+
+describe("unscoped agent token creation", () => {
+  it("rejects creating an unscoped agent token when the user has no workspace memberships", async () => {
+    const user = await createUser("lonely@t.co");
+    const cookie = sessionFor(user.id);
+    const res = await req({
+      method: "POST",
+      url: "/api/tokens",
+      headers: { cookie: Object.entries(cookie).map(([k, v]) => `${k}=${v}`).join("; ") },
+      payload: { name: "unscoped", kind: "agent" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().fields.workspaceId).toMatch(/at least one workspace/i);
   });
 });
