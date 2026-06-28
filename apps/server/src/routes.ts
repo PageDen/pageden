@@ -719,14 +719,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const scopes = requestedScopes.length > 0 ? requestedScopes : ["read"];
     const workspaceId = request.body.workspaceId?.trim() || null;
     if (kind === "agent") {
-      if (!workspaceId) {
-        return reply.code(400).send({ error: "validation_error", fields: { workspaceId: "Workspace is required for agent tokens." } });
+      if (workspaceId) {
+        const membership = await prisma.workspaceMembership.findUnique({
+          where: { workspaceId_userId: { workspaceId, userId: auth.userId } },
+          select: { role: true },
+        });
+        if (!membership) return notFound(reply, "Workspace not found.");
+      } else {
+        const count = await prisma.workspaceMembership.count({ where: { userId: auth.userId } });
+        if (count === 0)
+          return reply.code(400).send({ error: "validation_error", fields: { workspaceId: "You must belong to at least one workspace to create an unscoped agent token." } });
       }
-      const membership = await prisma.workspaceMembership.findUnique({
-        where: { workspaceId_userId: { workspaceId, userId: auth.userId } },
-        select: { role: true },
-      });
-      if (!membership) return notFound(reply, "Workspace not found.");
     }
 
     const rawToken = createRawToken();
