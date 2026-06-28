@@ -943,7 +943,10 @@ async function resolveWorkspaceId(auth: AuthContext, requested: string | undefin
 }
 
 async function resolveWorkspaceIds(auth: AuthContext, requested: string | undefined): Promise<string[]> {
-  if (auth.tokenWorkspaceId) return [auth.tokenWorkspaceId];
+  if (auth.tokenWorkspaceId) {
+    if (requested && requested !== auth.tokenWorkspaceId) throw new Error("This agent token is bound to another workspace.");
+    return [auth.tokenWorkspaceId];
+  }
   if (requested) return [requested];
   const memberships = await prisma.workspaceMembership.findMany({ where: { userId: auth.userId }, select: { workspaceId: true } });
   return memberships.map((m) => m.workspaceId);
