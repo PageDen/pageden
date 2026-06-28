@@ -132,13 +132,13 @@ describe("write operations with multi-workspace tokens", () => {
     const f = await req({ method: "POST", url: "/api/folders", headers: bearer(token), payload: { workspaceId: ws1.id, name: "Docs", slug: "docs" } });
     const folderId = f.json().id as string;
 
-    // Call create without workspaceId — should fail with workspace hint.
+    // Call create without workspaceId — should fail with workspace hint in the JSON-RPC error.
     const res = await tool(token, "pageden_create_document", { folderId, title: "Test", slug: "test" });
     const body = res.json();
-    expect(body.result.content[0].text).toMatch(/workspaceId is required/i);
-    expect(body.result.content[0].text).toMatch(ws1.id);
-    expect(body.result.content[0].text).toMatch(ws2.id);
-    expect(body.result.content[0].text).toMatch(/Alpha Corp|Beta Inc/);
+    expect(body.error.message).toMatch(/workspaceId is required/i);
+    expect(body.error.message).toMatch(ws1.id);
+    expect(body.error.message).toMatch(ws2.id);
+    expect(body.error.message).toMatch(/Alpha Corp|Beta Inc/);
   });
 
   it("succeeds when workspaceId is explicitly provided", async () => {

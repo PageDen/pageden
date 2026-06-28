@@ -1030,9 +1030,9 @@ async function searchDocuments(auth: AuthContext, args: Record<string, unknown>,
 
   if (workspaceIds.length === 1) {
     const workspaceId = workspaceIds[0]!;
-    if (!query) return { workspaceId, results: [] };
+    if (!query) return { workspaceId, results: [], errors: [] };
     const results = await runSearchDocuments({ userId: auth.userId, workspaceId, query, limit, canonicalOnly });
-    return { workspaceId, results };
+    return { workspaceId, results, errors: [] };
   }
 
   // Multi-workspace fan-out for unscoped tokens.
