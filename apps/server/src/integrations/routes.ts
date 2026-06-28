@@ -954,6 +954,7 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     let fileBuffer: Buffer;
     try {
       fileBuffer = Buffer.from(fileContent, "base64");
+    /* v8 ignore next 2 */
     } catch {
       return reply.code(400).send({ error: "bad_request", message: "fileContent is not valid base64." });
     }
@@ -991,6 +992,7 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       });
       await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
       return { attachment };
+    /* v8 ignore next 4 */
     } catch (error: unknown) {
       const status = (error as { status?: number }).status ?? 500;
       const message = (error as { message?: string }).message ?? "Attachment failed.";

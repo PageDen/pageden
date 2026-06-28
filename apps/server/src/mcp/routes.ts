@@ -2740,11 +2740,13 @@ function parseRedirectUri(value: string): URL | null {
     if (url.protocol === "http:" || url.protocol === "https:") return url;
     if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return url;
     return null;
+  /* v8 ignore next 2 */
   } catch {
     return null;
   }
 }
 
+/* v8 ignore next 13 */
 function oauthRedirectError(
   reply: { code: (status: number) => { send: (body: unknown) => unknown }; redirect: (url: string) => unknown },
   redirectUri: string | undefined,

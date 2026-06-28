@@ -178,6 +178,26 @@ describe("pageden_list_documents fan-out", () => {
   });
 });
 
+describe("pageden_find_decisions fan-out", () => {
+  it("returns merged decisions from multiple workspaces for an unscoped token", async () => {
+    const { token } = await multiWorkspaceScenario();
+    const res = toolJson(await tool(token, "pageden_find_decisions", {}));
+    expect(res.decisions).toBeDefined();
+    expect(Array.isArray(res.decisions)).toBe(true);
+    expect(res.errors ?? []).toHaveLength(0);
+  });
+});
+
+describe("pageden_activity_timeline fan-out", () => {
+  it("returns merged events from multiple workspaces for an unscoped token", async () => {
+    const { token } = await multiWorkspaceScenario();
+    const res = toolJson(await tool(token, "pageden_activity_timeline", {}));
+    expect(res.events).toBeDefined();
+    expect(Array.isArray(res.events)).toBe(true);
+    expect(res.errors ?? []).toHaveLength(0);
+  });
+});
+
 describe("unscoped agent token creation", () => {
   it("rejects creating an unscoped agent token when the user has no workspace memberships", async () => {
     const user = await createUser("lonely@t.co");
