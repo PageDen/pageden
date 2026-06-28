@@ -69,10 +69,13 @@ export function AgentsPage() {
   const [agent, setAgent] = useState<AgentPresetId>("codex");
   const [name, setName] = useState("Codex agent");
   const [preset, setPreset] = useState<"read" | "editor">("read");
+  const [allWorkspaces, setAllWorkspaces] = useState(false);
   const [raw, setRaw] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testMessage, setTestMessage] = useState<string | null>(null);
+
+  const hasMultipleWorkspaces = (me.data?.workspaces.length ?? 0) > 1;
 
   const endpoint = `${window.location.origin}/mcp`;
   const connectUrl = `${window.location.origin}/w/${encodeURIComponent(workspaceId)}/agents?connect=mcp`;
@@ -81,7 +84,7 @@ export function AgentsPage() {
   const selectedScopes = preset === "read" ? readScopes : editorScopes;
 
   const create = useMutation({
-    mutationFn: () => api.createToken(name.trim(), { kind: "agent", workspaceId, scopes: selectedScopes }),
+    mutationFn: () => api.createToken(name.trim(), { kind: "agent", workspaceId: allWorkspaces ? null : workspaceId, scopes: selectedScopes }),
     onSuccess: (token) => {
       setRaw(token.token);
       setError(null);
@@ -99,7 +102,7 @@ export function AgentsPage() {
   const testConnection = useMutation({
     mutationFn: async () => {
       if (!raw) throw new Error("Create a key first.");
-      return api.testMcpToken(raw, workspaceId);
+      return api.testMcpToken(raw, allWorkspaces ? undefined : workspaceId);
     },
     onSuccess: (result) => {
       const toolCount = result.result?.tools?.length ?? 0;
@@ -110,15 +113,20 @@ export function AgentsPage() {
 
   const snippets = useMemo(() => {
     const token = raw ?? "<paste-token-shown-once>";
+    const codexEnvLines = [
+      `PAGEDEN_URL = "${window.location.origin}"`,
+      `PAGEDEN_TOKEN = "${token}"`,
+      ...(!allWorkspaces ? [`PAGEDEN_WORKSPACE = "${workspaceId}"`] : []),
+    ];
+    const claudeEnv: Record<string, string> = { PAGEDEN_URL: window.location.origin, PAGEDEN_TOKEN: token };
+    if (!allWorkspaces) claudeEnv.PAGEDEN_WORKSPACE = workspaceId;
     return {
       codex: [
         "[mcp_servers.pageden]",
         'command = "npx"',
         'args = ["@pageden/mcp"]',
         "[mcp_servers.pageden.env]",
-        `PAGEDEN_URL = "${window.location.origin}"`,
-        `PAGEDEN_TOKEN = "${token}"`,
-        `PAGEDEN_WORKSPACE = "${workspaceId}"`,
+        ...codexEnvLines,
       ].join("\n"),
       claude: JSON.stringify(
         {
@@ -126,7 +134,7 @@ export function AgentsPage() {
             pageden: {
               command: "npx",
               args: ["@pageden/mcp"],
-              env: { PAGEDEN_URL: window.location.origin, PAGEDEN_TOKEN: token, PAGEDEN_WORKSPACE: workspaceId },
+              env: claudeEnv,
             },
           },
         },
@@ -136,16 +144,16 @@ export function AgentsPage() {
       http: [
         `Endpoint: ${endpoint}`,
         `Authorization: Bearer ${token}`,
-        `Workspace: ${workspace?.name ?? workspaceId}`,
+        allWorkspaces ? "Workspace: all (reads span all your workspaces)" : `Workspace: ${workspace?.name ?? workspaceId}`,
         "",
-        "Tools: pageden_search, pageden_list_documents, pageden_read_document,",
-        "       pageden_recent_changes, pageden_create_document,",
+        "Tools: pageden_list_workspaces, pageden_search, pageden_list_documents,",
+        "       pageden_read_document, pageden_recent_changes, pageden_create_document,",
         "       pageden_update_document, pageden_append_to_document,",
         "       pageden_answer_from_docs, pageden_find_related_docs,",
         "       pageden_workspace_summary",
       ].join("\n"),
     };
-  }, [endpoint, raw, workspace?.name, workspaceId]);
+  }, [allWorkspaces, endpoint, raw, workspace?.name, workspaceId]);
 
   const selectedAgent = agentPresets.find((item) => item.id === agent) ?? agentPresets[0];
   const selectedSnippet = agent === "claude" ? snippets.claude : agent === "codex" ? snippets.codex : snippets.http;
@@ -161,7 +169,7 @@ export function AgentsPage() {
     { label: "Test connection", done: testMessage?.startsWith("Connection works") ?? false },
   ];
 
-  const agentTokens = tokens.data?.tokens.filter((token) => token.kind === "agent" && token.workspaceId === workspaceId) ?? [];
+  const agentTokens = tokens.data?.tokens.filter((token) => token.kind === "agent" && (token.workspaceId === workspaceId || token.workspaceId === null)) ?? [];
 
   async function copy(label: string, text: string) {
     await navigator.clipboard?.writeText(text);
@@ -183,7 +191,7 @@ export function AgentsPage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-orange-700 dark:text-orange-300">AI agents</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">Connect Codex, Claude, Hermes, or any MCP agent</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-            Pick your app, create a workspace-bound key, download the ready-made setup, follow the short instructions, then test the connection.
+            Pick your app, create an access key, download the ready-made setup, follow the short instructions, then test the connection.
           </p>
         </div>
       </div>
@@ -268,6 +276,22 @@ export function AgentsPage() {
                 onClick={() => setPreset("editor")}
               />
             </div>
+            {hasMultipleWorkspaces ? (
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60">
+                <input
+                  type="checkbox"
+                  checked={allWorkspaces}
+                  onChange={(e) => setAllWorkspaces(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-orange-600"
+                />
+                <div>
+                  <div className="text-sm font-medium text-slate-900 dark:text-slate-100">All workspaces</div>
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    Reads span all your workspaces. Writes require an explicit workspaceId per call.
+                  </p>
+                </div>
+              </label>
+            ) : null}
             <Button type="submit" className="w-full" disabled={create.isPending || !name.trim()}>
               {create.isPending ? "Creating..." : "Create agent key"}
             </Button>
@@ -353,7 +377,8 @@ export function AgentsPage() {
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-300">
               <div className="font-medium text-slate-900 dark:text-slate-100">5. Test connection</div>
               <p className="mt-1">
-                Check that this key can reach <strong>{workspace?.name ?? "this workspace"}</strong>. Revoke it anytime from the active keys list.
+                Check that this key can reach{" "}
+                <strong>{allWorkspaces ? "all your workspaces" : (workspace?.name ?? "this workspace")}</strong>. Revoke it anytime from the active keys list.
               </p>
               <Button className="mt-3" onClick={() => testConnection.mutate()} disabled={!raw || testConnection.isPending}>
                 {testConnection.isPending ? "Testing..." : "Test connection"}
@@ -398,6 +423,9 @@ export function AgentsPage() {
                     <span className={`rounded-full px-2 py-0.5 font-medium ${agentStatusClass(Boolean(token.revokedAt), Boolean(token.lastUsedAt))}`}>
                       {token.revokedAt ? "Revoked" : token.lastUsedAt ? "Connected" : "Ready"}
                     </span>
+                    {token.workspaceId === null ? (
+                      <span className="rounded-full bg-violet-50 px-2 py-0.5 font-medium text-violet-700 dark:bg-violet-500/10 dark:text-violet-300">All workspaces</span>
+                    ) : null}
                     <span>{token.scopes.join(", ")}</span>
                     <span aria-hidden="true">·</span>
                     <span>{token.revokedAt ? `Revoked ${formatDateTime(token.revokedAt)}` : token.lastUsedAt ? `Used ${formatDateTime(token.lastUsedAt)}` : "Never used"}</span>
