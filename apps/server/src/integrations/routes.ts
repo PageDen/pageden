@@ -1004,6 +1004,29 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       externalAccountId?: string;
       attachmentId?: string;
     };
+  }>("/api/integrations/actions/list-workspaces", async (request, reply) => {
+    const integration = await requireIntegrationAuth(request, reply, "documents:read");
+    if (!integration) return;
+
+    const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+    const externalAccountId = (request.body.externalAccountId ?? "").trim();
+    if (!externalAccountId) return reply.code(400).send({ error: "bad_request", message: "externalAccountId is required." });
+
+    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+    if (!link) return;
+
+    const memberships = await prisma.workspaceMembership.findMany({
+      where: { userId: link.userId },
+      select: { workspaceId: true, role: true, workspace: { select: { id: true, name: true, slug: true } } },
+      orderBy: { workspace: { name: "asc" } },
+    });
+
+    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+    return { workspaces: memberships.map((m) => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role })) };
+  });
+
+  app.post<{
+    Body: { externalProvider?: string; externalAccountId?: string; attachmentId?: string };
   }>("/api/integrations/actions/attachment-read", async (request, reply) => {
     const integration = await requireIntegrationAuth(request, reply, "documents:read");
     if (!integration) return;
