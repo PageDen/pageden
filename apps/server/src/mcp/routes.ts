@@ -13,7 +13,7 @@ import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
-import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
+import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX, type SearchDocumentsResult } from "../search/service.js";
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
 import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
@@ -146,6 +146,14 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: { workspaceId: { type: "string" }, limit: { type: "number", minimum: 1, maximum: 20 } },
+    },
+  },
+  {
+    name: "pageden_list_workspaces",
+    description: "List all workspaces the current token/user can access. Use this to discover workspace IDs before calling workspace-scoped tools.",
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
   {
@@ -865,6 +873,7 @@ async function callTool(
   else if (name === "pageden_answer_from_docs") data = await answerFromDocs(auth, args, request);
   else if (name === "pageden_find_related_docs") data = await findRelatedDocs(auth, args, request);
   else if (name === "pageden_workspace_summary") data = await workspaceSummary(auth, args, request);
+  else if (name === "pageden_list_workspaces") data = await listWorkspaces(auth);
   else if (name === "pageden_lint_wikilinks") data = await lintWikilinksByMcp(auth, args, request);
   else if (name === "pageden_rewrite_wikilinks") data = await rewriteWikilinksByMcp(auth, args, request);
   else if (name === "pageden_create_document") data = await createDocument(auth, args, request);
@@ -931,6 +940,24 @@ async function resolveWorkspaceId(auth: AuthContext, requested: string | undefin
   throw new Error("workspaceId is required because this account can access multiple workspaces.");
 }
 
+async function resolveWorkspaceIds(auth: AuthContext, requested: string | undefined): Promise<string[]> {
+  if (auth.tokenWorkspaceId) return [auth.tokenWorkspaceId];
+  if (requested) return [requested];
+  const memberships = await prisma.workspaceMembership.findMany({ where: { userId: auth.userId }, select: { workspaceId: true } });
+  return memberships.map((m) => m.workspaceId);
+}
+
+async function listWorkspaces(auth: AuthContext) {
+  requireTokenScope(auth, "read");
+  const workspaceIds = await resolveWorkspaceIds(auth, undefined);
+  const workspaces = await prisma.workspace.findMany({
+    where: { id: { in: workspaceIds } },
+    select: { id: true, name: true, slug: true },
+    orderBy: { name: "asc" },
+  });
+  return { workspaces };
+}
+
 async function listDocuments(auth: AuthContext, workspaceId: string) {
   requireTokenScope(auth, "read");
   const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
@@ -964,15 +991,50 @@ async function listDocuments(auth: AuthContext, workspaceId: string) {
   };
 }
 
-async function searchDocuments(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+async function searchDocuments(auth: AuthContext, args: Record<string, unknown>, _request: FastifyRequest) {
   requireTokenScope(auth, "search");
-  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
   const query = stringParam(args, "query").trim().slice(0, MAX_QUERY);
   const limit = clampLimit(args.limit);
   const canonicalOnly = args.canonicalOnly === true || args.canonicalOnly === "true" || args.canonicalOnly === 1;
-  if (!query) return { workspaceId, results: [] };
-  const results = await runSearchDocuments({ userId: auth.userId, workspaceId, query, limit, canonicalOnly });
-  return { workspaceId, results };
+
+  const requestedWorkspaceId = maybeString(args.workspaceId);
+  const workspaceIds = await resolveWorkspaceIds(auth, requestedWorkspaceId);
+
+  if (workspaceIds.length === 1) {
+    const workspaceId = workspaceIds[0]!;
+    if (!query) return { workspaceId, results: [] };
+    const results = await runSearchDocuments({ userId: auth.userId, workspaceId, query, limit, canonicalOnly });
+    return { workspaceId, results };
+  }
+
+  // Multi-workspace fan-out for unscoped tokens.
+  if (!query) return { results: [], errors: [] };
+
+  const workspaceNames = await prisma.workspace.findMany({
+    where: { id: { in: workspaceIds } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(workspaceNames.map((w) => [w.id, w.name]));
+
+  const settled = await Promise.allSettled(
+    workspaceIds.map((wsId) => runSearchDocuments({ userId: auth.userId, workspaceId: wsId, query, limit, canonicalOnly })),
+  );
+
+  const results: Array<SearchDocumentsResult & { workspaceId: string; workspaceName: string }> = [];
+  const errors: { workspaceId: string; reason: string }[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]!;
+    const wsId = workspaceIds[i]!;
+    if (outcome.status === "fulfilled") {
+      for (const r of outcome.value) {
+        results.push({ ...r, workspaceId: wsId, workspaceName: nameById.get(wsId) ?? wsId });
+      }
+    } else {
+      errors.push({ workspaceId: wsId, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+    }
+  }
+
+  return { results: results.slice(0, limit), errors };
 }
 
 async function readDocument(auth: AuthContext, args: Record<string, unknown>, opts: { auditRead?: boolean; readMode?: string } = {}) {
