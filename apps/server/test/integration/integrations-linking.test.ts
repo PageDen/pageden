@@ -444,6 +444,45 @@ describe("REST-mode document action endpoints", () => {
     });
     expect(res.statusCode).toBe(403);
   });
+
+  it("list-workspaces: 200 returns workspaces the linked user belongs to", async () => {
+    const { s, auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/list-workspaces",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    const workspaces = res.json().workspaces as Array<{ id: string; name: string; slug: string; role: string }>;
+    expect(workspaces.length).toBeGreaterThan(0);
+    expect(workspaces.some((w) => w.id === s.ws.id)).toBe(true);
+    expect(workspaces[0].name).toBeDefined();
+    expect(workspaces[0].role).toBeDefined();
+  });
+
+  it("list-workspaces: 403 account_not_linked for unknown external account", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/list-workspaces",
+      headers: auth,
+      payload: { externalProvider: "discord", externalAccountId: "nobody" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("account_not_linked");
+  });
+
+  it("list-workspaces: 400 when externalAccountId is missing", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/list-workspaces",
+      headers: auth,
+      payload: { externalProvider: "discord" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });
 
 async function setupWriteActions() {
