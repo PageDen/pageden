@@ -62,6 +62,17 @@ describe("createMailer", () => {
     const permissionBody = JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string);
     expect(permissionBody.subject).toContain("shared a folder");
     expect(permissionBody.html).toContain("https://app/w/ws");
+
+    await mailer.sendPermissionGranted("a@t.co", {
+      actorName: "Chris",
+      workspaceName: "Pageden workspace",
+      resourceType: "document",
+      resourceName: "Strategy",
+      role: "manager",
+      openUrl: "https://app/w/ws/p/strategy",
+    });
+    const managerBody = JSON.parse((fetchMock.mock.calls[3]![1] as RequestInit).body as string);
+    expect(managerBody.text).toContain("as Manager");
   });
 
   it("uses the Brevo API when BREVO_API_KEY is set", async () => {
