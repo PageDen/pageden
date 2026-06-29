@@ -46,10 +46,6 @@ type Tx = Prisma.TransactionClient;
 const MAX_QUERY = SEARCH_QUERY_MAX;
 const DEFAULT_LIMIT = 10;
 const OAUTH_CODE_TTL_MS = 5 * 60 * 1000;
-const OAUTH_DCR_BODY_LIMIT_BYTES = 16 * 1024;
-const OAUTH_DCR_MAX_REDIRECT_URIS = 5;
-const OAUTH_DCR_MAX_REDIRECT_URI_LENGTH = 2048;
-const OAUTH_DCR_MAX_CLIENT_NAME_LENGTH = 120;
 
 const tools = [
   {
@@ -591,7 +587,6 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
       issuer: origin,
       authorization_endpoint: `${origin}/oauth/authorize`,
       token_endpoint: `${origin}/oauth/token`,
-      registration_endpoint: `${origin}/oauth/register`,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256"],
@@ -613,28 +608,11 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
       approve?: string;
     };
   }>("/oauth/authorize", async (request, reply) => {
-    let auth;
-    try {
-      auth = await requireAuth(request);
-    } catch (err) {
-      if ((err as { statusCode?: number }).statusCode === 401) {
-        return reply.redirect(`/login?returnTo=${encodeURIComponent(request.url)}`);
-      }
-      throw err;
-    }
+    const auth = await requireAuth(request);
     const parsed = await parseAuthorizeRequest(request.query, auth.userId);
-    if ("error" in parsed) {
-      return oauthRedirectError(
-        reply,
-        parsed.redirect === false ? undefined : request.query.redirect_uri,
-        request.query.state,
-        parsed.error,
-        parsed.description,
-      );
-    }
+    if ("error" in parsed) return oauthRedirectError(reply, request.query.redirect_uri, request.query.state, parsed.error, parsed.description);
 
-    if (request.query.approve === "1" && (parsed.workspace || parsed.allWorkspaces)) {
-      const workspaceId = parsed.workspace?.id ?? null;
+    if (request.query.approve === "1") {
       const jti = randomUUID();
       const code = createOAuthCode();
       const expiresAt = new Date(Date.now() + OAUTH_CODE_TTL_MS);
@@ -645,7 +623,7 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
           userId: auth.userId,
           clientId: parsed.clientId,
           redirectUri: parsed.redirectUri,
-          workspaceId,
+          workspaceId: parsed.workspaceId,
           codeChallenge: parsed.codeChallenge,
           scopes: parsed.scopes,
           expiresAt,
@@ -655,72 +633,26 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
       redirect.searchParams.set("code", code);
       if (parsed.state) redirect.searchParams.set("state", parsed.state);
       await writeAuditEvent({
-        workspaceId,
+        workspaceId: parsed.workspaceId,
         userId: auth.userId,
         action: "mcp_oauth_approved",
         targetType: "workspace",
-        targetId: workspaceId ?? auth.userId,
+        targetId: parsed.workspaceId,
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"],
-        metadata: { clientId: parsed.clientId, scopes: parsed.scopes, allWorkspaces: parsed.allWorkspaces },
+        metadata: { clientId: parsed.clientId, scopes: parsed.scopes },
       });
       return reply.redirect(redirect.toString());
     }
 
     reply.type("text/html; charset=utf-8");
     return renderAuthorizePage({
-      appName: parsed.clientName ?? displayOAuthClientName(parsed.clientId),
-      clientId: parsed.clientId,
-      workspace: parsed.workspace,
-      allWorkspaces: parsed.allWorkspaces,
-      candidates: parsed.candidates,
+      appName: parsed.clientId,
+      workspaceName: parsed.workspaceName,
       scopes: parsed.scopes,
       approveUrl: authorizeApproveUrl(request),
-      hiddenFields: collectAuthorizeFields(request.query),
     });
   });
-
-  app.post<{
-    Body: {
-      redirect_uris?: unknown;
-      client_name?: unknown;
-      token_endpoint_auth_method?: unknown;
-      grant_types?: unknown;
-      response_types?: unknown;
-      scope?: unknown;
-    };
-  }>(
-    "/oauth/register",
-    {
-      bodyLimit: OAUTH_DCR_BODY_LIMIT_BYTES,
-      config: {
-        rateLimit: { max: Number(process.env.OAUTH_REGISTER_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" },
-      },
-    },
-    async (request, reply) => {
-      const parsed = parseClientRegistration(request.body ?? {});
-      if ("error" in parsed) return oauthRegistrationError(reply, parsed.error, parsed.description);
-
-      const clientId = createOAuthClientId();
-      await prisma.mcpOAuthClient.create({
-        data: {
-          id: clientId,
-          redirectUris: parsed.redirectUris,
-          clientName: parsed.clientName,
-        },
-      });
-
-      return reply.code(201).send({
-        client_id: clientId,
-        client_id_issued_at: Math.floor(Date.now() / 1000),
-        redirect_uris: parsed.redirectUris,
-        token_endpoint_auth_method: "none",
-        grant_types: ["authorization_code"],
-        response_types: ["code"],
-        ...(parsed.clientName ? { client_name: parsed.clientName } : {}),
-      });
-    },
-  );
 
   app.post<{
     Body: {
@@ -811,7 +743,6 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
         mode: "oauth-authorization-code-pkce",
         authorizationUrl: `${origin}/oauth/authorize`,
         tokenUrl: `${origin}/oauth/token`,
-        registrationUrl: `${origin}/oauth/register`,
         fallback: "Use the Pageden AI agents page to create, test, and copy a workspace-bound token when a client does not support OAuth.",
       },
       tools: tools.map((tool) => ({ name: tool.name, description: tool.description })),
@@ -2753,20 +2684,6 @@ function parsePagedenUri(uri: string): { workspaceId: string; path: string } {
   return { workspaceId: parsed.hostname, path: decodeURIComponent(parsed.pathname.replace(/^\/+/, "")) };
 }
 
-type AuthorizeMembership = { id: string; name: string };
-
-type AuthorizeParseSuccess = {
-  clientId: string;
-  clientName?: string;
-  redirectUri: string;
-  codeChallenge: string;
-  state?: string;
-  scopes: string[];
-  workspace: AuthorizeMembership | null;
-  allWorkspaces: boolean;
-  candidates: AuthorizeMembership[];
-};
-
 async function parseAuthorizeRequest(
   query: {
     response_type?: string;
@@ -2779,130 +2696,42 @@ async function parseAuthorizeRequest(
     workspace_id?: string;
   },
   userId: string,
-): Promise<AuthorizeParseSuccess | { error: string; description: string; redirect?: false }> {
+): Promise<
+  | {
+      clientId: string;
+      redirectUri: string;
+      codeChallenge: string;
+      state?: string;
+      scopes: string[];
+      workspaceId: string;
+      workspaceName: string;
+    }
+  | { error: string; description: string }
+> {
   if (query.response_type !== "code") return { error: "unsupported_response_type", description: "Only response_type=code is supported." };
-  if (!query.client_id || !query.redirect_uri || !query.code_challenge) {
-    return { error: "invalid_request", description: "client_id, redirect_uri, and code_challenge are required." };
+  if (!query.client_id || !query.redirect_uri || !query.code_challenge || !query.workspace_id) {
+    return { error: "invalid_request", description: "client_id, redirect_uri, code_challenge, and workspace_id are required." };
   }
   if (query.code_challenge_method !== "S256") return { error: "invalid_request", description: "Only code_challenge_method=S256 is supported." };
   const redirect = parseRedirectUri(query.redirect_uri);
   if (!redirect) return { error: "invalid_request", description: "redirect_uri must be http(s), loopback, or localhost." };
-  const registeredClient = await prisma.mcpOAuthClient.findUnique({
-    where: { id: query.client_id },
-    select: { redirectUris: true, clientName: true },
-  });
-  if (registeredClient && !registeredClient.redirectUris.includes(redirect.toString())) {
-    return { error: "invalid_request", description: "redirect_uri is not registered for this client.", redirect: false };
-  }
   const scopes = (query.scope ?? "search read").split(/\s+/).map((scope) => scope.trim()).filter(Boolean);
   const invalidScope = scopes.find((scope) => !isTokenScope(scope));
   if (!scopes.length || invalidScope) return { error: "invalid_scope", description: "Requested scope is not supported." };
-  const memberships = await prisma.workspaceMembership.findMany({
-    where: { userId },
+  const workspace = await prisma.workspaceMembership.findFirst({
+    where: { userId, workspaceId: query.workspace_id },
     select: { workspace: { select: { id: true, name: true } } },
-    orderBy: { createdAt: "asc" },
   });
-  const candidates: AuthorizeMembership[] = memberships.map((row) => ({ id: row.workspace.id, name: row.workspace.name }));
-  if (candidates.length === 0) {
-    return { error: "access_denied", description: "Create a Pageden workspace before connecting an agent." };
-  }
-
-  let workspace: AuthorizeMembership | null = null;
-  let allWorkspaces = false;
-  if (query.workspace_id) {
-    const requested = candidates.find((ws) => ws.id === query.workspace_id);
-    if (!requested) return { error: "access_denied", description: "Choose a workspace you belong to." };
-    workspace = requested;
-  } else {
-    allWorkspaces = true;
-  }
-
+  if (!workspace) return { error: "access_denied", description: "Choose a workspace you belong to." };
   return {
     clientId: query.client_id.slice(0, 120),
-    clientName: registeredClient?.clientName ?? undefined,
     redirectUri: redirect.toString(),
     codeChallenge: query.code_challenge,
     state: query.state,
     scopes,
-    workspace,
-    allWorkspaces,
-    candidates,
+    workspaceId: workspace.workspace.id,
+    workspaceName: workspace.workspace.name,
   };
-}
-
-type OAuthClientRegistration = {
-  redirectUris: string[];
-  clientName?: string;
-};
-
-function parseClientRegistration(body: {
-  redirect_uris?: unknown;
-  client_name?: unknown;
-  token_endpoint_auth_method?: unknown;
-  grant_types?: unknown;
-  response_types?: unknown;
-  scope?: unknown;
-}): OAuthClientRegistration | { error: string; description: string } {
-  if (!Array.isArray(body.redirect_uris)) {
-    return { error: "invalid_redirect_uri", description: "redirect_uris must be a non-empty array." };
-  }
-  if (body.redirect_uris.length < 1 || body.redirect_uris.length > OAUTH_DCR_MAX_REDIRECT_URIS) {
-    return { error: "invalid_redirect_uri", description: `redirect_uris must include 1-${OAUTH_DCR_MAX_REDIRECT_URIS} entries.` };
-  }
-  const redirectUris: string[] = [];
-  for (const candidate of body.redirect_uris) {
-    if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > OAUTH_DCR_MAX_REDIRECT_URI_LENGTH) {
-      return { error: "invalid_redirect_uri", description: "Each redirect_uri must be a non-empty string within the supported length." };
-    }
-    const parsed = parseRedirectUri(candidate);
-    if (!parsed) return { error: "invalid_redirect_uri", description: "Each redirect_uri must be http(s), loopback, or localhost." };
-    redirectUris.push(parsed.toString());
-  }
-  if (new Set(redirectUris).size !== redirectUris.length) {
-    return { error: "invalid_redirect_uri", description: "redirect_uris must be unique." };
-  }
-  if (body.token_endpoint_auth_method !== undefined && body.token_endpoint_auth_method !== "none") {
-    return { error: "invalid_client_metadata", description: "Only token_endpoint_auth_method=none is supported." };
-  }
-  if (body.grant_types !== undefined && !isStringArrayIncluding(body.grant_types, "authorization_code")) {
-    return { error: "invalid_client_metadata", description: "grant_types must include authorization_code." };
-  }
-  if (body.response_types !== undefined && !isStringArrayIncluding(body.response_types, "code")) {
-    return { error: "invalid_client_metadata", description: "response_types must include code." };
-  }
-  if (body.scope !== undefined) {
-    const scopes = normalizeRegistrationScopes(body.scope);
-    if (!scopes) return { error: "invalid_client_metadata", description: "scope must be a space-delimited string or string array." };
-    const invalidScope = scopes.find((scope) => !isTokenScope(scope));
-    if (invalidScope) return { error: "invalid_client_metadata", description: "Requested scope is not supported." };
-  }
-
-  let clientName: string | undefined;
-  if (body.client_name !== undefined) {
-    if (typeof body.client_name !== "string") return { error: "invalid_client_metadata", description: "client_name must be a string." };
-    clientName = body.client_name.trim();
-    if (clientName.length > OAUTH_DCR_MAX_CLIENT_NAME_LENGTH) {
-      return { error: "invalid_client_metadata", description: `client_name must be ${OAUTH_DCR_MAX_CLIENT_NAME_LENGTH} characters or fewer.` };
-    }
-    if (!clientName) clientName = undefined;
-  }
-
-  return { redirectUris, clientName };
-}
-
-function isStringArrayIncluding(value: unknown, expected: string): boolean {
-  if (!Array.isArray(value)) return false;
-  return value.every((entry) => typeof entry === "string") && value.includes(expected);
-}
-
-function normalizeRegistrationScopes(value: unknown): string[] | null {
-  if (typeof value === "string") {
-    return value.split(/\s+/).map((scope) => scope.trim()).filter(Boolean);
-  }
-  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
-    return value.map((scope) => scope.trim()).filter(Boolean);
-  }
-  return null;
 }
 
 function parseRedirectUri(value: string): URL | null {
@@ -2937,20 +2766,12 @@ function oauthTokenError(reply: { code: (status: number) => { send: (body: unkno
   return reply.code(400).send({ error, error_description: description });
 }
 
-function oauthRegistrationError(reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: string, description: string) {
-  return reply.code(400).send({ error, error_description: description });
-}
-
 function pkceChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
 function createOAuthCode(): string {
   return `pm_oauth_${randomBytes(32).toString("base64url")}`;
-}
-
-function createOAuthClientId(): string {
-  return `pm_client_${randomBytes(24).toString("base64url")}`;
 }
 
 function requestOrigin(request: FastifyRequest): string {
@@ -2965,73 +2786,10 @@ function authorizeApproveUrl(request: FastifyRequest): string {
   return `${url.pathname}${url.search}`;
 }
 
-function collectAuthorizeFields(query: {
-  response_type?: string;
-  client_id?: string;
-  redirect_uri?: string;
-  code_challenge?: string;
-  code_challenge_method?: string;
-  state?: string;
-  scope?: string;
-  workspace_id?: string;
-}): Record<string, string> {
-  const fields: Record<string, string> = {};
-  for (const key of ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope"] as const) {
-    const value = query[key];
-    if (typeof value === "string") fields[key] = value;
-  }
-  return fields;
-}
-
-function renderAuthorizePage({
-  appName,
-  clientId,
-  workspace,
-  allWorkspaces,
-  candidates,
-  scopes,
-  approveUrl,
-  hiddenFields,
-}: {
-  appName: string;
-  clientId: string;
-  workspace: AuthorizeMembership | null;
-  allWorkspaces: boolean;
-  candidates: AuthorizeMembership[];
-  scopes: string[];
-  approveUrl: string;
-  hiddenFields: Record<string, string>;
-}) {
+function renderAuthorizePage({ appName, workspaceName, scopes, approveUrl }: { appName: string; workspaceName: string; scopes: string[]; approveUrl: string }) {
   const escapedApp = escapeHtml(appName);
-  const escapedClientId = escapeHtml(clientId);
-  const accessMode = accessModeForScopes(scopes);
-  const hiddenInputs = Object.entries(hiddenFields)
-    .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}" />`)
-    .join("");
+  const escapedWorkspace = escapeHtml(workspaceName);
   const scopeList = scopes.map((scope) => `<li>${escapeHtml(scopeLabel(scope))}</li>`).join("");
-  const workspaceOptions = candidates
-    .map((candidate) => {
-      const selected = workspace?.id === candidate.id ? " selected" : "";
-      return `<option value="${escapeHtml(candidate.id)}"${selected}>${escapeHtml(candidate.name)}</option>`;
-    })
-    .join("");
-  const workspaceText = allWorkspaces
-    ? "all your Pageden workspaces"
-    : workspace
-      ? `the ${escapeHtml(workspace.name)} workspace`
-      : "your selected workspace";
-  const workspacePicker = workspace
-    ? `
-      <input type="hidden" name="workspace_id" value="${escapeHtml(workspace.id)}" />
-      <p class="workspace-note">Workspace: <strong>${escapeHtml(workspace.name)}</strong></p>`
-    : `
-      <label class="field">
-        <span>Workspace access</span>
-        <select name="workspace_id">
-          <option value="">All current and future workspaces</option>
-          ${workspaceOptions}
-        </select>
-      </label>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -3041,13 +2799,10 @@ function renderAuthorizePage({
   <style>
     body{margin:0;background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     main{min-height:100vh;display:grid;place-items:center;padding:24px}
-    section{width:min(560px,100%);background:#fff;border:1px solid #dbe3ef;border-radius:16px;box-shadow:0 20px 60px rgba(15,23,42,.08);padding:28px}
+    section{width:min(520px,100%);background:#fff;border:1px solid #dbe3ef;border-radius:16px;box-shadow:0 20px 60px rgba(15,23,42,.08);padding:28px}
     .brand{display:flex;align-items:center;gap:12px;font-weight:700}.logo{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:#f45107;color:#fff}
     h1{font-size:28px;margin:28px 0 8px}p{color:#64748b;line-height:1.55}ul{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px 14px 14px 32px;color:#334155}
-    form{display:grid;gap:16px}.field{display:grid;gap:8px;color:#334155;font-weight:700}.field span{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#64748b}
-    select{height:46px;border:1px solid #cbd5e1;border-radius:10px;padding:0 12px;background:#fff;color:#0f172a;font:inherit}
-    button{display:flex;align-items:center;justify-content:center;height:48px;border:0;border-radius:10px;background:#f45107;color:#fff;text-decoration:none;font-weight:700;font:inherit;cursor:pointer}
-    .workspace-note{margin:0;color:#334155}.meta{font-size:13px;color:#94a3b8;word-break:break-all}
+    a{display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;background:#f45107;color:#fff;text-decoration:none;font-weight:700;margin-top:22px}
     small{display:block;margin-top:14px;color:#94a3b8;text-align:center}
   </style>
 </head>
@@ -3056,15 +2811,9 @@ function renderAuthorizePage({
     <section>
       <div class="brand"><span class="logo">P</span><span>Pageden</span></div>
       <h1>Connect ${escapedApp}</h1>
-      <p>This will let <strong>${escapedApp}</strong> ${escapeHtml(accessMode)} in <strong>${workspaceText}</strong> through Pageden MCP.</p>
-      <p class="meta">Client ID: ${escapedClientId}</p>
+      <p>This will let <strong>${escapedApp}</strong> access the <strong>${escapedWorkspace}</strong> workspace through Pageden MCP.</p>
       <ul>${scopeList}</ul>
-      <form method="get" action="${escapeHtml(approveUrl.split("?")[0] || "/oauth/authorize")}">
-        ${hiddenInputs}
-        <input type="hidden" name="approve" value="1" />
-        ${workspacePicker}
-        <button type="submit">Approve connection</button>
-      </form>
+      <a href="${escapeHtml(approveUrl)}">Approve connection</a>
       <small>You can revoke this agent key from Pageden at any time.</small>
     </section>
   </main>
@@ -3082,18 +2831,6 @@ function scopeLabel(scope: string): string {
     attachments: "Read and upload attachments",
   };
   return labels[scope] ?? scope;
-}
-
-function displayOAuthClientName(clientId: string): string {
-  return clientId.replace(/^pm_client_/, "OAuth client ").slice(0, 80);
-}
-
-function accessModeForScopes(scopes: string[]): string {
-  if (scopes.some((scope) => scope === "create" || scope === "update" || scope === "append" || scope === "attachments")) {
-    return "read and update documents";
-  }
-  if (scopes.includes("read")) return "search and read documents";
-  return "search documents";
 }
 
 function escapeHtml(value: string): string {

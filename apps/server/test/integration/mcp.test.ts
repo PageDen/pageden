@@ -283,7 +283,6 @@ describe("MCP agent access", () => {
     const authorizationServer = await req({ method: "GET", url: "/.well-known/oauth-authorization-server" });
     expect(authorizationServer.statusCode).toBe(200);
     expect(authorizationServer.json().code_challenge_methods_supported).toContain("S256");
-    expect(authorizationServer.json().registration_endpoint).toBe("http://localhost/oauth/register");
 
     const verifier = randomBytes(32).toString("base64url");
     const params = new URLSearchParams({
@@ -347,105 +346,6 @@ describe("MCP agent access", () => {
       },
     });
     expect(reused.statusCode).toBe(400);
-  });
-
-  it("supports dynamic OAuth client registration and all-workspace authorization", async () => {
-    const s = await baseScenario();
-    const verifier = randomBytes(32).toString("base64url");
-    const registration = await req({
-      method: "POST",
-      url: "/oauth/register",
-      payload: {
-        redirect_uris: ["http://localhost:9876/callback"],
-        client_name: "Claude Desktop",
-        token_endpoint_auth_method: "none",
-        grant_types: ["authorization_code"],
-        response_types: ["code"],
-        scope: "search read",
-      },
-    });
-    expect(registration.statusCode).toBe(201);
-    expect(registration.json()).toMatchObject({
-      redirect_uris: ["http://localhost:9876/callback"],
-      client_name: "Claude Desktop",
-      token_endpoint_auth_method: "none",
-    });
-    const clientId = registration.json().client_id as string;
-    expect(clientId).toMatch(/^pm_client_/);
-    await prisma.mcpOAuthClient.findUniqueOrThrow({ where: { id: clientId } });
-
-    const params = new URLSearchParams({
-      response_type: "code",
-      client_id: clientId,
-      redirect_uri: "http://localhost:9876/callback",
-      code_challenge: pkceChallenge(verifier),
-      code_challenge_method: "S256",
-      scope: "search read",
-      state: "all-workspaces",
-    });
-
-    const anonymous = await req({ method: "GET", url: `/oauth/authorize?${params.toString()}` });
-    expect(anonymous.statusCode).toBe(302);
-    expect(anonymous.headers.location).toContain(`/login?returnTo=${encodeURIComponent(`/oauth/authorize?${params.toString()}`)}`);
-
-    const authorize = await req({ method: "GET", url: `/oauth/authorize?${params.toString()}`, cookies: s.adminCookie });
-    expect(authorize.statusCode).toBe(200);
-    expect(authorize.body).toContain("Connect Claude Desktop");
-    expect(authorize.body).toContain("all your Pageden workspaces");
-
-    const approve = await req({ method: "GET", url: `/oauth/authorize?${params.toString()}&approve=1`, cookies: s.adminCookie });
-    expect(approve.statusCode).toBe(302);
-    const redirected = new URL(approve.headers.location as string);
-    const code = redirected.searchParams.get("code");
-    expect(code).toBeTruthy();
-
-    const pendingCode = await prisma.mcpOAuthCode.findFirstOrThrow({ where: { clientId, workspaceId: null } });
-    expect(pendingCode.scopes).toEqual(["search", "read"]);
-
-    const token = await req({
-      method: "POST",
-      url: "/oauth/token",
-      payload: {
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: "http://localhost:9876/callback",
-        client_id: clientId,
-        code_verifier: verifier,
-      },
-    });
-    expect(token.statusCode).toBe(200);
-    const persistedToken = await prisma.apiToken.findFirstOrThrow({
-      where: { userId: s.admin.id, workspaceId: null, kind: "agent" },
-      orderBy: { createdAt: "desc" },
-    });
-    expect(persistedToken.scopes).toEqual(["search", "read"]);
-
-    const listed = await tool(token.json().access_token, "pageden_list_documents", { workspaceId: s.ws.id });
-    expect(toolJson(listed).documents.map((doc: { id: string }) => doc.id)).toContain(s.docId);
-  });
-
-  it("rejects unregistered redirect URIs for registered OAuth clients", async () => {
-    const s = await baseScenario();
-    const registration = await req({
-      method: "POST",
-      url: "/oauth/register",
-      payload: { redirect_uris: ["http://localhost:9876/callback"], client_name: "Strict Client" },
-    });
-    expect(registration.statusCode).toBe(201);
-    const params = new URLSearchParams({
-      response_type: "code",
-      client_id: registration.json().client_id as string,
-      redirect_uri: "http://localhost:9999/callback",
-      code_challenge: pkceChallenge(randomBytes(32).toString("base64url")),
-      code_challenge_method: "S256",
-    });
-
-    const authorize = await req({ method: "GET", url: `/oauth/authorize?${params.toString()}`, cookies: s.adminCookie });
-    expect(authorize.statusCode).toBe(400);
-    expect(authorize.json()).toMatchObject({
-      error: "invalid_request",
-      error_description: "redirect_uri is not registered for this client.",
-    });
   });
 
   it("lists documents, recent changes, and MCP resources", async () => {
