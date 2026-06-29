@@ -4,6 +4,9 @@ import { prisma } from "./prisma.js";
 import { openSession, SESSION_COOKIE } from "./session.js";
 import { hashToken } from "./tokens.js";
 import { writeAuditEvent } from "./audit.js";
+import { identifyServerUser, trackServerEvent } from "./lib/analytics-bus.js";
+
+const AGENT_TOKEN_ANALYTICS_INTERVAL_MS = 15 * 60 * 1000;
 
 export interface AuthContext {
   userId: string;
@@ -62,13 +65,31 @@ export async function authenticate(request: FastifyRequest): Promise<AuthContext
   const tokenHash = hashToken(rawToken, env.tokenHashSecret);
   const token = await prisma.apiToken.findUnique({
     where: { tokenHash },
-    select: { id: true, userId: true, name: true, kind: true, scopes: true, workspaceId: true, expiresAt: true, revokedAt: true },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      kind: true,
+      scopes: true,
+      workspaceId: true,
+      expiresAt: true,
+      revokedAt: true,
+      lastUsedAt: true,
+      user: {
+        select: {
+          email: true,
+          name: true,
+          workspaceMemberships: { select: { workspaceId: true } },
+        },
+      },
+    },
   });
   if (!token || token.revokedAt || (token.expiresAt && token.expiresAt <= new Date())) return null;
 
+  const lastUsedAt = new Date();
   await prisma.apiToken.update({
     where: { id: token.id },
-    data: { lastUsedAt: new Date(), lastUsedIp: request.ip },
+    data: { lastUsedAt, lastUsedIp: request.ip },
   });
   await writeAuditEvent({
     userId: token.userId,
@@ -79,6 +100,20 @@ export async function authenticate(request: FastifyRequest): Promise<AuthContext
     userAgent: request.headers["user-agent"],
     metadata: { name: token.name, kind: token.kind },
   });
+  if (token.kind === "agent" && token.workspaceId && shouldTrackAgentTokenUsed(token.lastUsedAt, lastUsedAt)) {
+    identifyServerUser(token.userId, {
+      email: token.user.email,
+      name: token.user.name,
+      workspaceCount: token.user.workspaceMemberships.length,
+      lastAgentTokenUsedAt: lastUsedAt.toISOString(),
+    });
+    trackServerEvent("agent_token_used", token.workspaceId, { userId: token.userId, tokenId: token.id }, {
+      token_id: token.id,
+      token_kind: token.kind,
+      token_name: token.name,
+      change_source: "agent",
+    });
+  }
 
   return {
     userId: token.userId,
@@ -89,6 +124,11 @@ export async function authenticate(request: FastifyRequest): Promise<AuthContext
     tokenScopes: token.scopes,
     tokenWorkspaceId: token.workspaceId,
   };
+}
+
+function shouldTrackAgentTokenUsed(previousLastUsedAt: Date | null, nextLastUsedAt: Date): boolean {
+  if (!previousLastUsedAt) return true;
+  return nextLastUsedAt.getTime() - previousLastUsedAt.getTime() >= AGENT_TOKEN_ANALYTICS_INTERVAL_MS;
 }
 
 export async function requireAuth(request: FastifyRequest): Promise<AuthContext> {
