@@ -1,5 +1,4 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
-import { createHash, randomBytes } from "node:crypto";
 import { getApp, closeApp, req, bearer } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario } from "../fixtures/seed.js";
@@ -37,29 +36,21 @@ function toolJson(response: Awaited<ReturnType<typeof tool>>) {
   return JSON.parse(response.json().result.content[0].text);
 }
 
-function pkceChallenge(verifier: string): string {
-  return createHash("sha256").update(verifier).digest("base64url");
-}
-
 describe("MCP agent access", () => {
   it("exposes llms.txt and handles MCP protocol helpers", async () => {
     const s = await agentToken(["search", "read"]);
 
     const unauthenticatedGet = await req({ method: "GET", url: "/mcp" });
     expect(unauthenticatedGet.statusCode).toBe(401);
-    expect(unauthenticatedGet.headers["www-authenticate"]).toContain(
-      'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource"',
-    );
+    expect(unauthenticatedGet.headers["www-authenticate"]).toBe("Bearer");
     expect(unauthenticatedGet.json()).toMatchObject({
       error: "unauthorized",
-      resource_metadata: "http://localhost/.well-known/oauth-protected-resource",
+      message: "Authentication required.",
     });
 
     const invalidAuthenticatedGet = await req({ method: "GET", url: "/mcp", headers: bearer("not-a-real-token") });
     expect(invalidAuthenticatedGet.statusCode).toBe(401);
-    expect(invalidAuthenticatedGet.headers["www-authenticate"]).toContain(
-      'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource"',
-    );
+    expect(invalidAuthenticatedGet.headers["www-authenticate"]).toBe("Bearer");
 
     const authenticatedGet = await req({ method: "GET", url: "/mcp", headers: bearer(s.token) });
     expect(authenticatedGet.statusCode).toBe(200);
@@ -271,81 +262,6 @@ describe("MCP agent access", () => {
     ]));
     expect(JSON.stringify(readData.aiReadiness.issues)).toContain("Missing Decision");
     expect(JSON.stringify(readData.aiReadiness.issues)).not.toContain("diagram.png");
-  });
-
-  it("supports OAuth PKCE discovery and authorization for MCP clients", async () => {
-    const s = await baseScenario();
-
-    const protectedResource = await req({ method: "GET", url: "/.well-known/oauth-protected-resource" });
-    expect(protectedResource.statusCode).toBe(200);
-    expect(protectedResource.json().scopes_supported).toContain("read");
-
-    const authorizationServer = await req({ method: "GET", url: "/.well-known/oauth-authorization-server" });
-    expect(authorizationServer.statusCode).toBe(200);
-    expect(authorizationServer.json().code_challenge_methods_supported).toContain("S256");
-
-    const verifier = randomBytes(32).toString("base64url");
-    const params = new URLSearchParams({
-      response_type: "code",
-      client_id: "Codex",
-      redirect_uri: "http://localhost:9876/callback",
-      code_challenge: pkceChallenge(verifier),
-      code_challenge_method: "S256",
-      scope: "search read",
-      workspace_id: s.ws.id,
-      state: "state-1",
-    });
-
-    const authorize = await req({ method: "GET", url: `/oauth/authorize?${params.toString()}`, cookies: s.adminCookie });
-    expect(authorize.statusCode).toBe(200);
-    expect(authorize.body).toContain("Connect Codex");
-
-    const approve = await req({ method: "GET", url: `/oauth/authorize?${params.toString()}&approve=1`, cookies: s.adminCookie });
-    expect(approve.statusCode).toBe(302);
-    const redirected = new URL(approve.headers.location as string);
-    expect(redirected.searchParams.get("state")).toBe("state-1");
-    const code = redirected.searchParams.get("code");
-    expect(code).toBeTruthy();
-    const pendingCode = await prisma.mcpOAuthCode.findFirstOrThrow({
-      where: { workspaceId: s.ws.id, clientId: "Codex" },
-    });
-    expect(pendingCode.consumedAt).toBeNull();
-    expect(pendingCode.codeHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(pendingCode.codeHash).not.toBe(code);
-    expect(pendingCode.codeChallenge).toBe(pkceChallenge(verifier));
-
-    const token = await req({
-      method: "POST",
-      url: "/oauth/token",
-      payload: {
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: "http://localhost:9876/callback",
-        client_id: "Codex",
-        code_verifier: verifier,
-      },
-    });
-    expect(token.statusCode).toBe(200);
-    expect(token.json().token_type).toBe("Bearer");
-    expect(token.json().scope).toBe("search read");
-    const consumedCode = await prisma.mcpOAuthCode.findUniqueOrThrow({ where: { id: pendingCode.id } });
-    expect(consumedCode.consumedAt).toBeTruthy();
-
-    const listed = await rpc(token.json().access_token, "tools/list");
-    expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toContain("pageden_read_document");
-
-    const reused = await req({
-      method: "POST",
-      url: "/oauth/token",
-      payload: {
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: "http://localhost:9876/callback",
-        client_id: "Codex",
-        code_verifier: verifier,
-      },
-    });
-    expect(reused.statusCode).toBe(400);
   });
 
   it("lists documents, recent changes, and MCP resources", async () => {

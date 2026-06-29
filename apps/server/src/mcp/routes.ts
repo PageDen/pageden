@@ -1,8 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeAuditEvent } from "../audit.js";
-import { authenticate, isTokenScope, requireAuth, requireTokenScope, TOKEN_SCOPES, type AuthContext } from "../auth.js";
+import { authenticate, requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
@@ -26,7 +25,6 @@ import { createComment, listComments, resolveCommentRecord } from "../documents/
 import { touchReadCursor, unreadDocuments } from "../documents/read-cursors.js";
 import { claimDocument, listActiveClaims, releaseClaim } from "../documents/claims.js";
 import { createShare, listShares, revokeShare } from "../documents/shares.js";
-import { createRawToken, hashToken } from "../tokens.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { trackServerEvent } from "../lib/analytics-bus.js";
 import { ALLOWED_MIME_TYPES as ATTACHMENT_ALLOWED_MIME, MAX_ATTACHMENT_BYTES, createDocumentAttachment } from "../attachments/routes.js";
@@ -45,8 +43,6 @@ type Tx = Prisma.TransactionClient;
 
 const MAX_QUERY = SEARCH_QUERY_MAX;
 const DEFAULT_LIMIT = 10;
-const OAUTH_CODE_TTL_MS = 5 * 60 * 1000;
-
 const tools = [
   {
     name: "pageden_search",
@@ -565,165 +561,6 @@ const tools = [
 ];
 
 export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
-  app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
-    const params = Object.fromEntries(new URLSearchParams(String(body)));
-    done(null, params);
-  });
-
-  app.get("/.well-known/oauth-protected-resource", async (request) => {
-    const origin = requestOrigin(request);
-    return {
-      resource: `${origin}/mcp`,
-      authorization_servers: [origin],
-      bearer_methods_supported: ["header"],
-      scopes_supported: TOKEN_SCOPES,
-      resource_name: "Pageden MCP",
-    };
-  });
-
-  app.get("/.well-known/oauth-authorization-server", async (request) => {
-    const origin = requestOrigin(request);
-    return {
-      issuer: origin,
-      authorization_endpoint: `${origin}/oauth/authorize`,
-      token_endpoint: `${origin}/oauth/token`,
-      response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
-      code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: TOKEN_SCOPES,
-    };
-  });
-
-  app.get<{
-    Querystring: {
-      response_type?: string;
-      client_id?: string;
-      redirect_uri?: string;
-      code_challenge?: string;
-      code_challenge_method?: string;
-      state?: string;
-      scope?: string;
-      workspace_id?: string;
-      approve?: string;
-    };
-  }>("/oauth/authorize", async (request, reply) => {
-    const auth = await requireAuth(request);
-    const parsed = await parseAuthorizeRequest(request.query, auth.userId);
-    if ("error" in parsed) return oauthRedirectError(reply, request.query.redirect_uri, request.query.state, parsed.error, parsed.description);
-
-    if (request.query.approve === "1") {
-      const jti = randomUUID();
-      const code = createOAuthCode();
-      const expiresAt = new Date(Date.now() + OAUTH_CODE_TTL_MS);
-      await prisma.mcpOAuthCode.create({
-        data: {
-          jti,
-          codeHash: hashToken(code, env.tokenHashSecret),
-          userId: auth.userId,
-          clientId: parsed.clientId,
-          redirectUri: parsed.redirectUri,
-          workspaceId: parsed.workspaceId,
-          codeChallenge: parsed.codeChallenge,
-          scopes: parsed.scopes,
-          expiresAt,
-        },
-      });
-      const redirect = new URL(parsed.redirectUri);
-      redirect.searchParams.set("code", code);
-      if (parsed.state) redirect.searchParams.set("state", parsed.state);
-      await writeAuditEvent({
-        workspaceId: parsed.workspaceId,
-        userId: auth.userId,
-        action: "mcp_oauth_approved",
-        targetType: "workspace",
-        targetId: parsed.workspaceId,
-        ipAddress: request.ip,
-        userAgent: request.headers["user-agent"],
-        metadata: { clientId: parsed.clientId, scopes: parsed.scopes },
-      });
-      return reply.redirect(redirect.toString());
-    }
-
-    reply.type("text/html; charset=utf-8");
-    return renderAuthorizePage({
-      appName: parsed.clientId,
-      workspaceName: parsed.workspaceName,
-      scopes: parsed.scopes,
-      approveUrl: authorizeApproveUrl(request),
-    });
-  });
-
-  app.post<{
-    Body: {
-      grant_type?: string;
-      code?: string;
-      redirect_uri?: string;
-      client_id?: string;
-      code_verifier?: string;
-    };
-  }>("/oauth/token", async (request, reply) => {
-    const body = request.body ?? {};
-    if (body.grant_type !== "authorization_code") return oauthTokenError(reply, "unsupported_grant_type", "Only authorization_code is supported.");
-    if (!body.code || !body.redirect_uri || !body.client_id || !body.code_verifier) {
-      return oauthTokenError(reply, "invalid_request", "code, redirect_uri, client_id, and code_verifier are required.");
-    }
-    const codeHash = hashToken(body.code, env.tokenHashSecret);
-    const persistedCode = await prisma.mcpOAuthCode.findUnique({ where: { codeHash } });
-    if (
-      !persistedCode ||
-      !persistedCode.codeChallenge ||
-      persistedCode.consumedAt ||
-      persistedCode.expiresAt.getTime() <= Date.now() ||
-      persistedCode.clientId !== body.client_id ||
-      persistedCode.redirectUri !== body.redirect_uri
-    ) {
-      return oauthTokenError(reply, "invalid_grant", "Authorization code is invalid or expired.");
-    }
-    if (pkceChallenge(body.code_verifier) !== persistedCode.codeChallenge) {
-      return oauthTokenError(reply, "invalid_grant", "PKCE verification failed.");
-    }
-    const rawToken = createRawToken();
-    const token = await prisma.$transaction(async (tx) => {
-      const consumed = await tx.mcpOAuthCode.updateMany({
-        where: { id: persistedCode.id, consumedAt: null, expiresAt: { gt: new Date() } },
-        data: { consumedAt: new Date() },
-      });
-      if (consumed.count !== 1) return null;
-      const created = await tx.apiToken.create({
-        data: {
-          userId: persistedCode.userId,
-          name: `MCP OAuth: ${persistedCode.clientId.slice(0, 80)}`,
-          kind: "agent",
-          workspaceId: persistedCode.workspaceId,
-          scopes: persistedCode.scopes,
-          tokenHash: hashToken(rawToken, env.tokenHashSecret),
-        },
-        select: { id: true },
-      });
-      await writeAuditEvent(
-        {
-          workspaceId: persistedCode.workspaceId,
-          userId: persistedCode.userId,
-          action: "mcp_oauth_token_issued",
-          targetType: "api_token",
-          targetId: created.id,
-          ipAddress: request.ip,
-          userAgent: request.headers["user-agent"],
-          metadata: { clientId: persistedCode.clientId, scopes: persistedCode.scopes },
-        },
-        tx,
-      );
-      return created;
-    });
-    if (!token) return oauthTokenError(reply, "invalid_grant", "Authorization code is invalid or expired.");
-    return {
-      access_token: rawToken,
-      token_type: "Bearer",
-      scope: persistedCode.scopes.join(" "),
-    };
-  });
-
   app.get("/.well-known/pageden-mcp.json", async (request) => {
     const origin = requestOrigin(request);
     return {
@@ -740,10 +577,8 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
         },
       },
       connect: {
-        mode: "oauth-authorization-code-pkce",
-        authorizationUrl: `${origin}/oauth/authorize`,
-        tokenUrl: `${origin}/oauth/token`,
-        fallback: "Use the Pageden AI agents page to create, test, and copy a workspace-bound token when a client does not support OAuth.",
+        mode: "agent-token",
+        setup: "Use Admin > AI Agents to create an agent token, then paste it into your MCP client config.",
       },
       tools: tools.map((tool) => ({ name: tool.name, description: tool.description })),
     };
@@ -793,15 +628,13 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   });
 }
 
-function mcpAuthenticationRequired(request: FastifyRequest, reply: FastifyReply) {
-  const resourceMetadata = `${requestOrigin(request)}/.well-known/oauth-protected-resource`;
+function mcpAuthenticationRequired(_request: FastifyRequest, reply: FastifyReply) {
   return reply
     .code(401)
-    .header("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}"`)
+    .header("WWW-Authenticate", "Bearer")
     .send({
       error: "unauthorized",
       message: "Authentication required.",
-      resource_metadata: resourceMetadata,
     });
 }
 
@@ -2684,155 +2517,8 @@ function parsePagedenUri(uri: string): { workspaceId: string; path: string } {
   return { workspaceId: parsed.hostname, path: decodeURIComponent(parsed.pathname.replace(/^\/+/, "")) };
 }
 
-async function parseAuthorizeRequest(
-  query: {
-    response_type?: string;
-    client_id?: string;
-    redirect_uri?: string;
-    code_challenge?: string;
-    code_challenge_method?: string;
-    state?: string;
-    scope?: string;
-    workspace_id?: string;
-  },
-  userId: string,
-): Promise<
-  | {
-      clientId: string;
-      redirectUri: string;
-      codeChallenge: string;
-      state?: string;
-      scopes: string[];
-      workspaceId: string;
-      workspaceName: string;
-    }
-  | { error: string; description: string }
-> {
-  if (query.response_type !== "code") return { error: "unsupported_response_type", description: "Only response_type=code is supported." };
-  if (!query.client_id || !query.redirect_uri || !query.code_challenge || !query.workspace_id) {
-    return { error: "invalid_request", description: "client_id, redirect_uri, code_challenge, and workspace_id are required." };
-  }
-  if (query.code_challenge_method !== "S256") return { error: "invalid_request", description: "Only code_challenge_method=S256 is supported." };
-  const redirect = parseRedirectUri(query.redirect_uri);
-  if (!redirect) return { error: "invalid_request", description: "redirect_uri must be http(s), loopback, or localhost." };
-  const scopes = (query.scope ?? "search read").split(/\s+/).map((scope) => scope.trim()).filter(Boolean);
-  const invalidScope = scopes.find((scope) => !isTokenScope(scope));
-  if (!scopes.length || invalidScope) return { error: "invalid_scope", description: "Requested scope is not supported." };
-  const workspace = await prisma.workspaceMembership.findFirst({
-    where: { userId, workspaceId: query.workspace_id },
-    select: { workspace: { select: { id: true, name: true } } },
-  });
-  if (!workspace) return { error: "access_denied", description: "Choose a workspace you belong to." };
-  return {
-    clientId: query.client_id.slice(0, 120),
-    redirectUri: redirect.toString(),
-    codeChallenge: query.code_challenge,
-    state: query.state,
-    scopes,
-    workspaceId: workspace.workspace.id,
-    workspaceName: workspace.workspace.name,
-  };
-}
-
-function parseRedirectUri(value: string): URL | null {
-  try {
-    const url = new URL(value);
-    if (url.protocol === "http:" || url.protocol === "https:") return url;
-    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return url;
-    return null;
-  /* v8 ignore next 2 */
-  } catch {
-    return null;
-  }
-}
-
-/* v8 ignore next 13 */
-function oauthRedirectError(
-  reply: { code: (status: number) => { send: (body: unknown) => unknown }; redirect: (url: string) => unknown },
-  redirectUri: string | undefined,
-  state: string | undefined,
-  error: string,
-  description: string,
-) {
-  const redirect = redirectUri ? parseRedirectUri(redirectUri) : null;
-  if (!redirect) return reply.code(400).send({ error, error_description: description });
-  redirect.searchParams.set("error", error);
-  redirect.searchParams.set("error_description", description);
-  if (state) redirect.searchParams.set("state", state);
-  return reply.redirect(redirect.toString());
-}
-
-function oauthTokenError(reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: string, description: string) {
-  return reply.code(400).send({ error, error_description: description });
-}
-
-function pkceChallenge(verifier: string): string {
-  return createHash("sha256").update(verifier).digest("base64url");
-}
-
-function createOAuthCode(): string {
-  return `pm_oauth_${randomBytes(32).toString("base64url")}`;
-}
-
 function requestOrigin(request: FastifyRequest): string {
   const forwardedProto = typeof request.headers["x-forwarded-proto"] === "string" ? request.headers["x-forwarded-proto"].split(",")[0]?.trim() : null;
   const proto = forwardedProto || request.protocol;
   return `${proto}://${request.hostname}`;
-}
-
-function authorizeApproveUrl(request: FastifyRequest): string {
-  const url = new URL(request.url, requestOrigin(request));
-  url.searchParams.set("approve", "1");
-  return `${url.pathname}${url.search}`;
-}
-
-function renderAuthorizePage({ appName, workspaceName, scopes, approveUrl }: { appName: string; workspaceName: string; scopes: string[]; approveUrl: string }) {
-  const escapedApp = escapeHtml(appName);
-  const escapedWorkspace = escapeHtml(workspaceName);
-  const scopeList = scopes.map((scope) => `<li>${escapeHtml(scopeLabel(scope))}</li>`).join("");
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Authorize ${escapedApp} - Pageden</title>
-  <style>
-    body{margin:0;background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    main{min-height:100vh;display:grid;place-items:center;padding:24px}
-    section{width:min(520px,100%);background:#fff;border:1px solid #dbe3ef;border-radius:16px;box-shadow:0 20px 60px rgba(15,23,42,.08);padding:28px}
-    .brand{display:flex;align-items:center;gap:12px;font-weight:700}.logo{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:#f45107;color:#fff}
-    h1{font-size:28px;margin:28px 0 8px}p{color:#64748b;line-height:1.55}ul{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px 14px 14px 32px;color:#334155}
-    a{display:flex;align-items:center;justify-content:center;height:48px;border-radius:10px;background:#f45107;color:#fff;text-decoration:none;font-weight:700;margin-top:22px}
-    small{display:block;margin-top:14px;color:#94a3b8;text-align:center}
-  </style>
-</head>
-<body>
-  <main>
-    <section>
-      <div class="brand"><span class="logo">P</span><span>Pageden</span></div>
-      <h1>Connect ${escapedApp}</h1>
-      <p>This will let <strong>${escapedApp}</strong> access the <strong>${escapedWorkspace}</strong> workspace through Pageden MCP.</p>
-      <ul>${scopeList}</ul>
-      <a href="${escapeHtml(approveUrl)}">Approve connection</a>
-      <small>You can revoke this agent key from Pageden at any time.</small>
-    </section>
-  </main>
-</body>
-</html>`;
-}
-
-function scopeLabel(scope: string): string {
-  const labels: Record<string, string> = {
-    search: "Search documents",
-    read: "Read document content",
-    create: "Create documents",
-    update: "Update documents",
-    append: "Append to documents",
-    attachments: "Read and upload attachments",
-  };
-  return labels[scope] ?? scope;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 }

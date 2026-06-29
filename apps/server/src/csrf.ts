@@ -24,7 +24,7 @@ export function csrfGuard(request: FastifyRequest, reply: FastifyReply, done: (e
   // carry no ambient credential, so they are not CSRF-able. (Approval is a separate
   // cookie-authenticated endpoint that IS Origin-checked.)
   const path = request.url.split("?")[0];
-  if (path === "/api/auth/device/start" || path === "/api/auth/device/poll" || path === "/oauth/token") return done();
+  if (path === "/api/auth/device/start" || path === "/api/auth/device/poll") return done();
   // Pre-signed attachment upload: authorized by the grant query param, not an
   // ambient cookie, so it is not CSRF-able.
   if (path === "/api/attachments/upload") return done();
