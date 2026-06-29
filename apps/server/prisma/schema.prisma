@@ -126,6 +126,7 @@ model Workspace {
   // referenced folder is deleted.
   agentEditScopeFolderId String?
   agentEditScopeFolder   Folder?               @relation("WorkspaceAgentEditScope", fields: [agentEditScopeFolderId], references: [id], onDelete: SetNull)
+  workspaceTransferEnabled Boolean             @default(true)
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   members                WorkspaceMembership[]

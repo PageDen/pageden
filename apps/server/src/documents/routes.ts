@@ -30,9 +30,10 @@ import { buildDocumentPath, isValidSlug } from "../paths.js";
 import { conflict, forbidden, isUniqueViolation, notFound, validationError } from "../errors.js";
 import { atLeast, authorizeDocumentRole, authorizeFolderRole, canManageWorkspace, capabilitiesFor, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
-import { lockFolderTree } from "../db.js";
+import { lockFolderTree, lockFolderTrees } from "../db.js";
 import { clampSearchLimit, searchDocuments, SEARCH_QUERY_MAX } from "../search/service.js";
 import { trackServerEvent } from "../lib/analytics-bus.js";
+import { applyDocumentStorageTransfer, copyDocumentStorageForWorkspace, updateDocumentScopedWorkspaceRows } from "../workspace-transfer.js";
 
 // Server-side human read tracking is blocker-resilient (ad blockers drop the
 // client SDK). Suppress repeat reads of the same doc by the same user within a
@@ -1174,6 +1175,119 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       if (result.status === "dest_missing") return notFound(reply, "Destination folder not found.");
       if (result.status === "collision") return validationError(reply, { slug: "A document with this slug already exists in the destination folder." });
       return { id: doc.id, folderId: destFolderId, path: result.path };
+    },
+  );
+
+  // Transfer to another workspace (manager on document + editor on destination folder).
+  // Explicit document permissions are cleared so destination inheritance applies.
+  app.post<{ Params: { id: string }; Body: { workspaceId?: string; folderId?: string } }>(
+    "/api/documents/:id/transfer-workspace",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const destinationWorkspaceId = request.body.workspaceId;
+      const destinationFolderId = request.body.folderId;
+      const fields: Record<string, string> = {};
+      if (!destinationWorkspaceId) fields.workspaceId = "workspaceId is required.";
+      if (!destinationFolderId) fields.folderId = "folderId is required.";
+      if (Object.keys(fields).length > 0) return validationError(reply, fields);
+
+      const doc = await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null } });
+      if (!doc) return notFound(reply, "Document not found.");
+      if (destinationWorkspaceId === doc.workspaceId) return validationError(reply, { workspaceId: "Use Move for moves inside the same workspace." });
+
+      const sourceWorkspace = await prisma.workspace.findUnique({
+        where: { id: doc.workspaceId },
+        select: { workspaceTransferEnabled: true },
+      });
+      if (!sourceWorkspace?.workspaceTransferEnabled) return forbidden(reply, "Workspace transfer is disabled for this workspace.");
+
+      const docRole = await resolveDocumentRole(auth.userId, doc.id);
+      if (docRole === null) return notFound(reply, "Document not found.");
+      if (!atLeast(docRole, "manager")) return forbidden(reply);
+
+      const destFolder = await prisma.folder.findFirst({
+        where: { id: destinationFolderId!, workspaceId: destinationWorkspaceId!, deletedAt: null },
+        select: { id: true },
+      });
+      if (!destFolder) return notFound(reply, "Destination folder not found.");
+      const destRole = await resolveFolderRole(auth.userId, destFolder.id);
+      if (destRole === null) return notFound(reply, "Destination folder not found.");
+      if (!atLeast(destRole, "editor")) return forbidden(reply);
+
+      const storagePlan = await copyDocumentStorageForWorkspace([doc.id], destinationWorkspaceId!);
+      const result = await prisma
+        .$transaction(async (tx) => {
+          await lockFolderTrees(tx, [doc.workspaceId, destinationWorkspaceId!]);
+          const lockedDoc = await tx.$queryRaw<Array<{ slug: string; workspaceId: string; path: string }>>`
+            SELECT "slug", "workspaceId", "path" FROM "Document" WHERE "id" = ${doc.id} AND "deletedAt" IS NULL FOR UPDATE`;
+          if (lockedDoc.length === 0) return { status: "gone" as const };
+          if (lockedDoc[0]!.workspaceId !== doc.workspaceId) return { status: "gone" as const };
+          const azDoc = await authorizeDocumentRole(auth, doc.id, "manager", tx);
+          if (!azDoc.ok) return azDoc.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
+          const source = await tx.workspace.findUnique({
+            where: { id: doc.workspaceId },
+            select: { workspaceTransferEnabled: true },
+          });
+          if (!source?.workspaceTransferEnabled) return { status: "transfer_disabled" as const };
+          const destinationFolder = await tx.folder.findFirst({
+            where: { id: destinationFolderId!, workspaceId: destinationWorkspaceId!, deletedAt: null },
+            select: { path: true },
+          });
+          if (!destinationFolder) return { status: "dest_missing" as const };
+          const azDest = await authorizeFolderRole(auth, destinationFolderId!, "editor", tx);
+          if (!azDest.ok) return azDest.status === "not_found" ? { status: "dest_missing" as const } : { status: "forbidden" as const };
+          const slug = lockedDoc[0]!.slug;
+          if (await siblingSlugTaken(tx, destinationFolderId!, slug)) return { status: "collision" as const };
+          const path = buildDocumentPath(destinationFolder.path, slug);
+
+          await applyDocumentStorageTransfer(tx, storagePlan);
+          await tx.permission.deleteMany({ where: { workspaceId: doc.workspaceId, resourceType: "document", resourceId: doc.id } });
+          await updateDocumentScopedWorkspaceRows(tx, [doc.id], destinationWorkspaceId!);
+          const updated = await tx.document.update({
+            where: { id: doc.id },
+            data: {
+              workspaceId: destinationWorkspaceId!,
+              folderId: destinationFolderId!,
+              path,
+              supersededById: null,
+              updatedById: auth.userId,
+            },
+          });
+          await writeAuditEvent(
+            {
+              workspaceId: doc.workspaceId,
+              userId: auth.userId,
+              action: "document_workspace_moved_out",
+              targetType: "document",
+              targetId: doc.id,
+              metadata: { fromWorkspaceId: doc.workspaceId, toWorkspaceId: destinationWorkspaceId, fromPath: lockedDoc[0]!.path, toPath: path },
+            },
+            tx,
+          );
+          await writeAuditEvent(
+            {
+              workspaceId: destinationWorkspaceId!,
+              userId: auth.userId,
+              action: "document_workspace_moved_in",
+              targetType: "document",
+              targetId: doc.id,
+              metadata: { fromWorkspaceId: doc.workspaceId, toWorkspaceId: destinationWorkspaceId, fromPath: lockedDoc[0]!.path, toPath: path },
+            },
+            tx,
+          );
+          return { status: "ok" as const, path: updated.path };
+        })
+        .catch((error) => {
+          if (isUniqueViolation(error)) return { status: "collision" as const };
+          throw error;
+        });
+      if (result.status === "gone" || result.status === "not_found") return notFound(reply, "Document not found.");
+      if (result.status === "forbidden") return forbidden(reply);
+      if (result.status === "transfer_disabled") return forbidden(reply, "Workspace transfer is disabled for this workspace.");
+      if (result.status === "dest_missing") return notFound(reply, "Destination folder not found.");
+      if (result.status === "collision") return validationError(reply, { slug: "A document with this slug already exists in the destination folder." });
+      return { id: doc.id, workspaceId: destinationWorkspaceId!, folderId: destinationFolderId!, path: result.path };
     },
   );
 

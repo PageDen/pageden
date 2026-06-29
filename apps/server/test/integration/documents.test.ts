@@ -144,6 +144,57 @@ describe("documents — endpoints & validation", () => {
     expect(recreate.statusCode).toBe(201);
   });
 
+  it("transfers a document to another workspace and honors the transfer setting", async () => {
+    const s = await baseScenario();
+    const dest = await createWorkspace("Destination", "dest");
+    await addMember(dest.id, s.admin.id, "admin");
+    const destFolder = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: dest.id, name: "Inbox", slug: "inbox" },
+    });
+    expect(destFolder.statusCode).toBe(201);
+
+    const disabled = await req({
+      method: "PUT",
+      url: `/api/workspaces/${s.ws.id}/settings/workspace-transfer`,
+      cookies: s.adminCookie,
+      payload: { enabled: false },
+    });
+    expect(disabled.statusCode).toBe(200);
+    const blocked = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/transfer-workspace`,
+      cookies: s.adminCookie,
+      payload: { workspaceId: dest.id, folderId: destFolder.json().id },
+    });
+    expect(blocked.statusCode).toBe(403);
+
+    const enabled = await req({
+      method: "PUT",
+      url: `/api/workspaces/${s.ws.id}/settings/workspace-transfer`,
+      cookies: s.adminCookie,
+      payload: { enabled: true },
+    });
+    expect(enabled.statusCode).toBe(200);
+    const moved = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/transfer-workspace`,
+      cookies: s.adminCookie,
+      payload: { workspaceId: dest.id, folderId: destFolder.json().id },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json()).toMatchObject({ id: s.docId, workspaceId: dest.id, folderId: destFolder.json().id, path: "inbox/runbook.md" });
+
+    const readSource = await req({ method: "GET", url: `/api/documents/tree?workspaceId=${s.ws.id}`, cookies: s.adminCookie });
+    expect((readSource.json().documents as unknown[])).toHaveLength(0);
+    const readDest = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: s.adminCookie });
+    expect(readDest.statusCode).toBe(200);
+    expect(readDest.json()).toMatchObject({ workspaceId: dest.id, folderId: destFolder.json().id, path: "inbox/runbook.md", content: "# Runbook\n" });
+    await expect(prisma.permission.count({ where: { resourceType: "document", resourceId: s.docId } })).resolves.toBe(0);
+  });
+
   it("revisions and restore", async () => {
     const s = await baseScenario();
     await req({ method: "PUT", url: `/api/documents/${s.docId}`, cookies: s.adminCookie, payload: { baseVersion: s.version, content: "# v2\n" } });

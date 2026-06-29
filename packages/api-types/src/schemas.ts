@@ -459,6 +459,9 @@ export const documentWithContentSchema = documentMetaSchema
 export const documentCreateSchema = z
   .object({ id: z.string(), version: z.string(), checksum: z.string(), path: z.string() })
   .strict();
+export const documentWorkspaceTransferSchema = z
+  .object({ id: z.string(), workspaceId: z.string(), folderId: z.string(), path: z.string() })
+  .strict();
 
 export const writeResultSchema = z
   .object({
@@ -588,6 +591,19 @@ export const folderRenameSchema = z.object({ id: z.string(), path: z.string() })
 export const folderMoveSchema = z
   .object({ id: z.string(), parentFolderId: z.string().nullable(), path: z.string() })
   .strict();
+export const folderWorkspaceTransferSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    parentFolderId: z.string().nullable(),
+    path: z.string(),
+    movedDocuments: z.number().int().nonnegative(),
+    movedFolders: z.number().int().nonnegative(),
+  })
+  .strict();
+export const folderEmptySchema = z
+  .object({ ok: z.literal(true), deletedDocuments: z.number().int().nonnegative(), deletedFolders: z.number().int().nonnegative() })
+  .strict();
 
 // Permissions
 //
@@ -675,6 +691,7 @@ export const auditEventSchema = z
   .strict();
 export const auditListSchema = z.object({ events: z.array(auditEventSchema), next: z.string().nullable() }).strict();
 export const auditRetentionSchema = z.object({ auditRetentionDays: z.number().int().nullable() }).strict();
+export const workspaceTransferSettingsSchema = z.object({ enabled: z.boolean() }).strict();
 export const auditCheckpointSchema = z
   .object({
     created: z.boolean(),

@@ -109,6 +109,8 @@ export function WorkspaceShell() {
     },
   });
 
+  // Identify the user with Mixpanel once /api/me resolves. The hook inside
+  // analytics.ts guards against re-identify so this is safe on re-renders.
   useEffect(() => {
     if (!me.data?.user) return;
     identifyUser(me.data.user.id, {
@@ -120,9 +122,7 @@ export function WorkspaceShell() {
 
   useEffect(() => {
     // Drive the analytics-bus workspace context off the URL param so the
-    // active workspace travels with every track() / identify() call —
-    // including events fired in components that don't take workspaceId
-    // explicitly. Cleared on logout via resetAnalytics().
+    // active workspace travels with every track() / identify() call.
     setWorkspaceContext(workspaceId || null);
   }, [workspaceId]);
 
@@ -170,7 +170,7 @@ export function WorkspaceShell() {
   }
 
   return (
-    <div className="flex min-h-screen bg-white">
+    <div className="flex h-screen min-h-0 overflow-hidden bg-white">
       <CommandPalette workspaceId={workspaceId} />
       {isMobileShell ? (
         <MobileFilesDrawer
@@ -188,11 +188,16 @@ export function WorkspaceShell() {
           isRefreshingTree={isRefreshingTree}
           onRefresh={() => void tree.refetch()}
           onClose={() => setIsMobileFilesOpen(false)}
+          userEmail={me.data?.user.email ?? ""}
+          themeMode={theme.mode}
+          onThemeChange={theme.setMode}
+          onLogout={() => logout.mutate()}
+          logoutPending={logout.isPending}
         />
       ) : null}
       <aside
         ref={sidebarRef}
-        className={`${isSidebarCollapsed ? "w-14" : ""} hidden shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 transition-[width] duration-200 lg:flex`}
+        className={`${isSidebarCollapsed ? "w-14" : ""} hidden min-h-0 shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 transition-[width] duration-200 lg:flex`}
         style={isSidebarCollapsed ? undefined : { width: sidebarWidth }}
       >
         {isSidebarCollapsed ? (
@@ -313,9 +318,9 @@ export function WorkspaceShell() {
             </span>
           </label>
         </div>
-        <nav className="flex-1 overflow-auto px-2.5 py-3 text-sm">
+        <nav className="min-h-0 flex flex-1 flex-col overflow-hidden text-sm">
           {!trimmedSearch && showQuickAccess ? (
-            <div className="mb-3 rounded-md border border-slate-200 bg-white px-3 py-2">
+            <div className="mx-2.5 mt-3 shrink-0 rounded-md border border-slate-200 bg-white px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Quick access</p>
                 <button
@@ -335,48 +340,37 @@ export function WorkspaceShell() {
             </div>
           ) : null}
           {trimmedSearch ? (
-            <SearchResults
-              workspaceId={workspaceId}
-              query={debouncedSearch || trimmedSearch}
-              isLoading={search.isLoading || debouncedSearch !== trimmedSearch}
-              isError={search.isError}
-              results={debouncedSearch ? search.data?.results ?? [] : []}
-            />
+            <div className="min-h-0 flex-1 overflow-auto px-2.5 py-3">
+              <SearchResults
+                workspaceId={workspaceId}
+                query={debouncedSearch || trimmedSearch}
+                isLoading={search.isLoading || debouncedSearch !== trimmedSearch}
+                isError={search.isError}
+                results={debouncedSearch ? search.data?.results ?? [] : []}
+              />
+            </div>
           ) : tree.isLoading ? (
-            <p className="px-2 py-1 text-slate-400">Loading…</p>
+            <p className="px-4 py-3 text-slate-400">Loading…</p>
           ) : tree.isError ? (
-            <p className="px-2 py-1 text-red-600">Could not load documents.</p>
+            <p className="px-4 py-3 text-red-600">Could not load documents.</p>
           ) : tree.data ? (
-            <>
-              <Link
-                to="/w/$workspaceId"
-                params={{ workspaceId }}
-                className="mb-3 flex items-center gap-2 rounded-md px-2 py-2 font-medium text-slate-600 transition hover:bg-white hover:text-slate-950 [&.active]:bg-white [&.active]:text-slate-950 [&.active]:shadow-sm"
-                activeOptions={{ exact: true }}
-              >
-                <Home size={16} aria-hidden="true" className="text-slate-400 [.active_&]:text-orange-600" />
-                Home
-              </Link>
-              <div className="mb-1 flex items-center justify-between gap-2 px-2 py-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workspace</span>
-                <button
-                  type="button"
-                  onClick={() => void tree.refetch()}
-                  disabled={isRefreshingTree}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-white hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 disabled:cursor-wait disabled:opacity-60"
-                  aria-label={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
-                  title={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
-                >
-                  <RefreshCw size={14} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
-                </button>
-              </div>
+            <div className="min-h-0 flex flex-1 flex-col px-2.5 py-3">
               <TreePanel
                 workspaceId={workspaceId}
                 folders={tree.data.folders}
                 documents={tree.data.documents}
                 canCreateRoot={workspace?.role === "admin"}
+                toolbar={({ canCreateRoot, createRootFolder }) => (
+                  <WorkspaceTreeToolbar
+                    workspaceId={workspaceId}
+                    canCreateRoot={canCreateRoot}
+                    createRootFolder={createRootFolder}
+                    isRefreshingTree={isRefreshingTree}
+                    onRefresh={() => void tree.refetch()}
+                  />
+                )}
               />
-            </>
+            </div>
           ) : null}
         </nav>
         <div className="border-t border-slate-200 p-2.5">
@@ -516,9 +510,9 @@ export function WorkspaceShell() {
           <div className={`absolute inset-y-0 left-1/2 w-px -translate-x-px transition-colors duration-150 delay-300 ${isResizing ? "bg-orange-500" : "bg-transparent group-hover:bg-slate-300"}`} />
         </div>
       )}
-      <main className="flex min-w-0 flex-1 flex-col overflow-auto">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto">
         {isMobileShell ? (
-        <div className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-slate-200 bg-white/95 px-3 backdrop-blur lg:hidden">
+        <div className="pageden-mobile-topbar sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-slate-200 bg-white/95 px-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 lg:hidden">
           <button
             type="button"
             onClick={() => setIsMobileFilesOpen(true)}
@@ -622,6 +616,61 @@ type SearchData = z.infer<typeof searchSchema>;
 type TreeDoc = z.infer<typeof treeSchema>["documents"][number];
 type TreeData = z.infer<typeof treeSchema>;
 
+function WorkspaceTreeToolbar({
+  workspaceId,
+  canCreateRoot,
+  createRootFolder,
+  isRefreshingTree,
+  onRefresh,
+  onHomeClick,
+  iconSize = 16,
+  buttonClassName = "h-8 w-8 rounded-md",
+}: {
+  workspaceId: string;
+  canCreateRoot: boolean;
+  createRootFolder: () => void;
+  isRefreshingTree: boolean;
+  onRefresh: () => void;
+  onHomeClick?: () => void;
+  iconSize?: number;
+  buttonClassName?: string;
+}) {
+  const buttonBase = `${buttonClassName} flex shrink-0 items-center justify-center text-slate-400 transition hover:bg-white hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200`;
+  return (
+    <div className="shrink-0 pb-2">
+      <div className="flex items-center gap-1">
+        <Link
+          to="/w/$workspaceId"
+          params={{ workspaceId }}
+          onClick={onHomeClick}
+          className={`${buttonBase} [&.active]:bg-white [&.active]:text-orange-600 [&.active]:shadow-sm`}
+          activeOptions={{ exact: true }}
+          aria-label="Home"
+          title="Home"
+        >
+          <Home size={iconSize} aria-hidden="true" />
+        </Link>
+        <span className="min-w-0 flex-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workspace</span>
+        {canCreateRoot ? (
+          <button type="button" onClick={createRootFolder} className={buttonBase} aria-label="+ New top-level folder" title="New top-level folder">
+            <Plus size={iconSize} aria-hidden="true" />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={isRefreshingTree}
+          className={`${buttonBase} disabled:cursor-wait disabled:opacity-60`}
+          aria-label={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+          title={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
+        >
+          <RefreshCw size={iconSize} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MobileFilesDrawer({
   open,
   workspaceId,
@@ -637,6 +686,11 @@ function MobileFilesDrawer({
   isRefreshingTree,
   onRefresh,
   onClose,
+  userEmail,
+  themeMode,
+  onThemeChange,
+  onLogout,
+  logoutPending,
 }: {
   open: boolean;
   workspaceId: string;
@@ -652,6 +706,11 @@ function MobileFilesDrawer({
   isRefreshingTree: boolean;
   onRefresh: () => void;
   onClose: () => void;
+  userEmail: string;
+  themeMode: "light" | "dark" | "auto";
+  onThemeChange: (mode: "light" | "dark" | "auto") => void;
+  onLogout: () => void;
+  logoutPending: boolean;
 }) {
   if (!open) return null;
 
@@ -720,85 +779,163 @@ function MobileFilesDrawer({
           </label>
         </div>
 
-        <nav className="min-h-0 flex-1 overflow-auto px-3 py-3 text-[15px]">
+        <nav className="min-h-0 flex flex-1 flex-col overflow-hidden text-[15px]">
           {trimmedSearch ? (
-            <SearchResults
-              workspaceId={workspaceId}
-              query={debouncedSearch || trimmedSearch}
-              isLoading={search.isLoading || debouncedSearch !== trimmedSearch}
-              isError={search.isError}
-              results={debouncedSearch ? search.data?.results ?? [] : []}
-              onNavigate={onClose}
-            />
+            <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+              <SearchResults
+                workspaceId={workspaceId}
+                query={debouncedSearch || trimmedSearch}
+                isLoading={search.isLoading || debouncedSearch !== trimmedSearch}
+                isError={search.isError}
+                results={debouncedSearch ? search.data?.results ?? [] : []}
+                onNavigate={onClose}
+              />
+            </div>
           ) : tree.isLoading ? (
-            <p className="px-2 py-2 text-slate-400">Loading…</p>
+            <p className="px-5 py-3 text-slate-400">Loading…</p>
           ) : tree.isError ? (
-            <p className="px-2 py-2 text-red-600">Could not load documents.</p>
+            <p className="px-5 py-3 text-red-600">Could not load documents.</p>
           ) : tree.data ? (
-            <>
-              <Link
-                to="/w/$workspaceId"
-                params={{ workspaceId }}
-                onClick={onClose}
-                className="mb-3 flex items-center gap-2 rounded-lg px-2.5 py-2.5 font-medium text-slate-600 transition hover:bg-white hover:text-slate-950 [&.active]:bg-white [&.active]:text-slate-950 [&.active]:shadow-sm"
-                activeOptions={{ exact: true }}
-              >
-                <Home size={18} aria-hidden="true" className="text-slate-400 [.active_&]:text-orange-600" />
-                Home
-              </Link>
-              <div className="mb-1 flex items-center justify-between gap-2 px-2 py-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workspace</span>
-                <button
-                  type="button"
-                  onClick={onRefresh}
-                  disabled={isRefreshingTree}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-200 disabled:cursor-wait disabled:opacity-60"
-                  aria-label={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
-                  title={isRefreshingTree ? "Refreshing documents" : "Refresh documents"}
-                >
-                  <RefreshCw size={15} aria-hidden="true" className={isRefreshingTree ? "animate-spin" : ""} />
-                </button>
-              </div>
+            <div className="min-h-0 flex flex-1 flex-col px-3 py-3">
               <TreePanel
                 workspaceId={workspaceId}
                 folders={tree.data.folders}
                 documents={tree.data.documents}
                 canCreateRoot={workspaceRole === "admin"}
                 onNavigate={onClose}
+                toolbar={({ canCreateRoot, createRootFolder }) => (
+                  <WorkspaceTreeToolbar
+                    workspaceId={workspaceId}
+                    canCreateRoot={canCreateRoot}
+                    createRootFolder={createRootFolder}
+                    isRefreshingTree={isRefreshingTree}
+                    onRefresh={onRefresh}
+                    onHomeClick={onClose}
+                    iconSize={18}
+                    buttonClassName="h-9 w-9 rounded-lg"
+                  />
+                )}
               />
-            </>
+            </div>
           ) : null}
         </nav>
 
-        <div className="grid shrink-0 grid-cols-3 gap-2 border-t border-slate-200 bg-white/80 px-3 py-3">
-          <Link
-            to="/w/$workspaceId/import"
-            params={{ workspaceId }}
-            onClick={onClose}
-            className="flex h-10 items-center justify-center gap-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+        <details className="pageden-mobile-drawer-footer group shrink-0 border-t border-slate-200 bg-white/95 dark:border-slate-800 dark:bg-slate-950/95 [&>summary::-webkit-details-marker]:hidden">
+          <summary
+            className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3"
+            aria-label="Account menu"
           >
-            <UploadCloud size={16} aria-hidden="true" />
-            Import
-          </Link>
-          <Link
-            to="/w/$workspaceId/agents"
-            params={{ workspaceId }}
-            onClick={onClose}
-            className="flex h-10 items-center justify-center gap-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-          >
-            <Bot size={16} aria-hidden="true" />
-            Agents
-          </Link>
-          <Link
-            to="/w/$workspaceId/account"
-            params={{ workspaceId }}
-            onClick={onClose}
-            className="flex h-10 items-center justify-center gap-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-          >
-            <UserRound size={16} aria-hidden="true" />
-            Account
-          </Link>
-        </div>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+              <UserRound size={16} aria-hidden="true" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-slate-900 dark:text-slate-100">{userEmail.split("@")[0] || "User"}</p>
+              <p className="truncate text-[11px] text-slate-400 dark:text-slate-500">{userEmail}</p>
+            </div>
+            <ChevronDown
+              size={18}
+              aria-hidden="true"
+              className="shrink-0 text-slate-400 transition-transform group-open:rotate-180 dark:text-slate-500"
+            />
+          </summary>
+          <div className="max-h-[55vh] overflow-y-auto">
+            <nav className="flex flex-col border-t border-slate-200 py-1 text-sm dark:border-slate-800">
+              <Link
+                to="/w/$workspaceId/dashboard"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <BarChart3 size={16} aria-hidden="true" />
+                Dashboard
+              </Link>
+              <Link
+                to="/w/$workspaceId/activity"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <Activity size={16} aria-hidden="true" />
+                Activity
+              </Link>
+              <Link
+                to="/w/$workspaceId/account"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <UserRound size={16} aria-hidden="true" />
+                Account
+              </Link>
+              <Link
+                to="/w/$workspaceId/agents"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <Bot size={16} aria-hidden="true" />
+                AI agents
+              </Link>
+              <Link
+                to="/w/$workspaceId/import"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <UploadCloud size={16} aria-hidden="true" />
+                Import vault
+              </Link>
+              <Link
+                to="/w/$workspaceId/tokens"
+                params={{ workspaceId }}
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <KeyRound size={16} aria-hidden="true" />
+                Tokens
+              </Link>
+              {workspaceRole === "admin" ? (
+                <Link
+                  to="/w/$workspaceId/admin/users"
+                  params={{ workspaceId }}
+                  onClick={onClose}
+                  className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                >
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  Admin
+                </Link>
+              ) : null}
+              <Link
+                to="/workspaces/new"
+                onClick={onClose}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+              >
+                <Plus size={16} aria-hidden="true" />
+                Create workspace
+              </Link>
+            </nav>
+            <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Theme</div>
+              <div className="grid grid-cols-3 gap-1 rounded-md bg-slate-100 p-1 dark:bg-slate-800">
+                <ThemeChoice mode="light" current={themeMode} onSelect={onThemeChange} label="Light" icon={Sun} />
+                <ThemeChoice mode="dark" current={themeMode} onSelect={onThemeChange} label="Dark" icon={Moon} />
+                <ThemeChoice mode="auto" current={themeMode} onSelect={onThemeChange} label="Auto" icon={Monitor} />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onLogout();
+              }}
+              disabled={logoutPending}
+              className="flex w-full items-center gap-2.5 border-t border-slate-200 px-4 py-3 text-left text-sm text-slate-700 hover:bg-slate-100 hover:text-slate-950 disabled:opacity-50 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+            >
+              <LogOut size={16} aria-hidden="true" />
+              {logoutPending ? "Signing out…" : "Sign out"}
+            </button>
+          </div>
+        </details>
       </section>
     </div>
   );
@@ -1099,8 +1236,6 @@ export function WorkspaceChooser() {
   const logout = useMutation({
     mutationFn: () => api.logout(),
     onSuccess: () => {
-      track("user_signed_out");
-      resetAnalytics();
       queryClient.clear();
       void navigate({ to: "/login" });
     },

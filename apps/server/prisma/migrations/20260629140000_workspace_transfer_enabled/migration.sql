@@ -1,0 +1,1 @@
+ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS "workspaceTransferEnabled" BOOLEAN NOT NULL DEFAULT true;
