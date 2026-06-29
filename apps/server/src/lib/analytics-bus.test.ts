@@ -3,6 +3,8 @@ import { flushServerAnalytics, registerServerAnalyticsListener, trackServerEvent
 
 afterEach(() => {
   registerServerAnalyticsListener(null);
+  delete (globalThis as typeof globalThis & { __pagedenServerAnalyticsListener?: unknown }).__pagedenServerAnalyticsListener;
+  vi.resetModules();
 });
 
 describe("server analytics bus", () => {
@@ -50,5 +52,18 @@ describe("server analytics bus", () => {
     await flushServerAnalytics();
 
     expect(flush).toHaveBeenCalledOnce();
+  });
+
+  it("bootstraps a listener from the cloud overlay global", async () => {
+    const track = vi.fn((event: string, payload: ServerEventPayload) => {
+      void event;
+      void payload;
+    });
+    (globalThis as typeof globalThis & { __pagedenServerAnalyticsListener?: { track: typeof track } }).__pagedenServerAnalyticsListener = { track };
+
+    const bus = await import("./analytics-bus.js");
+    bus.trackServerEvent("agent_mcp_call", "workspace-1", { userId: "user-1" });
+
+    expect(track).toHaveBeenCalledOnce();
   });
 });
