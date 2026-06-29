@@ -69,7 +69,7 @@ describe("workspace host routing", () => {
 
     expect(normalizeWorkspaceSubdomain(" Acme-Team ")).toBe("acme-team");
     expect(validateWorkspaceSubdomain("acme-team")).toBeNull();
-    expect(validateWorkspaceSubdomain("a")).toContain("at least 2");
+    expect(validateWorkspaceSubdomain("abc")).toContain("at least 4");
     expect(validateWorkspaceSubdomain("go")).toContain("reserved");
     expect(validateWorkspaceSubdomain("-acme")).toContain("dash");
     expect(validateWorkspaceSubdomain("acme_")).toContain("lowercase");

@@ -75,11 +75,11 @@ export function normalizeWorkspaceSubdomain(input: string): string {
 
 export function validateWorkspaceSubdomain(input: string): string | null {
   const value = normalizeWorkspaceSubdomain(input);
-  if (value.length < 2) return "Workspace URL must be at least 2 characters.";
-  if (value.length > 32) return "Workspace URL must be 32 characters or less.";
   if (!/^[a-z0-9-]+$/.test(value)) return "Use only lowercase letters, numbers, and dashes.";
   if (value.startsWith("-") || value.endsWith("-")) return "Workspace URL cannot start or end with a dash.";
   if (isReservedWorkspaceSubdomain(value)) return "That workspace URL is reserved.";
+  if (value.length < 4) return "Workspace URL must be at least 4 characters.";
+  if (value.length > 32) return "Workspace URL must be 32 characters or less.";
   if (hasBlockedWorkspaceSubdomainTerm(value)) return "Choose a professional workspace URL.";
   return null;
 }
