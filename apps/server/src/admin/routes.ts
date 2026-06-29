@@ -146,6 +146,43 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // Workspace admins can disable cross-workspace moves out of this workspace.
+  // Defaults to enabled for existing workspaces.
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/settings/workspace-transfer", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "read");
+    const workspaceId = request.params.id;
+    if (!(await canManageWorkspace(auth.userId, workspaceId))) return notFound(reply, "Workspace not found.");
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { workspaceTransferEnabled: true },
+    });
+    if (!workspace) return notFound(reply, "Workspace not found.");
+    return { enabled: workspace.workspaceTransferEnabled };
+  });
+
+  app.put<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/workspaces/:id/settings/workspace-transfer", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const workspaceId = request.params.id;
+    if (!(await canManageWorkspace(auth.userId, workspaceId))) return notFound(reply, "Workspace not found.");
+    if (typeof request.body?.enabled !== "boolean") return validationError(reply, { enabled: "enabled must be true or false." });
+    const workspace = await prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { workspaceTransferEnabled: request.body.enabled },
+      select: { workspaceTransferEnabled: true },
+    });
+    await writeAuditEvent({
+      workspaceId,
+      userId: auth.userId,
+      action: "workspace_transfer_setting_changed",
+      targetType: "workspace",
+      targetId: workspaceId,
+      metadata: { enabled: workspace.workspaceTransferEnabled },
+    });
+    return { enabled: workspace.workspaceTransferEnabled };
+  });
+
   // Phase C2: read the current agent edit scope so the UI can render its picker
   // without having to call the bigger workspace context endpoint.
   app.get<{ Params: { id: string } }>(

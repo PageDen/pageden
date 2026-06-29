@@ -10,3 +10,12 @@ export async function lockFolderTree(
 ): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('pageden:folder-tree'), hashtext(${workspaceId}))`;
 }
+
+export async function lockFolderTrees(
+  tx: Prisma.TransactionClient,
+  workspaceIds: string[],
+): Promise<void> {
+  for (const workspaceId of [...new Set(workspaceIds)].sort()) {
+    await lockFolderTree(tx, workspaceId);
+  }
+}

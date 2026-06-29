@@ -13,6 +13,7 @@ import {
   documentCreateSchema,
   documentMoveSchema,
   documentRenameSchema,
+  documentWorkspaceTransferSchema,
   documentWithContentSchema,
   handoffPacketSchema,
   activityFeedSchema,
@@ -41,8 +42,10 @@ import {
   userCreateSchema,
   usersListSchema,
   folderCreateSchema,
+  folderEmptySchema,
   folderMoveSchema,
   folderRenameSchema,
+  folderWorkspaceTransferSchema,
   meResponseSchema,
   okDeletedSchema,
   okSchema,
@@ -53,6 +56,7 @@ import {
   revisionsSchema,
   treeSchema,
   writeResultSchema,
+  workspaceTransferSettingsSchema,
   quarantinedAttachmentListSchema,
 } from "@pageden/api-types";
 
@@ -205,6 +209,10 @@ export const api = {
   },
   setWorkspaceCustomDomain: (workspaceId: string, customDomain: string | null) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/custom-domain`, { body: { customDomain }, schema: workspaceCreateSchema }),
+  workspaceTransferSettings: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/workspace-transfer`, { schema: workspaceTransferSettingsSchema }),
+  setWorkspaceTransferSettings: (workspaceId: string, enabled: boolean) =>
+    request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/workspace-transfer`, { body: { enabled }, schema: workspaceTransferSettingsSchema }),
   register: (email: string, name: string, password: string, companyName: string, subdomain: string, captchaToken?: string) =>
     request("POST", "/auth/register", { body: { email, name, password, companyName, subdomain, captchaToken }, schema: meResponseSchema }),
   verifyEmail: (token: string) => request("POST", "/auth/verify-email", { body: { token }, schema: okSchema }),
@@ -395,6 +403,8 @@ export const api = {
     request("POST", `/documents/${encodeURIComponent(id)}/rename`, { body, schema: documentRenameSchema }),
   moveDocument: (id: string, folderId: string) =>
     request("POST", `/documents/${encodeURIComponent(id)}/move`, { body: { folderId }, schema: documentMoveSchema }),
+  transferDocumentWorkspace: (id: string, workspaceId: string, folderId: string) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/transfer-workspace`, { body: { workspaceId, folderId }, schema: documentWorkspaceTransferSchema }),
   deleteDocument: (id: string) =>
     request("DELETE", `/documents/${encodeURIComponent(id)}`, { schema: okDeletedSchema }),
   createFolder: (body: { workspaceId: string; parentFolderId: string | null; name: string; slug: string }) =>
@@ -403,6 +413,10 @@ export const api = {
     request("POST", `/folders/${encodeURIComponent(id)}/rename`, { body, schema: folderRenameSchema }),
   moveFolder: (id: string, parentFolderId: string | null) =>
     request("POST", `/folders/${encodeURIComponent(id)}/move`, { body: { parentFolderId }, schema: folderMoveSchema }),
+  transferFolderWorkspace: (id: string, workspaceId: string, parentFolderId: string | null) =>
+    request("POST", `/folders/${encodeURIComponent(id)}/transfer-workspace`, { body: { workspaceId, parentFolderId }, schema: folderWorkspaceTransferSchema }),
+  emptyFolder: (id: string, confirmationName: string) =>
+    request("POST", `/folders/${encodeURIComponent(id)}/empty`, { body: { confirmationName }, schema: folderEmptySchema }),
   deleteFolder: (id: string) =>
     request("DELETE", `/folders/${encodeURIComponent(id)}`, { schema: okSchema }),
 

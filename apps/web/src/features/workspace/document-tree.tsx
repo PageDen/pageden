@@ -11,11 +11,13 @@ import {
   FilePlus,
   FileText,
   FolderClosed,
+  FolderX,
   FolderOpen,
   FolderPlus,
   Hand,
   KeyRound,
   MoreHorizontal,
+  MoveUpRight,
   MoveRight,
   Pencil,
   Trash2,
@@ -31,9 +33,12 @@ export interface TreeActions {
   onNewFolder: (parent: Folder) => void;
   onRenameDoc: (doc: Doc) => void;
   onMoveDoc: (doc: Doc) => void;
+  onTransferDoc: (doc: Doc) => void;
   onDeleteDoc: (doc: Doc) => void;
   onRenameFolder: (folder: Folder) => void;
   onMoveFolder: (folder: Folder) => void;
+  onTransferFolder: (folder: Folder) => void;
+  onEmptyFolder: (folder: Folder) => void;
   onDeleteFolder: (folder: Folder) => void;
   onPermissionsDoc: (doc: Doc) => void;
   onPermissionsFolder: (folder: Folder) => void;
@@ -127,9 +132,10 @@ interface FolderNodeProps {
   actions: TreeActions;
   onNavigate?: () => void;
   claims?: Map<string, DocClaimSummary>;
+  workspaceTransferEnabled: boolean;
 }
 
-function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, onNavigate, claims }: FolderNodeProps) {
+function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, onNavigate, claims, workspaceTransferEnabled }: FolderNodeProps) {
   const [isOpen, setIsOpen] = useState(true);
 
   const subFolders = childFolders.get(folder.id) ?? [];
@@ -147,7 +153,9 @@ function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, 
       ? [
           { label: "Rename", icon: Pencil, onClick: () => actions.onRenameFolder(folder) },
           { label: "Move", icon: MoveRight, onClick: () => actions.onMoveFolder(folder) },
+          ...(workspaceTransferEnabled ? [{ label: "Move to workspace", icon: MoveUpRight, onClick: () => actions.onTransferFolder(folder) }] : []),
           { label: "Permissions", icon: KeyRound, onClick: () => actions.onPermissionsFolder(folder) },
+          { label: "Empty folder", icon: FolderX, destructive: true, onClick: () => actions.onEmptyFolder(folder) },
           { label: "Trash", icon: Trash2, destructive: true, onClick: () => actions.onDeleteFolder(folder) },
         ]
       : []),
@@ -189,10 +197,19 @@ function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, 
               actions={actions}
               onNavigate={onNavigate}
               claims={claims}
+              workspaceTransferEnabled={workspaceTransferEnabled}
             />
           ))}
           {docs.map((d) => (
-            <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} claim={claims?.get(d.id)} />
+            <DocRow
+              key={d.id}
+              doc={d}
+              workspaceId={workspaceId}
+              actions={actions}
+              onNavigate={onNavigate}
+              claim={claims?.get(d.id)}
+              workspaceTransferEnabled={workspaceTransferEnabled}
+            />
           ))}
         </ul>
       )}
@@ -208,12 +225,14 @@ function DocRow({
   actions,
   onNavigate,
   claim,
+  workspaceTransferEnabled,
 }: {
   doc: Doc;
   workspaceId: string;
   actions: TreeActions;
   onNavigate?: () => void;
   claim?: DocClaimSummary;
+  workspaceTransferEnabled: boolean;
 }) {
   // Copying a reference is a read-only client action, so it's offered to every
   // role (not just managers) and wired here rather than through TreeActions.
@@ -230,6 +249,7 @@ function DocRow({
         copyReference,
         { label: "Rename", icon: Pencil, onClick: () => actions.onRenameDoc(doc) },
         { label: "Move", icon: MoveRight, onClick: () => actions.onMoveDoc(doc) },
+        ...(workspaceTransferEnabled ? [{ label: "Move to workspace", icon: MoveUpRight, onClick: () => actions.onTransferDoc(doc) }] : []),
         { label: "Permissions", icon: KeyRound, onClick: () => actions.onPermissionsDoc(doc) },
         { label: "Delete", icon: Trash2, destructive: true, onClick: () => actions.onDeleteDoc(doc) },
       ]
@@ -289,6 +309,7 @@ export function DocumentTree({
   actions,
   onNavigate,
   claims,
+  workspaceTransferEnabled,
 }: {
   workspaceId: string;
   folders: Folder[];
@@ -296,6 +317,7 @@ export function DocumentTree({
   actions: TreeActions;
   onNavigate?: () => void;
   claims?: Map<string, DocClaimSummary>;
+  workspaceTransferEnabled: boolean;
 }) {
   const childFolders = new Map<string | null, Folder[]>();
   for (const f of folders) {
@@ -336,10 +358,19 @@ export function DocumentTree({
           actions={actions}
           onNavigate={onNavigate}
           claims={claims}
+          workspaceTransferEnabled={workspaceTransferEnabled}
         />
       ))}
       {orphanDocs.map((d) => (
-        <DocRow key={d.id} doc={d} workspaceId={workspaceId} actions={actions} onNavigate={onNavigate} claim={claims?.get(d.id)} />
+        <DocRow
+          key={d.id}
+          doc={d}
+          workspaceId={workspaceId}
+          actions={actions}
+          onNavigate={onNavigate}
+          claim={claims?.get(d.id)}
+          workspaceTransferEnabled={workspaceTransferEnabled}
+        />
       ))}
     </ul>
   );

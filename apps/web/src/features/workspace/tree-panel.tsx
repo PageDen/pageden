@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ApiError, api, crudErrorMessage } from "../../lib/api";
-import { meQuery, treeQuery, workspaceClaimsQuery } from "../../lib/queries";
+import { meQuery, treeQuery, workspaceClaimsQuery, workspaceTransferSettingsQuery } from "../../lib/queries";
 import { slugify } from "../../lib/slug";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -18,7 +18,10 @@ type DialogState =
   | { kind: "renameFolder"; folder: Folder }
   | { kind: "moveDoc"; doc: Doc }
   | { kind: "moveFolder"; folder: Folder }
+  | { kind: "transferDoc"; doc: Doc }
+  | { kind: "transferFolder"; folder: Folder }
   | { kind: "deleteDoc"; doc: Doc }
+  | { kind: "emptyFolder"; folder: Folder }
   | { kind: "deleteFolder"; folder: Folder }
   | { kind: "permsDoc"; doc: Doc }
   | { kind: "permsFolder"; folder: Folder }
@@ -30,23 +33,29 @@ export function TreePanel({
   documents,
   canCreateRoot,
   onNavigate,
+  toolbar,
 }: {
   workspaceId: string;
   folders: Folder[];
   documents: Doc[];
   canCreateRoot: boolean;
   onNavigate?: () => void;
+  toolbar?: (controls: { canCreateRoot: boolean; createRootFolder: () => void }) => ReactNode;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const params = useParams({ strict: false });
   const openDocId = params.documentId;
+  const openReadablePath = typeof params._splat === "string" && params._splat ? `${params._splat}.md` : null;
   const [dialog, setDialog] = useState<DialogState>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Surface active document claims as small pips next to each affected row so
   // multiple agents can see "Codex is already on this one" before duplicating work.
   const claimsResult = useQuery({ ...workspaceClaimsQuery(workspaceId), retry: false });
+  const meResult = useQuery(meQuery);
+  const workspaceTransferSettings = useQuery({ ...workspaceTransferSettingsQuery(workspaceId), enabled: Boolean(workspaceId) });
+  const workspaceTransferEnabled = workspaceTransferSettings.data?.enabled === true;
   const claimsByDoc = useMemo(() => {
     const map = new Map<string, DocClaimSummary>();
     for (const claim of claimsResult.data?.claims ?? []) {
@@ -67,15 +76,50 @@ export function TreePanel({
     setDialog(next);
   }
 
-  async function run(fn: () => Promise<unknown>, opts?: { deletedDocId?: string }) {
+  useEffect(() => {
+    if (!canCreateRoot) return;
+    const openRootFolderDialog = () => open({ kind: "newFolder", parent: null });
+    window.addEventListener("pageden:new-root-folder", openRootFolderDialog);
+    return () => window.removeEventListener("pageden:new-root-folder", openRootFolderDialog);
+  }, [busy, canCreateRoot]);
+
+  function currentDocumentWasEmptied(folderPath: string): boolean {
+    const openDoc = documents.find((doc) => doc.id === openDocId || doc.path === openReadablePath);
+    return Boolean(openDoc && openDoc.path.startsWith(`${folderPath}/`));
+  }
+
+  function folderContentCounts(folder: Folder): { documents: number; folders: number } {
+    const prefix = `${folder.path}/`;
+    return {
+      documents: documents.filter((doc) => doc.path.startsWith(prefix)).length,
+      folders: folders.filter((candidate) => candidate.path.startsWith(prefix)).length,
+    };
+  }
+
+  async function run(
+    fn: () => Promise<unknown>,
+    opts?: { deletedDocId?: string; emptiedFolderPath?: string; transferredDocId?: string; transferredFolderPath?: string; destinationWorkspaceId?: string },
+  ) {
     setBusy(true);
     setError(null);
     try {
       await fn();
       await queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
+      if (opts?.destinationWorkspaceId) {
+        await queryClient.invalidateQueries({ queryKey: treeQuery(opts.destinationWorkspaceId).queryKey });
+      }
       // Structural changes can alter descendant document paths/titles — refresh open docs.
       await queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "document" });
       if (opts?.deletedDocId && opts.deletedDocId === openDocId) {
+        void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
+      }
+      if (opts?.emptiedFolderPath && currentDocumentWasEmptied(opts.emptiedFolderPath)) {
+        void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
+      }
+      if (opts?.transferredDocId && opts.transferredDocId === openDocId) {
+        void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
+      }
+      if (opts?.transferredFolderPath && currentDocumentWasEmptied(opts.transferredFolderPath)) {
         void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
       }
       setDialog(null);
@@ -86,6 +130,15 @@ export function TreePanel({
         void queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey });
         void queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
         if (opts?.deletedDocId && opts.deletedDocId === openDocId) {
+          void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
+        }
+        if (opts?.emptiedFolderPath && currentDocumentWasEmptied(opts.emptiedFolderPath)) {
+          void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
+        }
+        if (opts?.transferredDocId && opts.transferredDocId === openDocId) {
+          void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
+        }
+        if (opts?.transferredFolderPath && currentDocumentWasEmptied(opts.transferredFolderPath)) {
           void navigate({ to: "/w/$workspaceId", params: { workspaceId } });
         }
       }
@@ -99,24 +152,39 @@ export function TreePanel({
     onNewFolder: (parent) => open({ kind: "newFolder", parent }),
     onRenameDoc: (doc) => open({ kind: "renameDoc", doc }),
     onMoveDoc: (doc) => open({ kind: "moveDoc", doc }),
+    onTransferDoc: (doc) => open({ kind: "transferDoc", doc }),
     onDeleteDoc: (doc) => open({ kind: "deleteDoc", doc }),
     onRenameFolder: (folder) => open({ kind: "renameFolder", folder }),
     onMoveFolder: (folder) => open({ kind: "moveFolder", folder }),
+    onTransferFolder: (folder) => open({ kind: "transferFolder", folder }),
+    onEmptyFolder: (folder) => open({ kind: "emptyFolder", folder }),
     onDeleteFolder: (folder) => open({ kind: "deleteFolder", folder }),
     onPermissionsDoc: (doc) => open({ kind: "permsDoc", doc }),
     onPermissionsFolder: (folder) => open({ kind: "permsFolder", folder }),
   };
 
+  const createRootFolder = () => open({ kind: "newFolder", parent: null });
+
   return (
-    <div>
-      {canCreateRoot ? (
-        <div className="mb-2 px-1">
-          <Button variant="ghost" className="w-full justify-start" onClick={() => open({ kind: "newFolder", parent: null })}>
+    <div className="min-h-0 flex flex-1 flex-col">
+      {toolbar ? toolbar({ canCreateRoot, createRootFolder }) : canCreateRoot ? (
+        <div className="shrink-0 px-1 pb-2">
+          <Button variant="ghost" className="w-full justify-start" onClick={createRootFolder}>
             + New top-level folder
           </Button>
         </div>
       ) : null}
-      <DocumentTree workspaceId={workspaceId} folders={folders} documents={documents} actions={actions} onNavigate={onNavigate} claims={claimsByDoc} />
+      <div className="min-h-0 flex-1 overflow-auto">
+        <DocumentTree
+          workspaceId={workspaceId}
+          folders={folders}
+          documents={documents}
+          actions={actions}
+          onNavigate={onNavigate}
+          claims={claimsByDoc}
+          workspaceTransferEnabled={workspaceTransferEnabled}
+        />
+      </div>
 
       {dialog?.kind === "newDoc" ? (
         <NameDialog
@@ -199,6 +267,42 @@ export function TreePanel({
         />
       ) : null}
 
+      {dialog?.kind === "transferDoc" ? (
+        <WorkspaceTransferDialog
+          title={`Move "${dialog.doc.title}" to workspace`}
+          currentWorkspaceId={workspaceId}
+          workspaces={meResult.data?.workspaces ?? []}
+          allowRoot={false}
+          busy={busy}
+          error={error}
+          onClose={close}
+          onSubmit={(destinationWorkspaceId, destinationFolderId) =>
+            run(() => api.transferDocumentWorkspace(dialog.doc.id, destinationWorkspaceId, destinationFolderId!), {
+              transferredDocId: dialog.doc.id,
+              destinationWorkspaceId,
+            })
+          }
+        />
+      ) : null}
+
+      {dialog?.kind === "transferFolder" ? (
+        <WorkspaceTransferDialog
+          title={`Move "${dialog.folder.name}" to workspace`}
+          currentWorkspaceId={workspaceId}
+          workspaces={meResult.data?.workspaces ?? []}
+          allowRoot
+          busy={busy}
+          error={error}
+          onClose={close}
+          onSubmit={(destinationWorkspaceId, destinationFolderId) =>
+            run(() => api.transferFolderWorkspace(dialog.folder.id, destinationWorkspaceId, destinationFolderId), {
+              transferredFolderPath: dialog.folder.path,
+              destinationWorkspaceId,
+            })
+          }
+        />
+      ) : null}
+
       {dialog?.kind === "deleteDoc" ? (
         <ConfirmDialog
           title="Delete document?"
@@ -207,6 +311,19 @@ export function TreePanel({
           error={error}
           onClose={close}
           onConfirm={() => run(() => api.deleteDocument(dialog.doc.id), { deletedDocId: dialog.doc.id })}
+        />
+      ) : null}
+
+      {dialog?.kind === "emptyFolder" ? (
+        <EmptyFolderDialog
+          folder={dialog.folder}
+          counts={folderContentCounts(dialog.folder)}
+          busy={busy}
+          error={error}
+          onClose={close}
+          onConfirm={(confirmationName) =>
+            run(() => api.emptyFolder(dialog.folder.id, confirmationName), { emptiedFolderPath: dialog.folder.path })
+          }
         />
       ) : null}
 
@@ -345,6 +462,153 @@ function MoveDialog({
           <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={busy || (!allowRoot && target === "")}>
             {busy ? "Moving…" : "Move"}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+function WorkspaceTransferDialog({
+  title,
+  currentWorkspaceId,
+  workspaces,
+  allowRoot,
+  busy,
+  error,
+  onClose,
+  onSubmit,
+}: {
+  title: string;
+  currentWorkspaceId: string;
+  workspaces: Array<{ id: string; name: string }>;
+  allowRoot: boolean;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (workspaceId: string, folderId: string | null) => void;
+}) {
+  const destinations = workspaces.filter((workspace) => workspace.id !== currentWorkspaceId);
+  const [workspaceId, setWorkspaceId] = useState(destinations[0]?.id ?? "");
+  const tree = useQuery({ ...treeQuery(workspaceId), enabled: Boolean(workspaceId) });
+  const folders = (tree.data?.folders ?? []).slice().sort((a, b) => a.path.localeCompare(b.path));
+  const [folderId, setFolderId] = useState<string>("");
+
+  useEffect(() => {
+    setFolderId("");
+  }, [workspaceId]);
+
+  const canSubmit = Boolean(workspaceId) && (allowRoot || Boolean(folderId));
+
+  return (
+    <Dialog title={title} onClose={onClose}>
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSubmit) onSubmit(workspaceId, folderId || null);
+        }}
+      >
+        <p className="text-sm text-slate-600">
+          This moves the item out of the current workspace. Explicit item permissions are cleared and destination permissions apply.
+        </p>
+        {destinations.length === 0 ? (
+          <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">You do not belong to another workspace.</p>
+        ) : (
+          <>
+            <label className="block space-y-1">
+              <span className="text-sm font-medium">Destination workspace</span>
+              <select
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                value={workspaceId}
+                onChange={(e) => setWorkspaceId(e.target.value)}
+              >
+                {destinations.map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>
+                    {workspace.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block space-y-1">
+              <span className="text-sm font-medium">Destination folder</span>
+              <select
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                value={folderId}
+                onChange={(e) => setFolderId(e.target.value)}
+                disabled={tree.isLoading}
+              >
+                {allowRoot ? <option value="">(top level)</option> : <option value="">Select a folder</option>}
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.path}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+        {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={busy || !canSubmit || destinations.length === 0 || tree.isLoading}>
+            {busy ? "Moving..." : "Move to workspace"}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+function EmptyFolderDialog({
+  folder,
+  counts,
+  busy,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  folder: Folder;
+  counts: { documents: number; folders: number };
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: (confirmationName: string) => void;
+}) {
+  const [confirmationName, setConfirmationName] = useState("");
+  const matches = confirmationName === folder.name;
+  return (
+    <Dialog title="Empty folder?" onClose={onClose}>
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (matches) onConfirm(confirmationName);
+        }}
+      >
+        <div className="space-y-2 text-sm text-slate-600">
+          <p>
+            This will remove everything inside <span className="font-semibold text-slate-900">"{folder.name}"</span> while keeping the folder.
+          </p>
+          <p>
+            {counts.documents} document{counts.documents === 1 ? "" : "s"} and {counts.folders} subfolder{counts.folders === 1 ? "" : "s"} will be removed.
+          </p>
+        </div>
+        <label className="block space-y-1">
+          <span className="text-sm font-medium">Type the folder name to confirm</span>
+          <Input
+            value={confirmationName}
+            aria-label="Type the folder name to confirm"
+            autoFocus
+            onChange={(e) => setConfirmationName(e.target.value)}
+            placeholder={folder.name}
+          />
+        </label>
+        {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" disabled={busy || !matches}>
+            {busy ? "Emptying..." : "Empty folder"}
           </Button>
         </div>
       </form>

@@ -6,7 +6,8 @@ import { writeAuditEvent } from "../audit.js";
 import { buildFolderPath, isValidSlug, rerootPath } from "../paths.js";
 import { forbidden, isUniqueViolation, notFound, validationError } from "../errors.js";
 import { atLeast, authorizeFolderRole, canManageWorkspace, resolveFolderRole } from "../permissions/index.js";
-import { lockFolderTree } from "../db.js";
+import { lockFolderTree, lockFolderTrees } from "../db.js";
+import { applyDocumentStorageTransfer, copyDocumentStorageForWorkspace, updateDocumentScopedWorkspaceRows } from "../workspace-transfer.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -304,6 +305,168 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
+  // Transfer a folder subtree to another workspace. Explicit permissions on
+  // moved folders/documents are cleared so destination inheritance applies.
+  app.post<{ Params: { id: string }; Body: { workspaceId?: string; parentFolderId?: string | null } }>(
+    "/api/folders/:id/transfer-workspace",
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const destinationWorkspaceId = request.body.workspaceId;
+      const destinationParentId = request.body.parentFolderId ?? null;
+      if (!destinationWorkspaceId) return validationError(reply, { workspaceId: "workspaceId is required." });
+
+      const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null } });
+      if (!folder) return notFound(reply, "Folder not found.");
+      if (destinationWorkspaceId === folder.workspaceId) return validationError(reply, { workspaceId: "Use Move for moves inside the same workspace." });
+
+      const sourceWorkspace = await prisma.workspace.findUnique({
+        where: { id: folder.workspaceId },
+        select: { workspaceTransferEnabled: true },
+      });
+      if (!sourceWorkspace?.workspaceTransferEnabled) return forbidden(reply, "Workspace transfer is disabled for this workspace.");
+
+      const role = await resolveFolderRole(auth.userId, folder.id);
+      if (role === null) return notFound(reply, "Folder not found.");
+      if (!atLeast(role, "manager")) return forbidden(reply);
+
+      if (destinationParentId) {
+        const dest = await prisma.folder.findFirst({
+          where: { id: destinationParentId, workspaceId: destinationWorkspaceId, deletedAt: null },
+          select: { id: true },
+        });
+        if (!dest) return notFound(reply, "Destination folder not found.");
+        const destRole = await resolveFolderRole(auth.userId, dest.id);
+        if (destRole === null) return notFound(reply, "Destination folder not found.");
+        if (!atLeast(destRole, "editor")) return forbidden(reply);
+      } else if (!(await canManageWorkspace(auth.userId, destinationWorkspaceId))) {
+        return forbidden(reply, "Only destination workspace admins can move a folder to the root.");
+      }
+
+      const result = await prisma
+        .$transaction(async (tx) => {
+          await lockFolderTrees(tx, [folder.workspaceId, destinationWorkspaceId]);
+          const lockedSrc = await tx.$queryRaw<Array<{ path: string; workspaceId: string }>>`
+            SELECT "path", "workspaceId" FROM "Folder" WHERE "id" = ${folder.id} AND "deletedAt" IS NULL FOR UPDATE`;
+          if (lockedSrc.length === 0) return { status: "gone" as const };
+          if (lockedSrc[0]!.workspaceId !== folder.workspaceId) return { status: "gone" as const };
+          const azSrc = await authorizeFolderRole(auth, folder.id, "manager", tx);
+          if (!azSrc.ok) return azSrc.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
+          const source = await tx.workspace.findUnique({
+            where: { id: folder.workspaceId },
+            select: { workspaceTransferEnabled: true },
+          });
+          if (!source?.workspaceTransferEnabled) return { status: "transfer_disabled" as const };
+
+          let parentPath: string | null = null;
+          if (destinationParentId) {
+            const lockedDest = await tx.$queryRaw<Array<{ path: string }>>`
+              SELECT "path" FROM "Folder"
+              WHERE "id" = ${destinationParentId} AND "workspaceId" = ${destinationWorkspaceId} AND "deletedAt" IS NULL FOR UPDATE`;
+            if (lockedDest.length === 0) return { status: "dest_missing" as const };
+            const azDest = await authorizeFolderRole(auth, destinationParentId, "editor", tx);
+            if (!azDest.ok) return azDest.status === "not_found" ? { status: "dest_missing" as const } : { status: "forbidden" as const };
+            parentPath = lockedDest[0]!.path;
+          } else if (!(await canManageWorkspace(auth.userId, destinationWorkspaceId, tx))) {
+            return { status: "forbidden" as const };
+          }
+
+          if (await siblingFolderSlugTaken(tx, destinationWorkspaceId, destinationParentId, folder.slug)) {
+            return { status: "collision" as const };
+          }
+
+          const oldPath = lockedSrc[0]!.path;
+          const newPath = buildFolderPath(parentPath, folder.slug);
+          const descendants = await descendantFolders(tx, folder.workspaceId, folder.id);
+          const folderIds = [folder.id, ...descendants.map((descendant) => descendant.id)];
+          const documents = await tx.document.findMany({
+            where: { workspaceId: folder.workspaceId, folderId: { in: folderIds }, deletedAt: null },
+            select: { id: true, path: true, supersededById: true },
+          });
+          const documentIds = documents.map((document) => document.id);
+          const movedDocumentIds = new Set(documentIds);
+
+          const storagePlan = await copyDocumentStorageForWorkspace(documentIds, destinationWorkspaceId);
+          await applyDocumentStorageTransfer(tx, storagePlan);
+          await updateDocumentScopedWorkspaceRows(tx, documentIds, destinationWorkspaceId);
+
+          await tx.folder.update({
+            where: { id: folder.id },
+            data: {
+              workspaceId: destinationWorkspaceId,
+              parentFolderId: destinationParentId,
+              path: newPath,
+              updatedById: auth.userId,
+            },
+          });
+          for (const descendant of descendants) {
+            await tx.folder.update({
+              where: { id: descendant.id },
+              data: { workspaceId: destinationWorkspaceId, path: rerootPath(descendant.path, oldPath, newPath) },
+            });
+          }
+
+          for (const document of documents) {
+            await tx.document.update({
+              where: { id: document.id },
+              data: {
+                workspaceId: destinationWorkspaceId,
+                path: rerootPath(document.path, oldPath, newPath),
+                supersededById: document.supersededById && movedDocumentIds.has(document.supersededById) ? document.supersededById : null,
+                updatedById: auth.userId,
+              },
+            });
+          }
+
+          await tx.permission.deleteMany({
+            where: {
+              workspaceId: folder.workspaceId,
+              OR: [
+                { resourceType: "folder", resourceId: { in: folderIds } },
+                ...(documentIds.length ? [{ resourceType: "document" as const, resourceId: { in: documentIds } }] : []),
+              ],
+            },
+          });
+
+          const metadata = {
+            fromWorkspaceId: folder.workspaceId,
+            toWorkspaceId: destinationWorkspaceId,
+            fromPath: oldPath,
+            toPath: newPath,
+            movedDocuments: documentIds.length,
+            movedFolders: folderIds.length,
+          };
+          await writeAuditEvent(
+            { workspaceId: folder.workspaceId, userId: auth.userId, action: "folder_workspace_moved_out", targetType: "folder", targetId: folder.id, metadata },
+            tx,
+          );
+          await writeAuditEvent(
+            { workspaceId: destinationWorkspaceId, userId: auth.userId, action: "folder_workspace_moved_in", targetType: "folder", targetId: folder.id, metadata },
+            tx,
+          );
+          return { status: "ok" as const, path: newPath, movedDocuments: documentIds.length, movedFolders: folderIds.length };
+        })
+        .catch((error) => {
+          if (isUniqueViolation(error)) return { status: "collision" as const };
+          throw error;
+        });
+
+      if (result.status === "gone" || result.status === "not_found") return notFound(reply, "Folder not found.");
+      if (result.status === "forbidden") return forbidden(reply);
+      if (result.status === "transfer_disabled") return forbidden(reply, "Workspace transfer is disabled for this workspace.");
+      if (result.status === "dest_missing") return notFound(reply, "Destination folder not found.");
+      if (result.status === "collision") return validationError(reply, { slug: "A folder with this slug already exists in the destination." });
+      return {
+        id: folder.id,
+        workspaceId: destinationWorkspaceId,
+        parentFolderId: destinationParentId,
+        path: result.path,
+        movedDocuments: result.movedDocuments,
+        movedFolders: result.movedFolders,
+      };
+    },
+  );
+
   // Delete (manager). MVP rejects non-empty folders.
   app.delete<{ Params: { id: string } }>("/api/folders/:id", async (request, reply) => {
     const auth = await requireAuth(request);
@@ -338,6 +501,73 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
     if (result.status === "forbidden") return forbidden(reply);
     if (result.status === "not_empty") return validationError(reply, { folder: "Folder is not empty. Remove its contents first." });
     return { ok: true };
+  });
+
+  // Empty (manager): soft-delete all descendants and documents while keeping this folder.
+  app.post<{ Params: { id: string }; Body?: { confirmationName?: string } }>("/api/folders/:id/empty", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const folder = await prisma.folder.findFirst({ where: { id: request.params.id, deletedAt: null } });
+    if (!folder) return notFound(reply, "Folder not found.");
+    const role = await resolveFolderRole(auth.userId, folder.id);
+    if (role === null) return notFound(reply, "Folder not found.");
+    if (!atLeast(role, "manager")) return forbidden(reply);
+    const confirmationName = request.body?.confirmationName ?? "";
+    if (confirmationName !== folder.name) {
+      return validationError(reply, { confirmationName: "Type the folder name exactly to empty this folder." });
+    }
+
+    const deletedAt = new Date();
+    const result = await prisma.$transaction(async (tx) => {
+      await lockFolderTree(tx, folder.workspaceId);
+      const locked = await tx.$queryRaw<Array<{ id: string; name: string }>>`
+        SELECT "id", "name" FROM "Folder" WHERE "id" = ${folder.id} AND "deletedAt" IS NULL FOR UPDATE`;
+      if (locked.length === 0) return { status: "gone" as const };
+      if (locked[0]!.name !== confirmationName) return { status: "confirmation_mismatch" as const };
+      const az = await authorizeFolderRole(auth, folder.id, "manager", tx);
+      if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
+
+      const descendants = await descendantFolders(tx, folder.workspaceId, folder.id);
+      const folderIds = [folder.id, ...descendants.map((descendant) => descendant.id)];
+      const documents = await tx.document.findMany({
+        where: { workspaceId: folder.workspaceId, folderId: { in: folderIds }, deletedAt: null },
+        select: { id: true },
+      });
+      const descendantFolderIds = descendants.map((descendant) => descendant.id);
+      const documentIds = documents.map((document) => document.id);
+
+      if (documentIds.length > 0) {
+        await tx.document.updateMany({ where: { id: { in: documentIds }, deletedAt: null }, data: { deletedAt } });
+        await tx.permission.deleteMany({
+          where: { workspaceId: folder.workspaceId, resourceType: "document", resourceId: { in: documentIds } },
+        });
+      }
+      if (descendantFolderIds.length > 0) {
+        await tx.folder.updateMany({ where: { id: { in: descendantFolderIds }, deletedAt: null }, data: { deletedAt } });
+        await tx.permission.deleteMany({
+          where: { workspaceId: folder.workspaceId, resourceType: "folder", resourceId: { in: descendantFolderIds } },
+        });
+      }
+
+      await writeAuditEvent(
+        {
+          workspaceId: folder.workspaceId,
+          userId: auth.userId,
+          action: "folder_emptied",
+          targetType: "folder",
+          targetId: folder.id,
+          metadata: { deletedDocuments: documentIds.length, deletedFolders: descendantFolderIds.length },
+        },
+        tx,
+      );
+      return { status: "ok" as const, deletedDocuments: documentIds.length, deletedFolders: descendantFolderIds.length };
+    });
+    if (result.status === "gone" || result.status === "not_found") return notFound(reply, "Folder not found.");
+    if (result.status === "forbidden") return forbidden(reply);
+    if (result.status === "confirmation_mismatch") {
+      return validationError(reply, { confirmationName: "Type the folder name exactly to empty this folder." });
+    }
+    return { ok: true, deletedDocuments: result.deletedDocuments, deletedFolders: result.deletedFolders };
   });
 
   // Set/clear the default role floor for the folder (manager-gated). Setting it to

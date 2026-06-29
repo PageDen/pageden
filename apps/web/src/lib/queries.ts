@@ -33,6 +33,14 @@ export const documentRelatedDocsQuery = (id: string) =>
     staleTime: 60_000,
   });
 
+export const workspaceTransferSettingsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["workspace-transfer", "settings", workspaceId],
+    queryFn: () => api.workspaceTransferSettings(workspaceId),
+    retry: false,
+    staleTime: 30_000,
+  });
+
 export const workspaceActivityQuery = (workspaceId: string) =>
   queryOptions({ queryKey: ["activity", workspaceId], queryFn: () => api.workspaceActivity(workspaceId) });
 

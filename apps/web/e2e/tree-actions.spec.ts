@@ -51,7 +51,7 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   const openMenu = async (title: string, action: string) => {
     const row = rowFor(title);
     await row.locator('summary[aria-label="More actions"]').click();
-    await row.getByRole("button", { name: action }).click();
+    await row.getByRole("button", { name: action, exact: true }).click();
   };
 
   // Rename.
@@ -88,7 +88,7 @@ test("tree actions: rename, move, permissions, delete via the row menu", async (
   await expect(page.locator("nav").getByRole("link", { name: renamed })).toHaveCount(0);
 });
 
-test("tree actions: does not expose cloud-only workspace transfer", async ({ page }) => {
+test("tree actions: exposes workspace transfer in self-host", async ({ page }) => {
   const suffix = Date.now().toString(36);
   const folderName = `Self Hosted ${suffix}`;
   const docTitle = `Local Only ${suffix}`;
@@ -103,7 +103,7 @@ test("tree actions: does not expose cloud-only workspace transfer", async ({ pag
 
   const folderRow = page.getByText(folderName, { exact: true }).locator("xpath=ancestor::div[contains(@class, 'group')][1]");
   await folderRow.locator('summary[aria-label="More actions"]').click();
-  await expect(folderRow.getByRole("button", { name: "Move to workspace" })).toHaveCount(0);
+  await expect(folderRow.getByRole("button", { name: "Move to workspace" })).toHaveCount(1);
   await folderRow.getByRole("button", { name: "New document" }).click();
 
   dialog = page.getByRole("dialog");
@@ -113,7 +113,7 @@ test("tree actions: does not expose cloud-only workspace transfer", async ({ pag
 
   const docRow = page.locator("nav").getByRole("link", { name: docTitle }).locator("xpath=ancestor::li[1]");
   await docRow.locator('summary[aria-label="More actions"]').click();
-  await expect(docRow.getByRole("button", { name: "Move to workspace" })).toHaveCount(0);
+  await expect(docRow.getByRole("button", { name: "Move to workspace" })).toHaveCount(1);
 });
 
 test("tree folders render in natural sorted order", async ({ page }) => {
