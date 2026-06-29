@@ -328,7 +328,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
         // Wait for ClamAV scan to complete (server sets SCANNING immediately after upload).
         if (attachment.status === "scanning") {
           setUploads((prev) => prev.map((u) => (u.id === uploadId ? { ...u, progress: 100, scanning: true } : u)));
-          let status: "scanning" | "ready" | "quarantined" = attachment.status;
+          let status: "scanning" | "ready" | "quarantined" | "scan_failed" = attachment.status;
           for (let i = 0; i < 60 && status === "scanning"; i++) {
             await new Promise<void>((r) => window.setTimeout(r, 2_000));
             const meta = await api.attachmentMeta(attachment.id);
@@ -336,6 +336,10 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
           }
           if (status === "quarantined") {
             showNotice("error", `"${file.name}" was blocked by the antivirus scan.`);
+            continue;
+          }
+          if (status === "scan_failed") {
+            showNotice("error", `"${file.name}" could not be scanned. Try uploading it again.`);
             continue;
           }
         }
@@ -670,7 +674,7 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
                 );
                 if (attachment.status === "scanning") {
                   setUploads((prev) => prev.map((u) => (u.id === uploadId ? { ...u, progress: 100, scanning: true } : u)));
-                  let status: "scanning" | "ready" | "quarantined" = attachment.status;
+                  let status: "scanning" | "ready" | "quarantined" | "scan_failed" = attachment.status;
                   for (let i = 0; i < 60 && status === "scanning"; i++) {
                     await new Promise<void>((r) => window.setTimeout(r, 2_000));
                     const meta = await api.attachmentMeta(attachment.id);
@@ -678,6 +682,10 @@ export function RichMarkdownEditor({ documentId, value, onChange, live }: RichMa
                   }
                   if (status === "quarantined") {
                     showNotice("error", `"${file.name}" was blocked by the antivirus scan.`);
+                    return;
+                  }
+                  if (status === "scan_failed") {
+                    showNotice("error", `"${file.name}" could not be scanned. Try uploading it again.`);
                     return;
                   }
                 }

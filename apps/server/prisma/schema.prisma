@@ -481,6 +481,7 @@ enum AttachmentStatus {
   SCANNING
   READY
   QUARANTINED
+  SCAN_FAILED
 }
 
 model Attachment {

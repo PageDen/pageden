@@ -786,7 +786,7 @@ export const searchSchema = z
 export const reindexResultSchema = z.object({ reindexed: z.number(), skipped: z.number() }).strict();
 
 // Attachments (M6 + status lifecycle)
-export const attachmentStatusSchema = z.enum(["scanning", "ready", "quarantined"]);
+export const attachmentStatusSchema = z.enum(["scanning", "ready", "quarantined", "scan_failed"]);
 
 export const attachmentSchema = z
   .object({

@@ -91,6 +91,25 @@ export async function readBlob(storageKey: string): Promise<Buffer> {
   return backend().getBytes(storageKey);
 }
 
+export async function removeStorageKey(storageKey: string): Promise<void> {
+  assertReadableKey(storageKey);
+  await backend().remove(storageKey);
+}
+
+export async function removeStoragePrefix(prefix: string): Promise<number> {
+  if (!/^workspaces\/[A-Za-z0-9_-]+\/$/.test(prefix)) {
+    throw new Error(`Refusing to remove malformed storage prefix: ${prefix}`);
+  }
+  const objects = await backend().list(prefix);
+  let removed = 0;
+  for (const obj of objects) {
+    if (!OBJECT_KEY_RE.test(obj.key) && !ATTACHMENT_KEY_RE.test(obj.key)) continue;
+    await backend().remove(obj.key);
+    removed += 1;
+  }
+  return removed;
+}
+
 // ---------------------------------------------------------------------------
 // Import zips. These deliberately live under a dedicated top-level `import/` prefix:
 // the orphan sweep only scans objects/, attachments/, and workspaces/, so a job's zip can
