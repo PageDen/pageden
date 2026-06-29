@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { flushServerAnalytics, registerServerAnalyticsListener, trackServerEvent, type ServerEventPayload } from "./analytics-bus.js";
+import {
+  flushServerAnalytics,
+  identifyServerUser,
+  registerServerAnalyticsListener,
+  trackServerEvent,
+  trackServerUserEvent,
+  type ServerEventPayload,
+  type ServerUserEventPayload,
+} from "./analytics-bus.js";
 
 afterEach(() => {
   registerServerAnalyticsListener(null);
@@ -36,13 +44,41 @@ describe("server analytics bus", () => {
       track() {
         throw new Error("track failed");
       },
+      trackUser() {
+        throw new Error("trackUser failed");
+      },
+      identify() {
+        throw new Error("identify failed");
+      },
       flush() {
         throw new Error("flush failed");
       },
     });
 
     expect(() => trackServerEvent("agent_document_saved", "workspace-1", { tokenId: "token-1" })).not.toThrow();
+    expect(() => trackServerUserEvent("user_signed_in", { userId: "user-1" })).not.toThrow();
+    expect(() => identifyServerUser("user-1", { email: "user@example.com" })).not.toThrow();
     await expect(flushServerAnalytics()).resolves.toBeUndefined();
+  });
+
+  it("sends user-scoped events and identity updates when supported", () => {
+    const track = vi.fn();
+    const trackUser = vi.fn((event: string, payload: ServerUserEventPayload) => {
+      void event;
+      void payload;
+    });
+    const identify = vi.fn();
+    registerServerAnalyticsListener({ track, trackUser, identify });
+
+    trackServerUserEvent("user_signed_in", { userId: "user-1" }, { method: "google" });
+    identifyServerUser("user-1", { email: "user@example.com", workspaceCount: 2 });
+
+    expect(track).not.toHaveBeenCalled();
+    expect(trackUser).toHaveBeenCalledWith("user_signed_in", {
+      actor: { userId: "user-1" },
+      properties: { method: "google" },
+    });
+    expect(identify).toHaveBeenCalledWith("user-1", { email: "user@example.com", workspaceCount: 2 });
   });
 
   it("flushes listener queues when provided", async () => {

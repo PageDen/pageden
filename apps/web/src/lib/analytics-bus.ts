@@ -27,6 +27,7 @@ export type EventName =
   | "document_read"
   | "document_reference_copied"
   | "document_saved"
+  | "document_marked_canonical"
   | "document_restored"
   | "folder_created"
   | "permission_granted"
@@ -34,6 +35,8 @@ export type EventName =
   | "share_link_revoked"
   | "search_performed"
   | "agent_token_created"
+  | "oauth_connect_url_copied"
+  | "oauth_readiness_tested"
   | "member_invited"
   | "vault_import_completed";
 

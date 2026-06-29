@@ -10,10 +10,9 @@
 // `node --import .../instrument.mjs`), and this module picks it up at
 // import time. Self-hosted leaves the hook unset, so the bus stays silent.
 //
-// Server-side events ALWAYS carry a workspaceId — it's the unit of analysis.
-// The bus enforces this at the type level. No identifyUser equivalent here:
-// server events are about workspace-scoped actions (agent/MCP calls, agent
-// writes, plugin pushes, imports), not user sessions.
+// Most server-side events carry a workspaceId — it's the unit of analysis.
+// A small set of auth/session events is user-scoped so cloud can identify
+// users even when browser-side analytics is blocked.
 //
 // Add new events by extending the ServerEventName union — TypeScript will
 // then force the payload at every call site.
@@ -23,13 +22,16 @@ export type ServerEventName =
   | "document_created"
   | "document_saved"
   | "search_performed"
+  | "user_signed_in"
   | "workspace_created"
+  | "agent_token_used"
   | "agent_mcp_call"
   | "agent_document_created"
   | "agent_document_saved"
   | "agent_document_read"
   | "plugin_push_completed"
-  | "import_completed";
+  | "import_completed"
+  | "member_joined";
 
 export type ServerEventProperties = Record<string, string | number | boolean | null | undefined>;
 
@@ -52,8 +54,24 @@ export type ServerEventPayload = {
   properties: ServerEventProperties;
 };
 
+export type ServerUserEventPayload = {
+  actor: ServerActor;
+  properties: ServerEventProperties;
+};
+
+export type ServerIdentityProperties = {
+  email?: string;
+  name?: string;
+  workspaceCount?: number;
+  lastAgentTokenUsedAt?: string;
+  lastDocumentReadAt?: string;
+  lastSeenAt?: string;
+};
+
 export type ServerAnalyticsListener = {
   track(event: string, payload: ServerEventPayload): void;
+  trackUser?(event: string, payload: ServerUserEventPayload): void;
+  identify?(userId: string, properties: ServerIdentityProperties): void;
   /** Optional graceful shutdown so the SDK can flush its queue. */
   flush?(): Promise<void> | void;
 };
@@ -89,6 +107,30 @@ export function trackServerEvent(
       actor,
       properties: { ...properties, workspace_id: workspaceId },
     });
+  } catch {
+    // never throw from telemetry
+  }
+}
+
+/** Emit a user-scoped server event. Use this when no workspace context is available. */
+export function trackServerUserEvent(
+  event: ServerEventName,
+  actor: ServerActor,
+  properties: ServerEventProperties = {},
+): void {
+  if (!listener?.trackUser) return;
+  try {
+    listener.trackUser(event, { actor, properties });
+  } catch {
+    // never throw from telemetry
+  }
+}
+
+/** Associate server-observed auth/session activity with a user profile. */
+export function identifyServerUser(userId: string, properties: ServerIdentityProperties = {}): void {
+  if (!userId || !listener?.identify) return;
+  try {
+    listener.identify(userId, properties);
   } catch {
     // never throw from telemetry
   }
