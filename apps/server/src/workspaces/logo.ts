@@ -6,6 +6,7 @@ import { canManageWorkspace } from "../permissions/index.js";
 import { writeAuditEvent } from "../audit.js";
 import { notFound, validationError } from "../errors.js";
 import { writeBlob, readBlob } from "../storage.js";
+import { StorageNotFoundError } from "../storage/backend.js";
 
 export const MAX_LOGO_BYTES = 512 * 1024; // 512 KiB
 
@@ -173,7 +174,17 @@ export async function registerWorkspaceLogoRoutes(app: FastifyInstance): Promise
       select: { logoStorageKey: true, logoContentType: true, logoSha: true },
     });
     if (!ws?.logoStorageKey) return notFound(reply, "Logo not found.");
-    const bytes = await readBlob(ws.logoStorageKey);
+    let bytes: Buffer;
+    try {
+      bytes = await readBlob(ws.logoStorageKey);
+    } catch (err) {
+      if (!(err instanceof StorageNotFoundError)) throw err;
+      await prisma.workspace.updateMany({
+        where: { id: request.params.id, logoStorageKey: ws.logoStorageKey },
+        data: { logoStorageKey: null, logoContentType: null, logoSha: null },
+      });
+      return notFound(reply, "Logo not found.");
+    }
     return reply
       .header("content-type", ws.logoContentType ?? "application/octet-stream")
       .header("x-content-type-options", "nosniff")
