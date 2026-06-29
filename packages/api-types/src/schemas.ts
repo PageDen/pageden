@@ -347,11 +347,15 @@ export const documentCommentSchema = z
     resolvedById: z.string().nullable(),
     createdAt: iso,
     updatedAt: iso,
+    mentionedUserIds: z.array(z.string()),
   })
   .strict();
 
 export const documentCommentsListSchema = z.object({ comments: z.array(documentCommentSchema) }).strict();
 export const documentCommentResponseSchema = z.object({ comment: documentCommentSchema }).strict();
+export const documentCommentMentionUsersSchema = z
+  .object({ users: z.array(z.object({ id: z.string(), email: z.string(), name: z.string() }).strict()) })
+  .strict();
 
 export const documentClaimSchema = z
   .object({

@@ -19,6 +19,7 @@ import {
   dashboardStatsSchema,
   documentCommentsListSchema,
   documentCommentResponseSchema,
+  documentCommentMentionUsersSchema,
   workspaceClaimsListSchema,
   groupCreateSchema,
   groupsListSchema,
@@ -257,12 +258,14 @@ export const api = {
       `/documents/${encodeURIComponent(documentId)}/comments${includeResolved ? "?includeResolved=true" : ""}`,
       { schema: documentCommentsListSchema },
     ),
-  addDocumentComment: (documentId: string, payload: { body: string; sectionAnchor?: string | null }) =>
+  addDocumentComment: (documentId: string, payload: { body: string; sectionAnchor?: string | null; mentionedUserIds?: string[] }) =>
     request(
       "POST",
       `/documents/${encodeURIComponent(documentId)}/comments`,
       { body: payload, schema: documentCommentResponseSchema },
     ),
+  documentCommentMentionUsers: (documentId: string) =>
+    request("GET", `/documents/${encodeURIComponent(documentId)}/comment-mention-users`, { schema: documentCommentMentionUsersSchema }),
   resolveComment: (commentId: string) =>
     request("POST", `/comments/${encodeURIComponent(commentId)}/resolve`, { schema: documentCommentResponseSchema }),
   deleteComment: (commentId: string) => request("DELETE", `/comments/${encodeURIComponent(commentId)}`, { schema: okSchema }),

@@ -4,6 +4,8 @@ import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
+import { env } from "../env.js";
+import { getMailer } from "../mailer.js";
 
 // Inline comments live alongside the document but are NOT part of the doc
 // content — they're a coordination signal so multiple agents/humans can leave
@@ -16,6 +18,21 @@ const MAX_BODY = 4_000;
 const MAX_LABEL = 80;
 const MAX_NOTE = 400;
 const MAX_SECTION_ANCHOR = 200;
+const MAX_MENTIONS = 20;
+
+function stripDocumentExtension(path: string): string {
+  return path.replace(/\.md$/i, "");
+}
+
+function documentUrl(workspaceId: string, path: string, commentId?: string): string {
+  const readablePath = stripDocumentExtension(path)
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  const hash = commentId ? `#comment-${encodeURIComponent(commentId)}` : "";
+  return `${env.appUrl}/w/${encodeURIComponent(workspaceId)}/p/${readablePath}${hash}`;
+}
 
 function clip(value: string | null | undefined, max: number): string | null {
   if (value === undefined || value === null) return null;
@@ -42,6 +59,7 @@ interface CommentRow {
   resolvedById: string | null;
   createdAt: Date;
   updatedAt: Date;
+  mentions?: Array<{ userId: string }>;
 }
 
 function toCommentDto(row: CommentRow) {
@@ -56,15 +74,110 @@ function toCommentDto(row: CommentRow) {
     authorLabel: row.authorLabel,
     resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : null,
     resolvedById: row.resolvedById,
+    mentionedUserIds: row.mentions?.map((mention) => mention.userId) ?? [],
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
 
+function normalizeMentionedUserIds(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const ids = input.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean);
+  return [...new Set(ids)].slice(0, MAX_MENTIONS);
+}
+
+async function visibleMentionTargets(documentId: string, userIds: string[]): Promise<Set<string>> {
+  const visible = new Set<string>();
+  for (const userId of userIds) {
+    if (await resolveDocumentRole(userId, documentId)) visible.add(userId);
+  }
+  return visible;
+}
+
+async function writeCommentMentionEmailAudit(input: {
+  workspaceId: string;
+  documentId: string;
+  commentId: string;
+  actorUserId: string;
+  recipientUserId: string;
+  recipientEmail: string;
+  status: "sent" | "failed";
+  error?: unknown;
+  log: { warn: (payload: object, message?: string) => void };
+}): Promise<void> {
+  try {
+    await writeAuditEvent({
+      workspaceId: input.workspaceId,
+      userId: input.actorUserId,
+      action: input.status === "sent" ? "comment_mention_email_sent" : "comment_mention_email_failed",
+      targetType: "document_comment",
+      targetId: input.commentId,
+      metadata: {
+        documentId: input.documentId,
+        recipientUserId: input.recipientUserId,
+        recipientEmail: input.recipientEmail,
+        ...(input.error instanceof Error ? { error: input.error.message } : input.error ? { error: String(input.error) } : {}),
+      },
+    });
+  } catch (auditErr) {
+    input.log.warn({ err: auditErr, commentId: input.commentId }, "comment mention email audit write failed");
+  }
+}
+
+async function sendCommentMentionNotifications(input: {
+  auth: AuthContext;
+  doc: { id: string; workspaceId: string; title: string; path: string; workspace: { name: string } };
+  comment: ReturnType<typeof toCommentDto>;
+  recipients: Array<{ id: string; email: string; name: string }>;
+  log: { warn: (payload: object, message?: string) => void };
+}): Promise<void> {
+  const actor = await prisma.user.findUnique({ where: { id: input.auth.userId }, select: { email: true, name: true } });
+  const openUrl = documentUrl(input.doc.workspaceId, input.doc.path, input.comment.id);
+  await Promise.all(
+    input.recipients.map(async (recipient) => {
+      try {
+        await getMailer().sendCommentMentioned(recipient.email, {
+          actorName: actor?.name || actor?.email || "A teammate",
+          actorEmail: actor?.email,
+          workspaceName: input.doc.workspace.name,
+          documentTitle: input.doc.title,
+          documentPath: input.doc.path,
+          commentBody: input.comment.body,
+          openUrl,
+        });
+        await writeCommentMentionEmailAudit({
+          workspaceId: input.doc.workspaceId,
+          documentId: input.doc.id,
+          commentId: input.comment.id,
+          actorUserId: input.auth.userId,
+          recipientUserId: recipient.id,
+          recipientEmail: recipient.email,
+          status: "sent",
+          log: input.log,
+        });
+      } catch (err) {
+        input.log.warn({ err, commentId: input.comment.id, recipientUserId: recipient.id }, "comment mention email failed");
+        await writeCommentMentionEmailAudit({
+          workspaceId: input.doc.workspaceId,
+          documentId: input.doc.id,
+          commentId: input.comment.id,
+          actorUserId: input.auth.userId,
+          recipientUserId: recipient.id,
+          recipientEmail: recipient.email,
+          status: "failed",
+          error: err,
+          log: input.log,
+        });
+      }
+    }),
+  );
+}
+
 export async function createComment(
   auth: AuthContext,
   documentId: string,
-  input: { body: string; sectionAnchor?: string | null },
+  input: { body: string; sectionAnchor?: string | null; mentionedUserIds?: unknown },
+  log: { warn: (payload: object, message?: string) => void } = console,
 ): Promise<{ status: "ok"; comment: ReturnType<typeof toCommentDto> } | { status: "not_found" } | { status: "validation"; field: string; message: string }> {
   const body = clip(input.body, MAX_BODY);
   if (!body) return { status: "validation", field: "body", message: "Comment body is required." };
@@ -72,12 +185,16 @@ export async function createComment(
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
-    select: { id: true, workspaceId: true, folderId: true },
+    select: { id: true, workspaceId: true, folderId: true, title: true, path: true, workspace: { select: { name: true } } },
   });
   if (!doc) return { status: "not_found" };
   if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) return { status: "not_found" };
   const role = await resolveDocumentRole(auth.userId, doc.id);
   if (!role) return { status: "not_found" };
+  const mentionedUserIds = normalizeMentionedUserIds(input.mentionedUserIds);
+  const visibleMentionedUserIds = await visibleMentionTargets(doc.id, mentionedUserIds);
+  const invalidMention = mentionedUserIds.find((userId) => !visibleMentionedUserIds.has(userId));
+  if (invalidMention) return { status: "validation", field: "mentionedUserIds", message: "Every mentioned user must be able to read this document." };
 
   const created = await prisma.documentComment.create({
     data: {
@@ -88,7 +205,12 @@ export async function createComment(
       authorTokenId: auth.tokenId ?? null,
       authorLabel: clip(authorLabelFor(auth, null), MAX_LABEL),
       body,
+      mentions:
+        mentionedUserIds.length > 0
+          ? { createMany: { data: mentionedUserIds.map((userId) => ({ workspaceId: doc.workspaceId, documentId: doc.id, userId })) } }
+          : undefined,
     },
+    include: { mentions: { select: { userId: true } } },
   });
   await writeAuditEvent({
     workspaceId: doc.workspaceId,
@@ -98,7 +220,38 @@ export async function createComment(
     targetId: created.id,
     metadata: { documentId: doc.id, sectionAnchor, tokenId: auth.tokenId, tokenKind: auth.tokenKind },
   });
-  return { status: "ok", comment: toCommentDto(created) };
+  const comment = toCommentDto(created);
+  const notifyUserIds = mentionedUserIds;
+  if (notifyUserIds.length > 0) {
+    const recipients = await prisma.user.findMany({ where: { id: { in: notifyUserIds } }, select: { id: true, email: true, name: true } });
+    await sendCommentMentionNotifications({ auth, doc, comment, recipients, log });
+  }
+  return { status: "ok", comment };
+}
+
+export async function listCommentMentionUsers(
+  auth: AuthContext,
+  documentId: string,
+): Promise<{ status: "ok"; users: Array<{ id: string; email: string; name: string }> } | { status: "not_found" }> {
+  const doc = await prisma.document.findFirst({
+    where: { id: documentId, deletedAt: null },
+    select: { id: true, workspaceId: true },
+  });
+  if (!doc) return { status: "not_found" };
+  if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) return { status: "not_found" };
+  const role = await resolveDocumentRole(auth.userId, doc.id);
+  if (!role) return { status: "not_found" };
+
+  const memberships = await prisma.workspaceMembership.findMany({
+    where: { workspaceId: doc.workspaceId },
+    select: { user: { select: { id: true, email: true, name: true } } },
+    orderBy: { user: { email: "asc" } },
+  });
+  const users: Array<{ id: string; email: string; name: string }> = [];
+  for (const membership of memberships) {
+    if (await resolveDocumentRole(membership.user.id, doc.id)) users.push(membership.user);
+  }
+  return { status: "ok", users };
 }
 
 export async function listComments(
@@ -119,6 +272,7 @@ export async function listComments(
   const rows = await prisma.documentComment.findMany({
     where,
     orderBy: [{ resolvedAt: { sort: "asc", nulls: "first" } }, { createdAt: "asc" }],
+    include: { mentions: { select: { userId: true } } },
   });
   return { status: "ok", comments: rows.map(toCommentDto) };
 }
@@ -202,10 +356,23 @@ export async function registerCommentRoutes(app: FastifyInstance): Promise<void>
       const result = await createComment(auth, request.params.id, {
         body: request.body?.body ?? "",
         sectionAnchor: request.body?.sectionAnchor ?? null,
-      });
+        mentionedUserIds: (request.body as { mentionedUserIds?: unknown } | undefined)?.mentionedUserIds,
+      }, request.log);
       if (result.status === "not_found") return notFound(reply, "Document not found.");
       if (result.status === "validation") return validationError(reply, { [result.field]: result.message });
       return reply.code(201).send({ comment: result.comment });
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/documents/:id/comment-mention-users",
+    { config: { rateLimit: { max: Number(process.env.COMMENTS_READ_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "read");
+      const result = await listCommentMentionUsers(auth, request.params.id);
+      if (result.status === "not_found") return notFound(reply, "Document not found.");
+      return { users: result.users };
     },
   );
 

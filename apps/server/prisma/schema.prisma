@@ -99,6 +99,7 @@ model User {
   createdAllowedEmailDomains WorkspaceAllowedEmailDomain[] @relation("AllowedEmailDomainCreatedBy")
   createdWorkspaceIntegrations WorkspaceIntegration[] @relation("WorkspaceIntegrationCreatedBy")
   externalAccountLinks    ExternalAccountLink[]
+  mentionedInComments     DocumentCommentMention[] @relation("DocumentCommentMentionUser")
 }
 
 model Workspace {
@@ -284,9 +285,27 @@ model DocumentComment {
   authorUser    User?     @relation("DocumentCommentAuthor", fields: [authorUserId], references: [id])
   authorToken   ApiToken? @relation("DocumentCommentAuthorToken", fields: [authorTokenId], references: [id])
   resolvedBy    User?     @relation("DocumentCommentResolver", fields: [resolvedById], references: [id])
+  mentions      DocumentCommentMention[]
 
   @@index([documentId, resolvedAt])
   @@index([workspaceId, resolvedAt])
+}
+
+// @mentions on a comment. Each row notifies one mentioned user; the unique
+// (commentId, userId) prevents duplicate mentions of the same person.
+model DocumentCommentMention {
+  id          String          @id @default(cuid())
+  workspaceId String
+  documentId  String
+  commentId   String
+  userId      String
+  createdAt   DateTime        @default(now())
+  comment     DocumentComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user        User            @relation("DocumentCommentMentionUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@index([documentId, userId])
+  @@index([workspaceId, userId])
 }
 
 // Per-token (or per-user) bookmark: where this caller was the last time they

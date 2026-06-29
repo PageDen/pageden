@@ -5,6 +5,17 @@ export interface Mailer {
   sendPasswordReset(to: string, resetUrl: string): Promise<void>;
   sendEmailVerification(to: string, verifyUrl: string): Promise<void>;
   sendPermissionGranted(to: string, input: PermissionGrantedEmail): Promise<void>;
+  sendCommentMentioned(to: string, input: CommentMentionedEmail): Promise<void>;
+}
+
+export interface CommentMentionedEmail {
+  actorName: string;
+  actorEmail?: string;
+  workspaceName: string;
+  documentTitle: string;
+  documentPath?: string;
+  commentBody: string;
+  openUrl: string;
 }
 
 export interface PermissionGrantedEmail {
@@ -51,6 +62,32 @@ function permissionGrantedMessage(input: PermissionGrantedEmail): { subject: str
     `<p>${escapeHtml(actor)} shared <strong>${escapeHtml(input.resourceName)}</strong> with you as <strong>${escapeHtml(role)}</strong> in ${escapeHtml(input.workspaceName)}.</p>`,
     `<p><a href="${escapeHtml(input.openUrl)}">Open in Pageden</a></p>`,
     "<p>If you were not expecting this, you can ignore this email.</p>",
+  ].join("");
+  return { subject, text, html };
+}
+
+function commentMentionedMessage(input: CommentMentionedEmail): { subject: string; text: string; html: string } {
+  const actor = input.actorName || input.actorEmail || "A teammate";
+  const excerpt = input.commentBody.trim().slice(0, 500);
+  const location = input.documentPath ? `Document path: ${input.documentPath}` : null;
+  const subject = `${actor} mentioned you in a Pageden comment`;
+  const text = [
+    `${actor} mentioned you in a comment in ${input.workspaceName}.`,
+    `Document: ${input.documentTitle}`,
+    ...(location ? [location] : []),
+    "",
+    "Comment:",
+    excerpt,
+    "",
+    "Open the comment in Pageden:",
+    input.openUrl,
+  ].join("\n");
+  const html = [
+    `<p>${escapeHtml(actor)} mentioned you in a comment in ${escapeHtml(input.workspaceName)}.</p>`,
+    `<p><strong>Document:</strong> ${escapeHtml(input.documentTitle)}</p>`,
+    ...(location ? [`<p><strong>Path:</strong> ${escapeHtml(input.documentPath!)}</p>`] : []),
+    `<blockquote style="border-left:3px solid #f97316;margin:0 0 16px;padding-left:12px;color:#334155">${escapeHtml(excerpt)}</blockquote>`,
+    `<p><a href="${escapeHtml(input.openUrl)}">Open the comment in Pageden</a></p>`,
   ].join("");
   return { subject, text, html };
 }
@@ -104,6 +141,9 @@ export function createMailer(): Mailer {
       async sendPermissionGranted(to, input) {
         console.log(`[mailer:dev] permission grant for ${to}: ${input.openUrl}`);
       },
+      async sendCommentMentioned(to, input) {
+        console.log(`[mailer:dev] comment mention for ${to}: ${input.openUrl}`);
+      },
     };
   }
   return {
@@ -125,6 +165,10 @@ export function createMailer(): Mailer {
     },
     async sendPermissionGranted(to, input) {
       const message = permissionGrantedMessage(input);
+      await send(to, message.subject, message.text, message.html);
+    },
+    async sendCommentMentioned(to, input) {
+      const message = commentMentionedMessage(input);
       await send(to, message.subject, message.text, message.html);
     },
   };
