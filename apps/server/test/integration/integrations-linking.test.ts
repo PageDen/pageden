@@ -707,7 +707,7 @@ describe("REST-mode write action endpoints", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("file-attach: 400 when fileUrl is unreachable", async () => {
+  it("file-attach: 400 when only fileUrl is provided", async () => {
     const { s, auth } = await setupWriteActions();
     const res = await req({
       method: "POST",

@@ -1,7 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { isUniqueViolation, validationError } from "../errors.js";
 import { requireAuth } from "../auth.js";
 import { env } from "../env.js";
@@ -76,46 +74,6 @@ function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
-}
-
-function isBlockedAddress(host: string): boolean {
-  const normalized = host.toLowerCase();
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
-
-  const ipVersion = isIP(normalized);
-  if (ipVersion === 4) {
-    const [a = 0, b = 0] = normalized.split(".").map((part) => Number(part));
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      a >= 224
-    );
-  }
-  if (ipVersion === 6) {
-    return normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
-  }
-  return false;
-}
-
-async function validateExternalFileUrl(raw: string): Promise<URL | null> {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-  if (parsed.username || parsed.password) return null;
-  if (isBlockedAddress(parsed.hostname)) return null;
-
-  const addresses = await lookup(parsed.hostname, { all: true, verbatim: false });
-  if (addresses.length === 0 || addresses.some((entry) => isBlockedAddress(entry.address))) return null;
-  return parsed;
 }
 
 function parseBasicAuth(request: FastifyRequest): { clientId: string; clientSecret: string } | null {
@@ -1180,10 +1138,9 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
 
     const documentId = request.body.documentId?.trim() || null;
     const docPath = request.body.path?.trim() || null;
-    const fileUrl = request.body.fileUrl?.trim() || null;
     const fileContent = request.body.fileContent?.trim() || null;
     if (!documentId && !docPath) return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
-    if (!fileUrl && !fileContent) return reply.code(400).send({ error: "bad_request", message: "fileUrl or fileContent is required." });
+    if (!fileContent) return reply.code(400).send({ error: "bad_request", message: "fileContent is required." });
 
     const doc = await prisma.document.findFirst({
       where: documentId
@@ -1193,35 +1150,19 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     });
     if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
 
-    // Get file buffer — either from base64 content or by downloading from URL
+    // Get file buffer from caller-supplied base64 content. Remote URL fetching is
+    // intentionally unsupported here to avoid a server-side request forgery surface.
     let fileBuffer: Buffer;
-    let detectedFilename: string;
-    let contentType: string;
-    if (fileContent) {
-      try {
-        fileBuffer = Buffer.from(fileContent, "base64");
-      /* v8 ignore next 2 */
-      } catch {
-        return reply.code(400).send({ error: "bad_request", message: "fileContent is not valid base64." });
-      }
-      detectedFilename = request.body.filename?.trim() || "attachment";
-      const ext = detectedFilename.split(".").pop()?.toLowerCase() || "";
-      const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json", zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", doc: "application/msword", xls: "application/vnd.ms-excel", ppt: "application/vnd.ms-powerpoint" };
-      contentType = MIME[ext] ?? "application/octet-stream";
-    } else {
-      try {
-        const safeFileUrl = await validateExternalFileUrl(fileUrl!);
-        if (!safeFileUrl) return reply.code(400).send({ error: "bad_request", message: "fileUrl must be a public http(s) URL." });
-        const resp = await fetch(safeFileUrl, { signal: AbortSignal.timeout(30_000) });
-        if (!resp.ok) return reply.code(400).send({ error: "bad_request", message: `Could not fetch file: HTTP ${resp.status}` });
-        fileBuffer = Buffer.from(await resp.arrayBuffer());
-        contentType = resp.headers.get("content-type")?.split(";")[0]?.trim() || "application/octet-stream";
-        detectedFilename = request.body.filename?.trim() || decodeURIComponent(safeFileUrl.pathname.split("/").pop() || "attachment");
-      /* v8 ignore next 2 */
-      } catch {
-        return reply.code(400).send({ error: "bad_request", message: "Failed to download file from the provided URL." });
-      }
+    try {
+      fileBuffer = Buffer.from(fileContent, "base64");
+    /* v8 ignore next 2 */
+    } catch {
+      return reply.code(400).send({ error: "bad_request", message: "fileContent is not valid base64." });
     }
+    const detectedFilename = request.body.filename?.trim() || "attachment";
+    const ext = detectedFilename.split(".").pop()?.toLowerCase() || "";
+    const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json", zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", doc: "application/msword", xls: "application/vnd.ms-excel", ppt: "application/vnd.ms-powerpoint" };
+    const contentType = MIME[ext] ?? "application/octet-stream";
 
     try {
       const { attachment } = await createDocumentAttachment({
