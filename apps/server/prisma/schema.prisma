@@ -564,7 +564,7 @@ model McpOAuthCode {
   jti           String    @unique
   codeHash      String?   @unique // HMAC of the opaque authorization code returned to the client
   userId        String
-  workspaceId   String
+  workspaceId   String?   // null = all-workspaces unscoped token
   clientId      String
   redirectUri   String
   codeChallenge String? // PKCE S256 challenge; nullable only for pre-migration short-lived rows
@@ -573,11 +573,18 @@ model McpOAuthCode {
   consumedAt    DateTime?
   createdAt     DateTime  @default(now())
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
   @@index([userId])
   @@index([workspaceId])
+}
+
+model McpOAuthClient {
+  id           String   @id
+  redirectUris String[]
+  clientName   String?
+  createdAt    DateTime @default(now())
 }
 
 // Public share link for a single document. Anonymous /s/:slug returns sanitized
