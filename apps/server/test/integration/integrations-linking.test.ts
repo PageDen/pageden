@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { getApp, closeApp, req, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
