@@ -145,7 +145,7 @@ export function PeopleCombobox({
         </label>
         {helper ? <p className="mt-1 text-xs text-slate-500">{helper}</p> : null}
       </div>
-      <div className="grid gap-2 sm:grid-cols-[minmax(14rem,1fr)_8rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_6.5rem] gap-2">
         <div className="relative">
           <Input
             id={inputId}

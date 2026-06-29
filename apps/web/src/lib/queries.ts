@@ -51,6 +51,14 @@ export const workspaceClaimsQuery = (workspaceId: string) =>
 export const documentCommentsQuery = (documentId: string) =>
   queryOptions({ queryKey: ["document", documentId, "comments"], queryFn: () => api.documentComments(documentId) });
 
+export const documentCommentMentionUsersQuery = (documentId: string) =>
+  queryOptions({
+    queryKey: ["document", documentId, "comment-mention-users"],
+    queryFn: () => api.documentCommentMentionUsers(documentId),
+    retry: false,
+    staleTime: 60_000,
+  });
+
 export const revisionsQuery = (id: string) =>
   queryOptions({ queryKey: ["revisions", id], queryFn: () => api.revisions(id) });
 
