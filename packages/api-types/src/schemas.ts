@@ -61,6 +61,21 @@ export const meResponseSchema = z
   .strict();
 
 export const okSchema = z.object({ ok: z.literal(true) }).strict();
+
+export const accountDeletionPreviewSchema = z
+  .object({
+    userEmail: z.string(),
+    soleWorkspaces: z.array(z.object({ id: z.string(), name: z.string() }).strict()),
+    sharedWorkspaces: z.array(z.object({ id: z.string(), name: z.string(), otherMemberCount: z.number() }).strict()),
+  })
+  .strict();
+
+export const accountDeletionCodeSchema = z.object({ ok: z.literal(true), expiresAt: iso }).strict();
+
+export const accountDeletionResultSchema = z
+  .object({ ok: z.literal(true), deletedWorkspaces: z.number(), removedStorageObjects: z.number() })
+  .strict();
+
 export const authConfigSchema = z
   .object({
     googleEnabled: z.boolean(),

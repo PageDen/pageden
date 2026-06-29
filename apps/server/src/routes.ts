@@ -22,6 +22,14 @@ import { registerImportRoutes } from "./import/routes.js";
 import { normalizeWorkspaceSubdomain, requestHost, validateWorkspaceSubdomain, workspaceRouteFromHost } from "./workspaces/domains.js";
 import { resolveReturnOrigin, sharedCookieDomain } from "./auth-origin.js";
 import { getSignupGuardCaptcha, runSignupGuard } from "./signup-guard.js";
+import {
+  ACCOUNT_DELETION_CONFIRMATION,
+  accountDeletionPreview,
+  createAccountDeletionCode,
+  deleteAccountAndData,
+  generateAccountDeletionCode,
+  hashAccountDeletionCode,
+} from "./account-deletion.js";
 import { registerWorkspaceInsightsRoutes } from "./workspaces/insights.js";
 import { registerWorkspaceLogoRoutes, workspaceLogoUrl } from "./workspaces/logo.js";
 import { registerAuditLogRoutes } from "./workspaces/audit-log.js";
@@ -269,6 +277,74 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
     return { ok: true };
   });
+
+  app.get("/api/account/deletion-preview", async (request, reply) => {
+    const auth = await requireAuth(request);
+    if (auth.authType !== "session") return forbidden(reply);
+    return accountDeletionPreview(auth.userId);
+  });
+
+  app.post(
+    "/api/account/deletion-code",
+    {
+      config: {
+        rateLimit: { max: Number(process.env.ACCOUNT_DELETION_CODE_RATE_LIMIT_MAX ?? 3), timeWindow: "10 minutes" },
+      },
+    },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      if (auth.authType !== "session") return forbidden(reply);
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: auth.userId }, select: { email: true } });
+      const code = generateAccountDeletionCode();
+      const expiresAt = await createAccountDeletionCode(auth.userId, code, request.ip);
+      await getMailer().sendAccountDeletionCode(user.email, code);
+      await writeAuditEvent({
+        userId: auth.userId,
+        action: "account_deletion_code_sent",
+        targetType: "user",
+        targetId: auth.userId,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+      return { ok: true, expiresAt: expiresAt.toISOString() };
+    },
+  );
+
+  app.delete<{ Body: { confirm?: string; code?: string } }>(
+    "/api/account",
+    {
+      config: {
+        rateLimit: { max: Number(process.env.ACCOUNT_DELETION_RATE_LIMIT_MAX ?? 5), timeWindow: "10 minutes" },
+      },
+    },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      if (auth.authType !== "session") return forbidden(reply);
+      const confirm = request.body?.confirm ?? "";
+      const code = request.body?.code?.trim() ?? "";
+      const fields: Record<string, string> = {};
+      if (confirm !== ACCOUNT_DELETION_CONFIRMATION) fields.confirm = `Type ${ACCOUNT_DELETION_CONFIRMATION} to confirm.`;
+      if (!/^\d{6}$/.test(code)) fields.code = "Enter the 6-digit code from your email.";
+      if (Object.keys(fields).length > 0) return validationError(reply, fields);
+
+      const claim = await prisma.accountDeletionCode.updateMany({
+        where: {
+          userId: auth.userId,
+          codeHash: hashAccountDeletionCode(auth.userId, code),
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { usedAt: new Date() },
+      });
+      if (claim.count !== 1) return validationError(reply, { code: "This code is invalid or expired." });
+
+      const result = await deleteAccountAndData(auth.userId, (error) => {
+        request.log.error(error, "account storage cleanup failed after account deletion");
+      });
+      reply.clearCookie(SESSION_COOKIE, { path: "/", ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}) });
+      return { ok: true, deletedWorkspaces: result.deletedWorkspaces, removedStorageObjects: result.removedStorageObjects };
+    },
+  );
 
   // Change the signed-in user's password: verify the current one, then store a fresh argon2id hash.
   // Rate-limited because it verifies a password (brute-force vector even from a valid session).

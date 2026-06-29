@@ -4,6 +4,7 @@
 export interface Mailer {
   sendPasswordReset(to: string, resetUrl: string): Promise<void>;
   sendEmailVerification(to: string, verifyUrl: string): Promise<void>;
+  sendAccountDeletionCode(to: string, code: string): Promise<void>;
   sendPermissionGranted(to: string, input: PermissionGrantedEmail): Promise<void>;
   sendCommentMentioned(to: string, input: CommentMentionedEmail): Promise<void>;
 }
@@ -138,6 +139,9 @@ export function createMailer(): Mailer {
       async sendEmailVerification(to, verifyUrl) {
         console.log(`[mailer:dev] verify email for ${to}: ${verifyUrl}`);
       },
+      async sendAccountDeletionCode(to, code) {
+        console.log(`[mailer:dev] account deletion code for ${to}: ${code}`);
+      },
       async sendPermissionGranted(to, input) {
         console.log(`[mailer:dev] permission grant for ${to}: ${input.openUrl}`);
       },
@@ -161,6 +165,14 @@ export function createMailer(): Mailer {
         "Verify your Pageden email",
         `Confirm your email address using this link:\n\n${verifyUrl}`,
         `<p>Confirm your Pageden email address:</p><p><a href="${escapeHtml(verifyUrl)}">Verify email</a></p>`,
+      );
+    },
+    async sendAccountDeletionCode(to, code) {
+      await send(
+        to,
+        "Confirm Pageden account deletion",
+        `Use this code to delete your Pageden account: ${code}\n\nThis code expires in 10 minutes. If you did not request this, change your password.`,
+        `<p>Use this code to delete your Pageden account:</p><p><strong style="font-size:20px;letter-spacing:0.08em">${escapeHtml(code)}</strong></p><p>This code expires in 10 minutes. If you did not request this, change your password.</p>`,
       );
     },
     async sendPermissionGranted(to, input) {

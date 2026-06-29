@@ -1,6 +1,9 @@
 import type { z } from "zod";
 import {
   currentWorkspaceSchema,
+  accountDeletionCodeSchema,
+  accountDeletionPreviewSchema,
+  accountDeletionResultSchema,
   workspaceAvailabilitySchema,
   workspaceCreateSchema,
   workspaceLogoSchema,
@@ -223,6 +226,11 @@ export const api = {
   authConfig: () => request("GET", "/auth/config", { schema: authConfigSchema }),
   changePassword: (currentPassword: string, newPassword: string) =>
     request("POST", "/auth/change-password", { body: { currentPassword, newPassword }, schema: okSchema }),
+  accountDeletionPreview: () => request("GET", "/account/deletion-preview", { schema: accountDeletionPreviewSchema }),
+  sendAccountDeletionCode: () =>
+    request("POST", "/account/deletion-code", { schema: accountDeletionCodeSchema }),
+  deleteAccount: (confirm: string, code: string) =>
+    request("DELETE", "/account", { body: { confirm, code }, schema: accountDeletionResultSchema }),
   forgotPassword: (email: string, captchaToken?: string) =>
     request("POST", "/auth/forgot-password", { body: { email, captchaToken }, schema: okSchema }),
   resetPassword: (token: string, password: string) =>
