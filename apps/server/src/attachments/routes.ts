@@ -6,7 +6,7 @@ import { writeAuditEvent } from "../audit.js";
 import { verifyUploadGrant } from "./upload-grant.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
-import { readBlob, writeBlob, sweepOrphanObjects } from "../storage.js";
+import { readBlob, readContent, writeBlob, sweepOrphanObjects } from "../storage.js";
 import { kickScanWorker, recoverStuckScanJobs } from "./scanner.js";
 import { canManageWorkspace } from "../permissions/index.js";
 
@@ -56,7 +56,7 @@ function attachmentDto(a: {
     contentType: a.contentType,
     size: a.size,
     sha256: a.sha256,
-    status: a.status.toLowerCase() as "scanning" | "ready" | "quarantined",
+    status: a.status.toLowerCase() as "scanning" | "ready" | "quarantined" | "scan_failed",
     createdAt: a.createdAt.toISOString(),
   };
 }
@@ -253,7 +253,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
   });
 
   // Download an attachment's bytes (read on the parent document required).
-  // QUARANTINED attachments are not downloadable.
+  // QUARANTINED and SCAN_FAILED attachments are not downloadable.
     instance.get<{ Params: { attachmentId: string } }>("/api/attachments/:attachmentId", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "attachments");
@@ -265,6 +265,9 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     if (role === null) return notFound(reply, "Attachment not found."); // hide existence
     if (attachment.status === AttachmentStatus.SCANNING) {
       return reply.code(503).header("retry-after", "5").send({ error: "scan_pending", message: "Attachment is being scanned. Try again shortly." });
+    }
+    if (attachment.status === AttachmentStatus.SCAN_FAILED) {
+      return reply.code(503).send({ error: "scan_failed", message: "Attachment virus scan failed. Try uploading again or contact an admin." });
     }
     if (attachment.status === AttachmentStatus.QUARANTINED) return forbidden(reply);
     const bytes = await readBlob(attachment.storageKey);
@@ -288,6 +291,29 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     const role = await resolveDocumentRole(auth.userId, attachment.documentId);
     if (role === null) return notFound(reply, "Attachment not found."); // hide existence
     if (!atLeast(role, "editor")) return forbidden(reply);
+
+    const doc = await prisma.document.findUnique({
+      where: { id: attachment.documentId },
+      select: { currentVersionId: true },
+    });
+    if (doc?.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) {
+        const content = await readContent(revision.storageKey);
+        const relativeUrl = `/api/attachments/${attachment.id}`;
+        const encodedUrl = encodeURI(relativeUrl);
+        if (content.includes(relativeUrl) || content.includes(encodedUrl)) {
+          return reply.code(409).send({
+            error: "attachment_linked",
+            message: "This attachment is still linked in the document. Remove the link first, then delete.",
+          });
+        }
+      }
+    }
+
     await prisma.attachment.update({ where: { id: attachment.id }, data: { deletedAt: new Date() } });
     await writeAuditEvent({
       workspaceId: attachment.workspaceId,

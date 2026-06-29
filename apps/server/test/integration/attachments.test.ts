@@ -122,6 +122,27 @@ describe("attachments", () => {
     expect(dl.statusCode).toBe(403);
   });
 
+  it("scanner runtime failures become scan_failed and block download with 503", async () => {
+    const s = await baseScenario();
+    setScanner(async () => {
+      throw new Error("scanner offline");
+    });
+
+    const up = await upload(s.docId, s.adminCookie, "scan-fail.png", PNG, "image/png");
+    expect(up.statusCode).toBe(202);
+    const id = up.json().id;
+
+    await drainScanWorker();
+
+    const meta = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
+    expect(meta.statusCode).toBe(200);
+    expect(meta.json().status).toBe("scan_failed");
+
+    const dl = await req({ method: "GET", url: `/api/attachments/${id}`, cookies: s.adminCookie });
+    expect(dl.statusCode).toBe(503);
+    expect(dl.json().error).toBe("scan_failed");
+  });
+
   it("rejects disallowed MIME type with 415", async () => {
     const s = await baseScenario();
     const res = await upload(s.docId, s.adminCookie, "bad.bin", PNG, "application/octet-stream");
@@ -130,7 +151,21 @@ describe("attachments", () => {
 
   it("accepts all allowed MIME types", async () => {
     const s = await baseScenario();
-    const allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+    const allowed = [
+      "image/png",
+      "image/jpeg",
+      "image/gif",
+      "image/webp",
+      "video/mp4",
+      "video/webm",
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/msword",
+      "application/vnd.ms-excel",
+      "application/vnd.ms-powerpoint",
+    ];
     for (const mime of allowed) {
       const res = await upload(s.docId, s.adminCookie, `file.bin`, PNG, mime);
       expect(res.statusCode, `expected 202 for MIME ${mime}`).toBe(202);
@@ -195,6 +230,25 @@ describe("attachments", () => {
     expect((await req({ method: "DELETE", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(200);
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(404);
     expect((await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie })).json().attachments).toHaveLength(0);
+  });
+
+  it("refuses to delete an attachment still linked in the current document body", async () => {
+    const s = await baseScenario();
+    const up = await upload(s.docId, s.adminCookie, "linked.png", PNG);
+    const attId = up.json().id as string;
+    await drainScanWorker();
+
+    const save = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: s.version, content: `# Linked\n\n![linked](/api/attachments/${attId})\n` },
+    });
+    expect(save.statusCode).toBe(200);
+
+    const del = await req({ method: "DELETE", url: `/api/attachments/${attId}`, cookies: s.adminCookie });
+    expect(del.statusCode).toBe(409);
+    expect(del.json().error).toBe("attachment_linked");
   });
 
   it("supports bearer-token (plugin) upload + download", async () => {

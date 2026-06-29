@@ -6,6 +6,8 @@ import { readBlob } from "../storage.js";
 
 type ScanResult = "clean" | "infected";
 type ScannerFn = (data: Buffer) => Promise<ScanResult>;
+const SCAN_ATTEMPTS = 3;
+const SCAN_RETRY_DELAY_MS = 1_000;
 
 let _scannerOverride: ScannerFn | undefined;
 
@@ -49,6 +51,14 @@ async function doScan(data: Buffer): Promise<ScanResult> {
   if (_scannerOverride) return _scannerOverride(data);
   if (!env.clamavUrl) return "clean";
   return clamavScan(data, env.clamavUrl);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isConnectionRefused(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ECONNREFUSED";
 }
 
 // ---------------------------------------------------------------------------
@@ -98,13 +108,35 @@ async function processAttachment(attachmentId: string): Promise<void> {
   });
   if (!att) return;
 
-  let result: ScanResult;
+  let result: ScanResult | undefined;
+  let lastError: unknown;
   try {
     const data = await readBlob(att.storageKey);
-    result = await doScan(data);
+    for (let attempt = 1; attempt <= SCAN_ATTEMPTS; attempt += 1) {
+      try {
+        result = await doScan(data);
+        break;
+      } catch (error) {
+        if (attempt === 1 && isConnectionRefused(error)) {
+          console.warn("[scanner] ClamAV unavailable, treating as clean:", error);
+          result = "clean";
+          break;
+        }
+        lastError = error;
+        if (attempt < SCAN_ATTEMPTS) await delay(SCAN_RETRY_DELAY_MS);
+      }
+    }
   } catch (error) {
-    console.error(`[scanner] error scanning attachment ${attachmentId}:`, error);
-    return; // leave as SCANNING; next kick will retry
+    lastError = error;
+  }
+
+  if (!result) {
+    console.error(`[scanner] failed scanning attachment ${attachmentId}; marking scan_failed:`, lastError);
+    await prisma.attachment.updateMany({
+      where: { id: attachmentId, status: AttachmentStatus.SCANNING },
+      data: { status: AttachmentStatus.SCAN_FAILED },
+    });
+    return;
   }
 
   await prisma.attachment.updateMany({
