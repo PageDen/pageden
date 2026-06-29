@@ -1,11 +1,9 @@
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Check,
   CheckCircle2,
   CircleDashed,
   ClipboardList,
@@ -16,28 +14,23 @@ import {
   GitPullRequest,
   Link2,
   ListChecks,
-  MessageSquare,
   Network,
   ScrollText,
   Sparkles,
-  Trash2,
   XCircle,
 } from "lucide-react";
 import type { z } from "zod";
 import type {
-  documentCommentSchema,
   handoffPacketSchema,
   implementationReadinessSchema,
   implementationReadinessStatusSchema,
   relatedDocsSchema,
 } from "@pageden/api-types";
-import { ApiError, api } from "../../lib/api";
-import { documentCommentsQuery, documentHandoffQuery, documentRelatedDocsQuery } from "../../lib/queries";
+import { ApiError } from "../../lib/api";
+import { documentHandoffQuery, documentRelatedDocsQuery } from "../../lib/queries";
 import { documentReadablePath } from "../../lib/document-links";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
-import { Button } from "../../components/ui/button";
-
-type DocumentComment = z.infer<typeof documentCommentSchema>;
+import { DocumentCommentsPanel } from "./document-comments-panel";
 
 type Handoff = z.infer<typeof handoffPacketSchema>;
 type Readiness = z.infer<typeof implementationReadinessSchema>;
@@ -178,100 +171,8 @@ function HandoffView({ h, workspaceId }: { h: Handoff; workspaceId: string }) {
         </Card>
       ) : null}
 
-      <CommentsRail documentId={h.documentId} />
+      <DocumentCommentsPanel documentId={h.documentId} />
     </main>
-  );
-}
-
-function CommentsRail({ documentId }: { documentId: string }) {
-  const queryClient = useQueryClient();
-  const comments = useQuery(documentCommentsQuery(documentId));
-  const [body, setBody] = useState("");
-  const [anchor, setAnchor] = useState("");
-  const add = useMutation({
-    mutationFn: () => api.addDocumentComment(documentId, { body: body.trim(), sectionAnchor: anchor.trim() || null }),
-    onSuccess: async () => {
-      setBody("");
-      setAnchor("");
-      await queryClient.invalidateQueries({ queryKey: documentCommentsQuery(documentId).queryKey });
-    },
-  });
-  const resolve = useMutation({
-    mutationFn: (commentId: string) => api.resolveComment(commentId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: documentCommentsQuery(documentId).queryKey }),
-  });
-  const remove = useMutation({
-    mutationFn: (commentId: string) => api.deleteComment(commentId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: documentCommentsQuery(documentId).queryKey }),
-  });
-
-  const list = (comments.data?.comments ?? []) as DocumentComment[];
-  const open = list.filter((c) => !c.resolvedAt);
-  return (
-    <Card icon={<MessageSquare className="h-5 w-5" aria-hidden="true" />} title={`Open comments (${open.length})`}>
-      {comments.isLoading ? (
-        <p className="text-sm text-slate-400">Loading comments…</p>
-      ) : open.length === 0 ? (
-        <p className="text-sm italic text-slate-400 dark:text-slate-500">No open comments — leave one below to raise a concern.</p>
-      ) : (
-        <ul className="space-y-3">
-          {open.map((comment) => (
-            <li key={comment.id} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                <span className="font-semibold text-slate-700 dark:text-slate-200">{comment.authorLabel ?? "Someone"}</span>
-                {comment.sectionAnchor ? (
-                  <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                    #{comment.sectionAnchor}
-                  </code>
-                ) : null}
-                <time dateTime={comment.createdAt}>· {new Date(comment.createdAt).toLocaleString()}</time>
-              </div>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-800 dark:text-slate-200">{comment.body}</p>
-              <div className="mt-2 flex gap-2">
-                <Button variant="ghost" className="h-7 gap-1 px-2 text-xs" onClick={() => resolve.mutate(comment.id)} disabled={resolve.isPending}>
-                  <Check size={12} aria-hidden="true" />
-                  Resolve
-                </Button>
-                <Button variant="ghost" className="h-7 gap-1 px-2 text-xs text-red-600" onClick={() => remove.mutate(comment.id)} disabled={remove.isPending}>
-                  <Trash2 size={12} aria-hidden="true" />
-                  Delete
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      <form
-        className="mt-4 space-y-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!body.trim()) return;
-          add.mutate();
-        }}
-      >
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={3}
-          maxLength={4000}
-          placeholder="Add a comment to flag an open question or note a blocker."
-          className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm leading-6 text-slate-900 placeholder:text-slate-400 focus:border-orange-400 focus:outline-none focus:ring-1 focus:ring-orange-300 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-        />
-        <div className="flex items-center gap-2">
-          <input
-            value={anchor}
-            onChange={(e) => setAnchor(e.target.value)}
-            placeholder="section anchor (optional)"
-            maxLength={200}
-            className="flex-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-          />
-          <Button type="submit" disabled={add.isPending || !body.trim()}>
-            {add.isPending ? "Adding…" : "Post"}
-          </Button>
-        </div>
-        {add.error ? <p className="text-xs text-red-600">Could not post comment.</p> : null}
-      </form>
-    </Card>
   );
 }
 
