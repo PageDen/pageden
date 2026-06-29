@@ -1,9 +1,8 @@
-import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { getApp, closeApp, req, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { addMember, baseScenario, createUser, createWorkspace } from "../fixtures/seed.js";
-import { drainScanWorker, setScanner } from "../../src/attachments/scanner.js";
 import { registerServerAnalyticsListener, type ServerEventPayload } from "../../src/lib/analytics-bus.js";
 
 beforeAll(async () => {
@@ -12,9 +11,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await closeApp();
   await prisma.$disconnect();
-});
-afterEach(() => {
-  setScanner(undefined);
 });
 beforeEach(async () => {
   await resetDb();
@@ -932,7 +928,6 @@ describe("REST-mode attachment-read action endpoint", () => {
     const up = await uploadAttachment(s.docId, s.adminCookie, "diagram.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
     const attachmentId = up.json().id as string;
-    await drainScanWorker();
 
     const res = await req({
       method: "POST",
@@ -948,47 +943,6 @@ describe("REST-mode attachment-read action endpoint", () => {
     expect(body.attachment.size).toBe(PNG.length);
     expect(typeof body.attachment.sha256).toBe("string");
     expect(Buffer.from(body.attachment.contentBase64 as string, "base64").equals(PNG)).toBe(true);
-  });
-
-  it("503 when attachment is still in SCANNING state", async () => {
-    let unblock!: () => void;
-    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
-    setScanner(async () => { await blocked; return "clean"; });
-
-    const { s, auth } = await setupActions();
-    const up = await uploadAttachment(s.docId, s.adminCookie, "scan.png", PNG, "image/png");
-    expect(up.statusCode).toBe(202);
-    const attachmentId = up.json().id as string;
-
-    const res = await req({
-      method: "POST",
-      url: "/api/integrations/actions/attachment-read",
-      headers: auth,
-      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId },
-    });
-    expect(res.statusCode).toBe(503);
-    expect(res.json().error).toBe("scan_pending");
-
-    // Unblock scanner so the worker finishes before the next test calls drainScanWorker
-    unblock();
-    await drainScanWorker();
-  });
-
-  it("403 when attachment is QUARANTINED", async () => {
-    const { s, auth } = await setupActions();
-    const up = await uploadAttachment(s.docId, s.adminCookie, "bad.png", PNG, "image/png");
-    expect(up.statusCode).toBe(202);
-    const attachmentId = up.json().id as string;
-    await prisma.attachment.update({ where: { id: attachmentId }, data: { status: "QUARANTINED" } });
-
-    const res = await req({
-      method: "POST",
-      url: "/api/integrations/actions/attachment-read",
-      headers: auth,
-      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId },
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error).toBe("forbidden");
   });
 
   it("404 when attachment belongs to a different workspace", async () => {
@@ -1011,7 +965,6 @@ describe("REST-mode attachment-read action endpoint", () => {
     expect(d2.statusCode).toBe(201);
     const up = await uploadAttachment(d2.json().id as string, ws2.adminCookie, "secret.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
-    await drainScanWorker();
     const attachmentId = up.json().id as string;
 
     const res = await req({
@@ -1039,7 +992,6 @@ describe("REST-mode attachment-read action endpoint", () => {
     const { s, auth } = await setupActions();
     const up = await uploadAttachment(s.docId, s.adminCookie, "chart.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
-    await drainScanWorker();
 
     const res = await req({
       method: "POST",

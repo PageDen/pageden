@@ -20,7 +20,6 @@ export function AdminLayout() {
             <Link to="/w/$workspaceId/admin/users" params={{ workspaceId }} className={tab}>Users</Link>
             <Link to="/w/$workspaceId/admin/groups" params={{ workspaceId }} className={tab}>Groups</Link>
             <Link to="/w/$workspaceId/admin/settings" params={{ workspaceId }} className={tab}>Settings</Link>
-            <Link to="/w/$workspaceId/admin/quarantine" params={{ workspaceId }} className={tab}>Quarantine</Link>
           </>
         ) : null}
         {authConfig.data?.cloudHosted && canViewAudit ? (

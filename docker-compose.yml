@@ -15,18 +15,6 @@ services:
       timeout: 3s
       retries: 10
 
-  clamav:
-    image: clamav/clamav:stable
-    restart: unless-stopped
-    volumes:
-      - clamav_db:/var/lib/clamav
-    healthcheck:
-      test: ["CMD-SHELL", "printf 'PING\\n' | nc -w 3 127.0.0.1 3310 | grep -q PONG"]
-      interval: 30s
-      timeout: 15s
-      retries: 3
-      start_period: 300s
-
   server:
     build:
       context: .
@@ -44,7 +32,6 @@ services:
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-change-me}
-      CLAMAV_URL: tcp://clamav:3310
     volumes:
       - pageden_storage:/data/storage
     ports:
@@ -74,4 +61,3 @@ services:
 volumes:
   postgres_data:
   pageden_storage:
-  clamav_db:

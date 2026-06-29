@@ -60,7 +60,6 @@ import {
   treeSchema,
   writeResultSchema,
   workspaceTransferSettingsSchema,
-  quarantinedAttachmentListSchema,
 } from "@pageden/api-types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -347,10 +346,6 @@ export const api = {
       xhr.send(file);
     });
   },
-  quarantineList: (workspaceId: string, cursor?: string) =>
-    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/attachments/quarantined${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { schema: quarantinedAttachmentListSchema }),
-  unquarantine: (attachmentId: string) =>
-    request("POST", `/attachments/${encodeURIComponent(attachmentId)}/unquarantine`, { schema: okSchema }),
   uploadVaultZip: (
     file: File,
     options: { workspaceId: string; targetRootName: string; conflictPolicy: "skip" | "rename" },

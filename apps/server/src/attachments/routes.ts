@@ -7,8 +7,6 @@ import { verifyUploadGrant } from "./upload-grant.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole } from "../permissions/index.js";
 import { readBlob, readContent, writeBlob, sweepOrphanObjects } from "../storage.js";
-import { kickScanWorker, recoverStuckScanJobs } from "./scanner.js";
-import { canManageWorkspace } from "../permissions/index.js";
 
 // Attachments belong to a document; access is governed entirely by the parent document's
 // permission (read to download/list, editor to upload/delete). Existence is hidden: a user
@@ -56,7 +54,7 @@ function attachmentDto(a: {
     contentType: a.contentType,
     size: a.size,
     sha256: a.sha256,
-    status: a.status.toLowerCase() as "scanning" | "ready" | "quarantined" | "scan_failed",
+    status: "ready" as const,
     createdAt: a.createdAt.toISOString(),
   };
 }
@@ -70,7 +68,7 @@ export class AttachmentError extends Error {
 }
 
 /**
- * Validate + persist an attachment for a document and kick the scan worker.
+ * Validate + persist an attachment for a document.
  * Shared by the REST upload route and the MCP attach-file tool. Throws
  * AttachmentError(status, message) on validation/permission failures. Caller
  * supplies already-read bytes (REST: raw body; MCP: decoded base64).
@@ -119,10 +117,9 @@ export async function createDocumentAttachment(opts: {
       sha256: hex,
       storageKey,
       uploadedById: opts.userId,
-      status: AttachmentStatus.SCANNING,
+      status: AttachmentStatus.READY,
     },
   });
-  kickScanWorker();
   await writeAuditEvent({
     workspaceId: doc.workspaceId,
     userId: opts.userId,
@@ -146,7 +143,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
 
   // Upload an attachment to a document. Raw bytes in the body; filename via ?filename= (or the
   // x-filename header); content type from the Content-Type header.
-  // Returns 202 Accepted with status "scanning". Scan worker promotes to "ready" or "quarantined".
+  // Returns 202 Accepted with status "ready".
     instance.post<{ Params: { id: string }; Querystring: { filename?: string } }>(
     "/api/documents/:id/attachments",
     { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 },
@@ -253,7 +250,6 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
   });
 
   // Download an attachment's bytes (read on the parent document required).
-  // QUARANTINED and SCAN_FAILED attachments are not downloadable.
     instance.get<{ Params: { attachmentId: string } }>("/api/attachments/:attachmentId", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "attachments");
@@ -263,13 +259,6 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
     if (!attachment) return notFound(reply, "Attachment not found.");
     const role = await resolveDocumentRole(auth.userId, attachment.documentId);
     if (role === null) return notFound(reply, "Attachment not found."); // hide existence
-    if (attachment.status === AttachmentStatus.SCANNING) {
-      return reply.code(503).header("retry-after", "5").send({ error: "scan_pending", message: "Attachment is being scanned. Try again shortly." });
-    }
-    if (attachment.status === AttachmentStatus.SCAN_FAILED) {
-      return reply.code(503).send({ error: "scan_failed", message: "Attachment virus scan failed. Try uploading again or contact an admin." });
-    }
-    if (attachment.status === AttachmentStatus.QUARANTINED) return forbidden(reply);
     const bytes = await readBlob(attachment.storageKey);
     return reply
       .header("content-type", attachment.contentType)
@@ -329,68 +318,7 @@ export async function registerAttachmentRoutes(app: FastifyInstance): Promise<vo
   });
   });
 
-  // Admin: list quarantined attachments for a workspace.
-  app.get<{ Params: { workspaceId: string }; Querystring: { cursor?: string } }>(
-    "/api/workspaces/:workspaceId/attachments/quarantined",
-    async (request, reply) => {
-      const auth = await requireAuth(request);
-      requireTokenScope(auth, "read");
-      if (!(await canManageWorkspace(auth.userId, request.params.workspaceId))) return forbidden(reply);
-      const limit = 50;
-      const cursor = request.query.cursor ? new Date(request.query.cursor) : undefined;
-      const rows = await prisma.attachment.findMany({
-        where: {
-          workspaceId: request.params.workspaceId,
-          status: AttachmentStatus.QUARANTINED,
-          deletedAt: null,
-          ...(cursor ? { createdAt: { lt: cursor } } : {}),
-        },
-        include: {
-          document: { select: { title: true } },
-          uploadedBy: { select: { email: true } },
-        },
-        orderBy: { createdAt: "desc" },
-        take: limit + 1,
-      });
-      const hasMore = rows.length > limit;
-      const page = hasMore ? rows.slice(0, limit) : rows;
-      return {
-        attachments: page.map((a) => ({
-          ...attachmentDto(a),
-          documentId: a.documentId,
-          documentTitle: a.document.title,
-          uploadedByEmail: a.uploadedBy.email,
-        })),
-        next: hasMore ? (page[page.length - 1]?.createdAt.toISOString() ?? null) : null,
-      };
-    },
-  );
-
-  // Admin: release a quarantined attachment back to SCANNING so it is re-scanned.
-  app.post<{ Params: { attachmentId: string } }>(
-    "/api/attachments/:attachmentId/unquarantine",
-    async (request, reply) => {
-      const auth = await requireAuth(request);
-      requireTokenScope(auth, "update");
-      const attachment = await prisma.attachment.findFirst({
-        where: { id: request.params.attachmentId, status: AttachmentStatus.QUARANTINED, deletedAt: null },
-        select: { id: true, workspaceId: true },
-      });
-      if (!attachment) return notFound(reply, "Attachment not found.");
-      if (!(await canManageWorkspace(auth.userId, attachment.workspaceId))) return forbidden(reply);
-      await prisma.attachment.update({
-        where: { id: attachment.id },
-        data: { status: AttachmentStatus.SCANNING },
-      });
-      kickScanWorker();
-      return { ok: true };
-    },
-  );
-
-  // Boot: kick the scan worker so any attachments stuck in SCANNING from a prior crash get processed.
-  recoverStuckScanJobs();
-
-  // Schedule a daily orphan object sweep so quarantined/deleted attachment bytes don't accumulate.
+  // Schedule a daily orphan object sweep so deleted attachment bytes don't accumulate.
   const sweepInterval = setInterval(
     () => void sweepOrphanObjects().catch((err) => console.error("[storage] orphan sweep failed:", err)),
     24 * 60 * 60 * 1000,

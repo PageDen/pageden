@@ -1,14 +1,12 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getApp, closeApp, req, bearer } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario } from "../fixtures/seed.js";
-import { drainScanWorker, setScanner } from "../../src/attachments/scanner.js";
 import { signUploadGrant, verifyUploadGrant, UPLOAD_GRANT_TTL_SECONDS } from "../../src/attachments/upload-grant.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
-beforeEach(async () => { await resetDb(); setScanner(async () => "clean"); });
-afterEach(async () => { await drainScanWorker(); setScanner(undefined); });
+beforeEach(async () => { await resetDb(); });
 
 type Scenario = Awaited<ReturnType<typeof baseScenario>>;
 
@@ -58,7 +56,7 @@ describe("pageden_attach_file MCP tool", () => {
     const data = JSON.parse(res.json().result.content[0].text);
     expect(data.filename).toBe("Password Policy.pdf");
     expect(data.contentType).toBe("application/pdf");
-    expect(data.status).toBe("scanning");
+    expect(data.status).toBe("ready");
     expect(data.documentId).toBe(s.docId);
     expect(data.workspaceId).toBe(s.ws.id);
 
@@ -130,7 +128,7 @@ describe("pre-signed attachment upload (large files)", () => {
     const att = put.json();
     expect(att.filename).toBe("Access Management.pdf");
     expect(att.contentType).toBe("application/pdf");
-    expect(att.status).toBe("scanning");
+    expect(att.status).toBe("ready");
 
     const list = await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie });
     expect((list.json().attachments as Array<{ id: string }>).map((a) => a.id)).toContain(att.id);
@@ -146,4 +144,3 @@ describe("pre-signed attachment upload (large files)", () => {
     expect(put.statusCode).toBe(403);
   });
 });
-
