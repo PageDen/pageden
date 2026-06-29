@@ -5,13 +5,15 @@ import { requireAuth } from "../auth.js";
 import { env } from "../env.js";
 import { prisma } from "../prisma.js";
 import { resolveDocumentRole, resolveFolderRole, atLeast } from "../permissions/index.js";
-import { searchDocuments, clampSearchLimit } from "../search/service.js";
+import { searchDocuments, clampSearchLimit, type SearchDocumentsResult } from "../search/service.js";
 import { readContent, writeContent, readBlob } from "../storage.js";
 import { applyDocumentWrite, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { createDocumentAttachment, MAX_ATTACHMENT_BYTES } from "../attachments/routes.js";
 import { buildDocumentPath, isValidSlug } from "../paths.js";
 import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
+import { trackServerEvent } from "../lib/analytics-bus.js";
+import { writeAuditEvent } from "../audit.js";
 
 const CONNECT_TTL_MS = 15 * 60 * 1000;
 const KEY_RE = /^[a-z][a-z0-9_-]{1,31}$/;
@@ -24,6 +26,10 @@ const MAX_EXTERNAL_USERNAME = 128;
 const RUNTIME_MODES = new Set(["rest", "openresponses", "custom"]);
 const ALLOWED_SCOPES = new Set(["connect:write", "links:read", "documents:read", "documents:write", "comments:write"]);
 
+type IntegrationConfig = {
+  allowedFolders?: string[];
+};
+
 type IntegrationAuth = {
   id: string;
   workspaceId: string;
@@ -31,8 +37,20 @@ type IntegrationAuth = {
   runtimeMode: string;
   name: string;
   scopes: string[];
+  config: IntegrationConfig;
 };
 
+/** True if docPath is within any of the allowed folder prefixes (empty = all allowed). */
+function isWithinAllowedFolders(docPath: string, allowedFolders: string[]): boolean {
+  if (allowedFolders.length === 0) return true;
+  return allowedFolders.some((folder) => {
+    const prefix = folder.replace(/^\//, "").replace(/\/$/, "");
+    if (!prefix) return true;
+    return docPath.startsWith(prefix + "/") || docPath === `${prefix}.md`;
+  });
+}
+
+/** Parse a user-supplied path like "/handbook/notes/my-note" → { folderPath, slug }. */
 function parsePath(rawPath: string): { folderPath: string; slug: string } | null {
   const normalized = rawPath.replace(/^\//, "").replace(/\.md$/, "").trim();
   if (!normalized) return null;
@@ -42,6 +60,7 @@ function parsePath(rawPath: string): { folderPath: string; slug: string } | null
   if (!isValidSlug(slug)) return null;
   return { folderPath, slug };
 }
+
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -74,7 +93,7 @@ function parseBasicAuth(request: FastifyRequest): { clientId: string; clientSecr
   return clientId && clientSecret ? { clientId, clientSecret } : null;
 }
 
-async function requireIntegrationAuth(request: FastifyRequest, reply: FastifyReply, requiredScope: string): Promise<IntegrationAuth | null> {
+async function authenticateIntegration(request: FastifyRequest, reply: FastifyReply): Promise<IntegrationAuth | null> {
   const credentials = parseBasicAuth(request);
   if (!credentials) {
     reply.code(401).send({ error: "unauthorized", message: "Integration credentials required." });
@@ -82,14 +101,10 @@ async function requireIntegrationAuth(request: FastifyRequest, reply: FastifyRep
   }
   const integration = await prisma.workspaceIntegration.findUnique({
     where: { clientId: credentials.clientId },
-    select: { id: true, workspaceId: true, providerKey: true, runtimeMode: true, name: true, clientSecretHash: true, scopes: true, revokedAt: true },
+    select: { id: true, workspaceId: true, providerKey: true, runtimeMode: true, name: true, clientSecretHash: true, scopes: true, config: true, revokedAt: true },
   });
   if (!integration || integration.revokedAt || !safeEqual(sha256(credentials.clientSecret), integration.clientSecretHash)) {
     reply.code(401).send({ error: "unauthorized", message: "Integration credentials required." });
-    return null;
-  }
-  if (!integration.scopes.includes(requiredScope)) {
-    reply.code(403).send({ error: "forbidden", message: `Integration requires ${requiredScope} scope.` });
     return null;
   }
   await prisma.workspaceIntegration.update({ where: { id: integration.id }, data: { lastUsedAt: new Date() } });
@@ -100,7 +115,18 @@ async function requireIntegrationAuth(request: FastifyRequest, reply: FastifyRep
     runtimeMode: integration.runtimeMode,
     name: integration.name,
     scopes: integration.scopes,
+    config: (integration.config as IntegrationConfig | null) ?? {},
   };
+}
+
+async function requireIntegrationAuth(request: FastifyRequest, reply: FastifyReply, requiredScope: string): Promise<IntegrationAuth | null> {
+  const integration = await authenticateIntegration(request, reply);
+  if (!integration) return null;
+  if (!integration.scopes.includes(requiredScope)) {
+    reply.code(403).send({ error: "forbidden", message: `Integration requires ${requiredScope} scope.` });
+    return null;
+  }
+  return integration;
 }
 
 async function requireWorkspaceAdmin(request: FastifyRequest, reply: FastifyReply, workspaceId: string): Promise<string | null> {
@@ -420,6 +446,46 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     return { integration: integrationDto(integration) };
   });
 
+  app.patch<{
+    Params: { workspaceId: string; id: string };
+    Body: { scopes?: unknown; config?: unknown };
+  }>("/api/workspaces/:workspaceId/integrations/:id", async (request, reply) => {
+    const userId = await requireWorkspaceAdmin(request, reply, request.params.workspaceId);
+    if (!userId) return;
+    const existing = await prisma.workspaceIntegration.findFirst({
+      where: { id: request.params.id, workspaceId: request.params.workspaceId, revokedAt: null },
+    });
+    if (!existing) return reply.code(404).send({ error: "not_found", message: "Integration not found." });
+
+    const updates: Record<string, unknown> = {};
+    if (request.body.scopes !== undefined) {
+      if (!Array.isArray(request.body.scopes)) return reply.code(400).send({ error: "bad_request", message: "scopes must be an array." });
+      const bad = (request.body.scopes as unknown[]).filter((s) => typeof s !== "string" || !ALLOWED_SCOPES.has(s as string));
+      if (bad.length) return reply.code(400).send({ error: "bad_request", message: `Unknown scopes: ${(bad as string[]).join(", ")}` });
+      updates.scopes = request.body.scopes;
+    }
+    if (request.body.config !== undefined) {
+      updates.config = request.body.config;
+    }
+    if (!Object.keys(updates).length) return reply.code(400).send({ error: "bad_request", message: "Provide scopes or config to update." });
+
+    const integration = await prisma.workspaceIntegration.update({ where: { id: existing.id }, data: updates });
+    return { integration: integrationDto(integration) };
+  });
+
+  // Lets an integration look up its own IDs and current state using Basic auth (no admin session required).
+  app.get("/api/integrations/me", async (request, reply) => {
+    const integration = await authenticateIntegration(request, reply);
+    if (!integration) return;
+    return {
+      id: integration.id,
+      workspaceId: integration.workspaceId,
+      name: integration.name,
+      scopes: integration.scopes,
+      config: integration.config,
+    };
+  });
+
   app.post<{ Body: unknown }>("/api/integrations/connect-sessions", async (request, reply) => {
     const integration = await requireIntegrationAuth(request, reply, "connect:write");
     if (!integration) return;
@@ -593,30 +659,41 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     const integration = await requireIntegrationAuth(request, reply, "documents:read");
     if (!integration) return;
 
-    const externalProvider = (request.body.externalProvider ?? "").trim();
     const externalAccountId = (request.body.externalAccountId ?? "").trim();
     const documentId = request.body.documentId?.trim() || null;
-    const path = request.body.path?.trim() || null;
+    const docPath = request.body.path?.trim() || null;
 
-    if (!externalProvider || !externalAccountId) {
-      return reply.code(400).send({ error: "bad_request", message: "externalProvider and externalAccountId are required." });
-    }
-    if (!documentId && !path) {
+    if (!documentId && !docPath) {
       return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
     }
-
-    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
-    if (!link) return;
 
     const doc = await prisma.document.findFirst({
       where: documentId
         ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
-        : { path: path!, workspaceId: integration.workspaceId, deletedAt: null },
+        : { path: docPath!, workspaceId: integration.workspaceId, deletedAt: null },
     });
     if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
 
-    const role = await resolveDocumentRole(link.userId, doc.id);
-    if (!atLeast(role, "viewer")) return reply.code(403).send({ error: "forbidden", message: "You do not have access to this document." });
+    let readActor: { userId: string; provider: string } | null = null;
+    if (externalAccountId) {
+      // Per-user read: check account link + document permission
+      const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+      const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+      if (!link) return;
+      const role = await resolveDocumentRole(link.userId, doc.id);
+      if (!atLeast(role, "viewer")) return reply.code(403).send({ error: "forbidden", message: "You do not have access to this document." });
+      await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+      readActor = { userId: link.userId, provider: externalProvider };
+    } else {
+      // Workspace-level read: canonical only, restricted to allowedFolders
+      if (doc.status !== "canonical") {
+        return reply.code(403).send({ error: "not_canonical", message: "Only canonical documents are accessible without account linking." });
+      }
+      const allowedFolders = integration.config.allowedFolders ?? [];
+      if (!isWithinAllowedFolders(doc.path, allowedFolders)) {
+        return reply.code(403).send({ error: "forbidden", message: "Document is outside the integration's allowed folders." });
+      }
+    }
 
     let content = "";
     if (doc.currentVersionId) {
@@ -633,7 +710,22 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       orderBy: { createdAt: "asc" },
     });
 
-    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+    // Per-user reads are agent activity; emit the same events the MCP path
+    // does. Workspace-level reads have no linked human to attribute, so skip.
+    if (readActor) {
+      trackServerEvent(
+        "agent_mcp_call",
+        integration.workspaceId,
+        { userId: readActor.userId, tokenId: null },
+        { tool_name: "document_read", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: readActor.provider },
+      );
+      trackServerEvent(
+        "agent_document_read",
+        integration.workspaceId,
+        { userId: readActor.userId, tokenId: null },
+        { doc_id: doc.id, token_id: null, change_source: "agent", surface: "integration_rest", external_provider: readActor.provider },
+      );
+    }
 
     return {
       document: {
@@ -661,31 +753,86 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     const integration = await requireIntegrationAuth(request, reply, "documents:read");
     if (!integration) return;
 
-    const externalProvider = (request.body.externalProvider ?? "").trim();
     const externalAccountId = (request.body.externalAccountId ?? "").trim();
     const query = (request.body.query ?? "").trim();
-
-    if (!externalProvider || !externalAccountId) {
-      return reply.code(400).send({ error: "bad_request", message: "externalProvider and externalAccountId are required." });
-    }
     if (!query) return validationError(reply, { query: "query is required." });
-
-    const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
-    if (!link) return;
-
     const limit = clampSearchLimit(request.body.limit, 10);
-    const results = await searchDocuments({
-      userId: link.userId,
+
+    if (externalAccountId) {
+      // Per-user search — fan-out across all workspaces the linked user belongs to
+      const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
+      const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
+      if (!link) return;
+
+      const memberships = await prisma.workspaceMembership.findMany({
+        where: { userId: link.userId },
+        select: { workspaceId: true },
+      });
+      const workspaceIds = memberships.map((m) => m.workspaceId);
+      await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+
+      // A per-user search is an agent tool call; mirror the MCP path.
+      trackServerEvent(
+        "agent_mcp_call",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { tool_name: "document_search", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
+
+      if (workspaceIds.length === 1) {
+        const results = await searchDocuments({
+          userId: link.userId,
+          workspaceId: workspaceIds[0]!,
+          query,
+          limit,
+          canonicalOnly: request.body.canonicalOnly ?? false,
+        });
+        return { results: results.map((r) => ({ ...r, workspaceId: workspaceIds[0]! })) };
+      }
+
+      const workspaceNames = await prisma.workspace.findMany({
+        where: { id: { in: workspaceIds } },
+        select: { id: true, name: true },
+      });
+      const nameById = new Map(workspaceNames.map((w) => [w.id, w.name]));
+
+      const settled = await Promise.allSettled(
+        workspaceIds.map((wsId) =>
+          searchDocuments({ userId: link.userId, workspaceId: wsId, query, limit, canonicalOnly: request.body.canonicalOnly ?? false }),
+        ),
+      );
+      const results: Array<SearchDocumentsResult & { workspaceId: string; workspaceName: string }> = [];
+      const errors: { workspaceId: string; reason: string }[] = [];
+      for (let i = 0; i < settled.length; i++) {
+        const outcome = settled[i]!;
+        const wsId = workspaceIds[i]!;
+        if (outcome.status === "fulfilled") {
+          for (const r of outcome.value) results.push({ ...r, workspaceId: wsId, workspaceName: nameById.get(wsId) ?? wsId });
+        } else {
+          errors.push({ workspaceId: wsId, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+        }
+      }
+      return { results: results.slice(0, limit), errors };
+    }
+
+    // Workspace-level search: canonical only, restricted to allowedFolders
+    const allowedFolders = integration.config.allowedFolders ?? [];
+    const allResults = await searchDocuments({
+      userId: "",
       workspaceId: integration.workspaceId,
       query,
-      limit,
-      canonicalOnly: request.body.canonicalOnly ?? false,
+      limit: Math.min(limit * 4, 50),
+      canonicalOnly: true,
     });
-
-    await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
-
+    const results = allResults
+      .filter((r) => isWithinAllowedFolders(r.path, allowedFolders))
+      .slice(0, limit);
     return { results };
   });
+
+  // ---------------------------------------------------------------------------
+  // REST actions — write operations (require externalAccountId + linked account)
+  // ---------------------------------------------------------------------------
 
   app.post<{
     Body: {
@@ -714,10 +861,7 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
 
     const parsed = parsePath(rawPath);
     if (!parsed) {
-      return reply.code(400).send({
-        error: "bad_request",
-        message: "Invalid path. Use lowercase letters, numbers, and hyphens (e.g. /handbook/notes/my-note).",
-      });
+      return reply.code(400).send({ error: "bad_request", message: "Invalid path. Use lowercase letters, numbers, and hyphens (e.g. /handbook/notes/my-note)." });
     }
     const { folderPath, slug } = parsed;
 
@@ -771,25 +915,45 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
           },
         });
         const meta = await metadataFromContent(tx, integration.workspaceId, content, created.id);
-        return tx.document.update({
+        const updated = await tx.document.update({
           where: { id: created.id },
-          data: {
-            currentVersionId: revision.id,
-            currentChecksum: sum,
-            searchText: searchTextFor(content),
-            status: meta.status,
-            supersededById: meta.supersededById,
-            updatedById: link.userId,
-          },
+          data: { currentVersionId: revision.id, currentChecksum: sum, searchText: searchTextFor(content), status: meta.status, supersededById: meta.supersededById, updatedById: link.userId },
         });
+        return updated;
       });
       await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+      // Agent (integration REST) writes were previously uninstrumented, so
+      // Hermes/Discord uploads never surfaced as agent activity in the audit
+      // trail or analytics. Mirror the MCP path: an audit event + the agent
+      // analytics events, attributed to the linked human (link.userId).
+      await writeAuditEvent({
+        workspaceId: integration.workspaceId,
+        userId: link.userId,
+        action: "document_created_by_agent",
+        targetType: "document",
+        targetId: doc.id,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+        metadata: { path: doc.path, externalProvider, integrationId: integration.id },
+      });
+      trackServerEvent(
+        "agent_mcp_call",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { tool_name: "document_create", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
+      trackServerEvent(
+        "agent_document_created",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { doc_id: doc.id, token_id: null, change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
       return { document: { id: doc.id, title: doc.title, path: doc.path, status: doc.status, version: doc.currentVersionId } };
-    } catch (error: unknown) {
-      const code = (error as { code?: string }).code;
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
       if (code === "collision") return reply.code(409).send({ error: "conflict", message: `A document with slug '${slug}' already exists in that folder.` });
       if (code === "folder_missing") return reply.code(404).send({ error: "not_found", message: "Folder was deleted concurrently." });
-      throw error;
+      throw err;
     }
   });
 
@@ -827,14 +991,18 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
 
     let existingContent = "";
     if (doc.currentVersionId) {
-      const revision = await prisma.documentRevision.findUnique({ where: { id: doc.currentVersionId }, select: { storageKey: true } });
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
       if (revision) existingContent = await readContent(revision.storageKey);
     }
 
     const newContent = existingContent ? `${existingContent}\n\n${appendContent}` : appendContent;
+    const auth = { userId: link.userId, authType: "token" as const };
     const outcome = await applyDocumentWrite({
       documentId: doc.id,
-      auth: { userId: link.userId, authType: "token" },
+      auth,
       baseVersion: doc.currentVersionId ?? "",
       content: newContent,
       changeSource: "agent",
@@ -849,6 +1017,20 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     }
 
     await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+    if (!outcome.noOp) {
+      trackServerEvent(
+        "agent_mcp_call",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { tool_name: "document_append", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
+      trackServerEvent(
+        "agent_document_saved",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { doc_id: doc.id, token_id: null, change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
+    }
     return { document: { id: doc.id, version: outcome.version } };
   });
 
@@ -895,9 +1077,10 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       resolvedContent = resolvedContent ?? "";
     }
 
+    const auth = { userId: link.userId, authType: "token" as const };
     const outcome = await applyDocumentWrite({
       documentId: doc.id,
-      auth: { userId: link.userId, authType: "token" },
+      auth,
       baseVersion: doc.currentVersionId ?? "",
       content: resolvedContent,
       title,
@@ -913,10 +1096,25 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     }
 
     await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
+    if (!outcome.noOp) {
+      trackServerEvent(
+        "agent_mcp_call",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { tool_name: "document_update", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
+      trackServerEvent(
+        "agent_document_saved",
+        integration.workspaceId,
+        { userId: link.userId, tokenId: null },
+        { doc_id: doc.id, token_id: null, change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+      );
+    }
     return { document: { id: doc.id, version: outcome.version } };
   });
 
-  const fileAttachBodyLimit = Math.ceil(MAX_ATTACHMENT_BYTES * (4 / 3)) + 65536;
+  // base64 encoding inflates by ~33%; add 64 KB for JSON wrapper overhead
+  const FILE_ATTACH_BODY_LIMIT = Math.ceil(MAX_ATTACHMENT_BYTES * (4 / 3)) + 65536;
 
   app.post<{
     Body: {
@@ -924,10 +1122,11 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       externalAccountId?: string;
       documentId?: string;
       path?: string;
+      fileUrl?: string;
       fileContent?: string;
       filename?: string;
     };
-  }>("/api/integrations/actions/file-attach", { bodyLimit: fileAttachBodyLimit }, async (request, reply) => {
+  }>("/api/integrations/actions/file-attach", { bodyLimit: FILE_ATTACH_BODY_LIMIT }, async (request, reply) => {
     const integration = await requireIntegrationAuth(request, reply, "documents:write");
     if (!integration) return;
 
@@ -939,9 +1138,10 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
 
     const documentId = request.body.documentId?.trim() || null;
     const docPath = request.body.path?.trim() || null;
+    const fileUrl = request.body.fileUrl?.trim() || null;
     const fileContent = request.body.fileContent?.trim() || null;
     if (!documentId && !docPath) return reply.code(400).send({ error: "bad_request", message: "documentId or path is required." });
-    if (!fileContent) return reply.code(400).send({ error: "bad_request", message: "fileContent is required." });
+    if (!fileUrl && !fileContent) return reply.code(400).send({ error: "bad_request", message: "fileUrl or fileContent is required." });
 
     const doc = await prisma.document.findFirst({
       where: documentId
@@ -951,36 +1151,33 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     });
     if (!doc) return reply.code(404).send({ error: "not_found", message: "Document not found." });
 
+    // Get file buffer — either from base64 content or by downloading from URL
     let fileBuffer: Buffer;
-    try {
-      fileBuffer = Buffer.from(fileContent, "base64");
-    /* v8 ignore next 2 */
-    } catch {
-      return reply.code(400).send({ error: "bad_request", message: "fileContent is not valid base64." });
+    let detectedFilename: string;
+    let contentType: string;
+    if (fileContent) {
+      try {
+        fileBuffer = Buffer.from(fileContent, "base64");
+      /* v8 ignore next 2 */
+      } catch {
+        return reply.code(400).send({ error: "bad_request", message: "fileContent is not valid base64." });
+      }
+      detectedFilename = request.body.filename?.trim() || "attachment";
+      const ext = detectedFilename.split(".").pop()?.toLowerCase() || "";
+      const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json", zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", doc: "application/msword", xls: "application/vnd.ms-excel", ppt: "application/vnd.ms-powerpoint" };
+      contentType = MIME[ext] ?? "application/octet-stream";
+    } else {
+      try {
+        const resp = await fetch(fileUrl!, { signal: AbortSignal.timeout(30_000) });
+        if (!resp.ok) return reply.code(400).send({ error: "bad_request", message: `Could not fetch file: HTTP ${resp.status}` });
+        fileBuffer = Buffer.from(await resp.arrayBuffer());
+        contentType = resp.headers.get("content-type")?.split(";")[0]?.trim() || "application/octet-stream";
+        detectedFilename = request.body.filename?.trim() || decodeURIComponent(fileUrl!.split("/").pop()?.split("?")[0] || "attachment");
+      /* v8 ignore next 2 */
+      } catch {
+        return reply.code(400).send({ error: "bad_request", message: "Failed to download file from the provided URL." });
+      }
     }
-    const detectedFilename = request.body.filename?.trim() || "attachment";
-    const ext = detectedFilename.split(".").pop()?.toLowerCase() || "";
-    const mime: Record<string, string> = {
-      pdf: "application/pdf",
-      png: "image/png",
-      jpg: "image/jpeg",
-      jpeg: "image/jpeg",
-      gif: "image/gif",
-      webp: "image/webp",
-      mp4: "video/mp4",
-      txt: "text/plain",
-      md: "text/markdown",
-      csv: "text/csv",
-      json: "application/json",
-      zip: "application/zip",
-      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      doc: "application/msword",
-      xls: "application/vnd.ms-excel",
-      ppt: "application/vnd.ms-powerpoint",
-    };
-    const contentType = mime[ext] ?? "application/octet-stream";
 
     try {
       const { attachment } = await createDocumentAttachment({
@@ -1000,6 +1197,9 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     }
   });
 
+  // Read an attachment's bytes on behalf of a linked user. Returns metadata
+  // and the file content base64-encoded so agents can describe images or
+  // process documents. Requires viewer access on the parent document.
   app.post<{
     Body: {
       externalProvider?: string;
@@ -1048,6 +1248,7 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     });
     if (!attachment) return reply.code(404).send({ error: "not_found", message: "Attachment not found." });
 
+    // Ensure attachment belongs to this workspace
     if (attachment.workspaceId !== integration.workspaceId) {
       return reply.code(404).send({ error: "not_found", message: "Attachment not found." });
     }
@@ -1065,6 +1266,19 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     const bytes = await readBlob(attachment.storageKey);
     await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
 
+    trackServerEvent(
+      "agent_mcp_call",
+      integration.workspaceId,
+      { userId: link.userId, tokenId: null },
+      { tool_name: "attachment_read", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+    );
+    trackServerEvent(
+      "agent_document_read",
+      integration.workspaceId,
+      { userId: link.userId, tokenId: null },
+      { doc_id: attachment.documentId, token_id: null, change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
+    );
+
     return {
       attachment: {
         id: attachment.id,
@@ -1076,6 +1290,48 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       },
     };
   });
+
+  // ---------------------------------------------------------------------------
+  // Hosted integration MCP endpoint (cloud-only — Phase 5)
+  // POST /integrations/mcp  — Streamable HTTP JSON-RPC, auth via HTTP Basic
+  // ---------------------------------------------------------------------------
+  app.post("/integrations/mcp", async (request, reply) => {
+    const integration = await authenticateIntegration(request, reply);
+    if (!integration) return;
+
+    const body = request.body as unknown;
+    const entries = Array.isArray(body) ? body : [body];
+    const responses = (await Promise.all(entries.map((e) => handleIntegrationMcp(e, integration)))).filter(Boolean);
+
+    if (!Array.isArray(body)) {
+      if (responses.length === 0) return reply.code(202).send();
+      return responses[0];
+    }
+    return responses;
+  });
+}
+
+type LinkLookup = { linked: true; id: string; userId: string } | { linked: false; connectUrl: string };
+
+async function lookupLink(
+  integrationId: string,
+  workspaceId: string,
+  externalProvider: string,
+  externalAccountId: string,
+): Promise<LinkLookup> {
+  const link = await prisma.externalAccountLink.findUnique({
+    where: { integrationId_externalProvider_externalAccountId: { integrationId, externalProvider, externalAccountId } },
+    select: { id: true, userId: true, revokedAt: true },
+  });
+  if (!link || link.revokedAt) {
+    const rawToken = createSecret(CONNECT_TOKEN_PREFIX);
+    const expiresAt = new Date(Date.now() + CONNECT_TTL_MS);
+    await prisma.externalConnectSession.create({
+      data: { workspaceId, integrationId, tokenHash: sha256(rawToken), externalProvider, externalAccountId, expiresAt },
+    });
+    return { linked: false, connectUrl: `${env.appUrl}/integrations/connect?token=${encodeURIComponent(rawToken)}` };
+  }
+  return { linked: true, id: link.id, userId: link.userId };
 }
 
 async function resolveLink(
@@ -1084,41 +1340,166 @@ async function resolveLink(
   externalAccountId: string,
   reply: FastifyReply,
 ): Promise<{ id: string; userId: string } | null> {
-  const link = await prisma.externalAccountLink.findUnique({
-    where: {
-      integrationId_externalProvider_externalAccountId: {
-        integrationId: integration.id,
-        externalProvider,
-        externalAccountId,
-      },
-    },
-    select: { id: true, userId: true, revokedAt: true },
-  });
-
-  if (!link || link.revokedAt) {
-    const rawToken = createSecret(CONNECT_TOKEN_PREFIX);
-    const tokenHash = sha256(rawToken);
-    const expiresAt = new Date(Date.now() + CONNECT_TTL_MS);
-    await prisma.externalConnectSession.create({
-      data: {
-        workspaceId: integration.workspaceId,
-        integrationId: integration.id,
-        tokenHash,
-        externalProvider,
-        externalAccountId,
-        expiresAt,
-      },
-    });
-    const connectUrl = `${env.appUrl}/integrations/connect?token=${encodeURIComponent(rawToken)}`;
+  const result = await lookupLink(integration.id, integration.workspaceId, externalProvider, externalAccountId);
+  if (!result.linked) {
     reply.code(403).send({
       error: "account_not_linked",
       message: "This external account is not linked to a PageDen account. Ask the user to connect their account first.",
-      connectUrl,
+      connectUrl: result.connectUrl,
     });
     return null;
   }
+  return { id: result.id, userId: result.userId };
+}
 
-  return { id: link.id, userId: link.userId };
+// ---------------------------------------------------------------------------
+// Hosted integration MCP endpoint (cloud-only — Phase 5)
+// Customers point their agent at POST /integrations/mcp with HTTP Basic auth
+// using their WorkspaceIntegration clientId:clientSecret. No local install needed.
+// ---------------------------------------------------------------------------
+
+const INTEGRATION_MCP_TOOLS = [
+  {
+    name: "pageden_read_document",
+    description: "Read a PageDen document on behalf of the calling user. Returns full content and metadata. Use documentId when known; fall back to path otherwise.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        externalAccountId: { type: "string", description: "The calling user's account ID on this platform (e.g. Discord user ID)." },
+        documentId: { type: "string", description: "PageDen document ID." },
+        path: { type: "string", description: 'PageDen document path (e.g. "/projects/roadmap"). Use when documentId is unknown.' },
+      },
+      required: ["externalAccountId"],
+    },
+  },
+  {
+    name: "pageden_search_documents",
+    description: "Full-text search across PageDen documents accessible to the calling user. Returns ranked results with title, path, and snippet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        externalAccountId: { type: "string", description: "The calling user's account ID on this platform (e.g. Discord user ID)." },
+        query: { type: "string", description: "Search query." },
+        limit: { type: "number", description: "Maximum results (1–50, default 10)." },
+        canonicalOnly: { type: "boolean", description: "When true, only return canonical documents." },
+      },
+      required: ["externalAccountId", "query"],
+    },
+  },
+];
+
+function mcpResult(id: unknown, result: unknown): unknown {
+  return { jsonrpc: "2.0", id: id ?? null, result };
+}
+function mcpError(id: unknown, code: number, message: string): unknown {
+  return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+function mcpText(text: string): { content: Array<{ type: "text"; text: string }> } {
+  return { content: [{ type: "text" as const, text }] };
+}
+
+async function callIntegrationTool(
+  name: string,
+  args: Record<string, unknown>,
+  integration: IntegrationAuth,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const externalAccountId = String(args["externalAccountId"] ?? "").trim();
+  if (!externalAccountId) return mcpText("externalAccountId is required.");
+
+  // externalProvider is implicit from the integration's providerKey
+  const externalProvider = integration.providerKey;
+
+  if (name === "pageden_read_document") {
+    const documentId = args["documentId"] ? String(args["documentId"]).trim() : undefined;
+    const path = args["path"] ? String(args["path"]).trim() : undefined;
+    if (!documentId && !path) return mcpText("Provide documentId or path.");
+
+    const linkResult = await lookupLink(integration.id, integration.workspaceId, externalProvider, externalAccountId);
+    if (!linkResult.linked) {
+      return mcpText(`Your ${externalProvider} account is not linked to PageDen yet.\nConnect your account here: ${linkResult.connectUrl}`);
+    }
+
+    const doc = await prisma.document.findFirst({
+      where: documentId
+        ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
+        : { path: path!, workspaceId: integration.workspaceId, deletedAt: null },
+    });
+    if (!doc) return mcpText("Document not found.");
+
+    const role = await resolveDocumentRole(linkResult.userId, doc.id);
+    if (!atLeast(role, "viewer")) return mcpText("You do not have access to this document.");
+
+    let content = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) content = await readContent(revision.storageKey);
+    }
+    await prisma.externalAccountLink.update({ where: { id: linkResult.id }, data: { lastUsedAt: new Date() } });
+    return mcpText(JSON.stringify({ id: doc.id, title: doc.title, path: doc.path, status: doc.status, content }, null, 2));
+  }
+
+  if (name === "pageden_search_documents") {
+    const query = String(args["query"] ?? "").trim();
+    if (!query) return mcpText("query is required.");
+
+    const linkResult = await lookupLink(integration.id, integration.workspaceId, externalProvider, externalAccountId);
+    if (!linkResult.linked) {
+      return mcpText(`Your ${externalProvider} account is not linked to PageDen yet.\nConnect your account here: ${linkResult.connectUrl}`);
+    }
+
+    const limit = clampSearchLimit(args["limit"], 10);
+    const results = await searchDocuments({
+      userId: linkResult.userId,
+      workspaceId: integration.workspaceId,
+      query,
+      limit,
+      canonicalOnly: Boolean(args["canonicalOnly"] ?? false),
+    });
+    await prisma.externalAccountLink.update({ where: { id: linkResult.id }, data: { lastUsedAt: new Date() } });
+    return mcpText(JSON.stringify({ results }, null, 2));
+  }
+
+  return mcpText(`Unknown tool: ${name}`);
+}
+
+async function handleIntegrationMcp(raw: unknown, integration: IntegrationAuth): Promise<unknown | null> {
+  const msg = raw as { id?: unknown; method?: unknown; params?: unknown };
+  if (!msg || typeof msg !== "object" || typeof msg.method !== "string") {
+    return mcpError(null, -32600, "Invalid JSON-RPC request.");
+  }
+  if (msg.method.startsWith("notifications/")) return null;
+  const id = msg.id ?? null;
+  const params = (msg.params ?? {}) as Record<string, unknown>;
+
+  try {
+    switch (msg.method) {
+      case "initialize":
+        return mcpResult(id, {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "pageden-integration", version: "0.1.0" },
+        });
+      case "ping":
+        return mcpResult(id, {});
+      case "tools/list":
+        return mcpResult(id, { tools: INTEGRATION_MCP_TOOLS });
+      case "tools/call": {
+        if (!integration.scopes.includes("documents:read")) {
+          return mcpResult(id, mcpText("Integration requires documents:read scope."));
+        }
+        const name = String(params["name"] ?? "");
+        const args = (params["arguments"] ?? {}) as Record<string, unknown>;
+        return mcpResult(id, await callIntegrationTool(name, args, integration));
+      }
+      default:
+        return mcpError(id, -32601, `Unsupported method: ${msg.method}`);
+    }
+  } catch (err) {
+    return mcpError(id, -32000, err instanceof Error ? err.message : "Internal error");
+  }
 }
 
 function escapeHtml(value: string): string {
