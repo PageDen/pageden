@@ -643,6 +643,7 @@ model WorkspaceIntegration {
   clientId         String    @unique
   clientSecretHash String
   scopes           String[]  @default([])
+  config           Json?
   createdById      String
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt

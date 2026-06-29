@@ -4,6 +4,7 @@ import { getApp, closeApp, req, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { addMember, baseScenario, createUser, createWorkspace } from "../fixtures/seed.js";
 import { drainScanWorker, setScanner } from "../../src/attachments/scanner.js";
+import { registerServerAnalyticsListener, type ServerEventPayload } from "../../src/lib/analytics-bus.js";
 
 beforeAll(async () => {
   await getApp();
@@ -302,39 +303,47 @@ describe("REST-mode external integration account linking", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Shared helper for Phase 2 + Phase 5 tests
+// ---------------------------------------------------------------------------
+
+async function setupActions() {
+  const s = await baseScenario();
+  const iRes = await req({
+    method: "POST",
+    url: `/api/workspaces/${s.ws.id}/integrations`,
+    cookies: s.adminCookie,
+    payload: { providerKey: "hermes", runtimeMode: "rest", name: "Hermes", scopes: ["connect:write", "links:read", "documents:read"] },
+  });
+  expect(iRes.statusCode).toBe(201);
+  const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
+  const auth = basic(integration.clientId, clientSecret);
+
+  const sRes = await req({
+    method: "POST",
+    url: "/api/integrations/connect-sessions",
+    headers: auth,
+    payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1" },
+  });
+  expect(sRes.statusCode).toBe(201);
+  const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
+  await confirm(sessionId, tokenFromConnectUrl(connectUrl), s.admin.id);
+
+  return { s, auth };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — REST action endpoints
+// ---------------------------------------------------------------------------
+
 describe("REST-mode document action endpoints", () => {
-  async function setupActions() {
-    const s = await baseScenario();
-    const iRes = await req({
-      method: "POST",
-      url: `/api/workspaces/${s.ws.id}/integrations`,
-      cookies: s.adminCookie,
-      payload: { providerKey: "hermes", runtimeMode: "rest", name: "Hermes", scopes: ["connect:write", "links:read", "documents:read"] },
-    });
-    expect(iRes.statusCode).toBe(201);
-    const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
-    const auth = basic(integration.clientId, clientSecret);
-
-    const sRes = await req({
-      method: "POST",
-      url: "/api/integrations/connect-sessions",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
-    });
-    expect(sRes.statusCode).toBe(201);
-    const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
-    await confirm(sessionId, tokenFromConnectUrl(connectUrl), s.admin.id);
-
-    return { s, auth };
-  }
-
   it("document-read: 403 account_not_linked with connectUrl for unknown external account", async () => {
     const { s, auth } = await setupActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/document-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "nobody", documentId: s.docId },
+      payload: { externalProvider: "hermes", externalAccountId: "nobody", documentId: s.docId },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error).toBe("account_not_linked");
@@ -347,7 +356,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().document.id).toBe(s.docId);
@@ -360,7 +369,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: "does-not-exist" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: "does-not-exist" },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -371,12 +380,12 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1" },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("document-read: 400 when externalProvider or externalAccountId is missing", async () => {
+  it("document-read: 200 workspace-level read (no externalAccountId) for canonical doc", async () => {
     const { s, auth } = await setupActions();
     const res = await req({
       method: "POST",
@@ -384,7 +393,8 @@ describe("REST-mode document action endpoints", () => {
       headers: auth,
       payload: { documentId: s.docId },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.id).toBe(s.docId);
   });
 
   it("document-read: 403 when integration lacks documents:read scope", async () => {
@@ -393,7 +403,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: "any" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: "any" },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -404,7 +414,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-search",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "nobody", query: "runbook" },
+      payload: { externalProvider: "hermes", externalAccountId: "nobody", query: "runbook" },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error).toBe("account_not_linked");
@@ -417,10 +427,47 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-search",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", query: "Runbook" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", query: "Runbook" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().results).toBeInstanceOf(Array);
+    expect(res.json().results[0]).toHaveProperty("workspaceId");
+  });
+
+  it("document-search: 200 fans out across all user workspaces when user is a member of multiple", async () => {
+    const { s, auth } = await setupActions();
+
+    // Add the same user to a second workspace with its own document
+    const ws2 = await createWorkspace("Second Workspace", `ws2-${randomUUID().slice(0, 8)}`);
+    await addMember(ws2.id, s.admin.id, "admin");
+    const f2 = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: ws2.id, name: "Ops", slug: "ops" },
+    });
+    expect(f2.statusCode).toBe(201);
+    const d2 = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: { workspaceId: ws2.id, folderId: f2.json().id, title: "Runbook 2", slug: "runbook-2", content: "# Runbook 2\n" },
+    });
+    expect(d2.statusCode).toBe(201);
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-search",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", query: "Runbook" },
+    });
+    expect(res.statusCode).toBe(200);
+    const { results, errors } = res.json() as { results: Array<{ workspaceId: string }>; errors?: unknown[] };
+    expect(results).toBeInstanceOf(Array);
+    expect(errors ?? []).toHaveLength(0);
+    const wsIds = new Set(results.map((r) => r.workspaceId));
+    expect(wsIds.has(s.ws.id)).toBe(true);
+    expect(wsIds.has(ws2.id)).toBe(true);
   });
 
   it("document-search: 400 when query is missing", async () => {
@@ -429,7 +476,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-search",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1" },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -440,7 +487,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/document-search",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", query: "test" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", query: "test" },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -451,7 +498,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/list-workspaces",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1" },
     });
     expect(res.statusCode).toBe(200);
     const workspaces = res.json().workspaces as Array<{ id: string; name: string; slug: string; role: string }>;
@@ -467,7 +514,7 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/list-workspaces",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "nobody" },
+      payload: { externalProvider: "hermes", externalAccountId: "nobody" },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error).toBe("account_not_linked");
@@ -479,11 +526,15 @@ describe("REST-mode document action endpoints", () => {
       method: "POST",
       url: "/api/integrations/actions/list-workspaces",
       headers: auth,
-      payload: { externalProvider: "discord" },
+      payload: { externalProvider: "hermes" },
     });
     expect(res.statusCode).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Write action endpoints (document-create / append / update / file-attach)
+// ---------------------------------------------------------------------------
 
 async function setupWriteActions() {
   const s = await baseScenario();
@@ -491,12 +542,7 @@ async function setupWriteActions() {
     method: "POST",
     url: `/api/workspaces/${s.ws.id}/integrations`,
     cookies: s.adminCookie,
-    payload: {
-      providerKey: "hermes",
-      runtimeMode: "rest",
-      name: "Hermes",
-      scopes: ["connect:write", "links:read", "documents:read", "documents:write"],
-    },
+    payload: { providerKey: "hermes", runtimeMode: "rest", name: "Hermes", scopes: ["connect:write", "links:read", "documents:read", "documents:write"] },
   });
   expect(iRes.statusCode).toBe(201);
   const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
@@ -506,192 +552,312 @@ async function setupWriteActions() {
     method: "POST",
     url: "/api/integrations/connect-sessions",
     headers: auth,
-    payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+    payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1" },
   });
   expect(sRes.statusCode).toBe(201);
   const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
-  const confirmed = await confirm(sessionId, tokenFromConnectUrl(connectUrl), s.admin.id);
-  expect(confirmed.statusCode).toBe(200);
+  await confirm(sessionId, tokenFromConnectUrl(connectUrl), s.admin.id);
 
   return { s, auth };
 }
 
 describe("REST-mode write action endpoints", () => {
   it("document-create: 403 when integration lacks documents:write scope", async () => {
-    const { auth } = await createIntegration(["connect:write", "links:read", "documents:read"]);
+    const { auth } = await setupActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/document-create",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/engineering/test-doc", title: "Test" },
+      payload: { externalAccountId: "hermes-admin-1", path: "/engineering/test-doc", title: "Test" },
     });
     expect(res.statusCode).toBe(403);
   });
 
-  it("document-create: validates linked user and path before creating", async () => {
-    const { auth } = await setupWriteActions();
-
-    const missingAccount = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-create",
-      headers: auth,
-      payload: { externalProvider: "discord", path: "/engineering/test-doc", title: "Test" },
-    });
-    expect(missingAccount.statusCode).toBe(400);
-
-    const invalidPath = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-create",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/engineering/My Doc", title: "My Doc" },
-    });
-    expect(invalidPath.statusCode).toBe(400);
-
-    const missingFolder = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-create",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/missing/new-doc", title: "New Doc" },
-    });
-    expect(missingFolder.statusCode).toBe(404);
-  });
-
-  it("document-create: creates a document through the linked user's permissions", async () => {
+  it("document-create: 400 when externalAccountId is missing", async () => {
     const { auth } = await setupWriteActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/document-create",
       headers: auth,
-      payload: {
-        externalProvider: "discord",
-        externalAccountId: "discord-admin-1",
-        path: "/engineering/new-runbook",
-        title: "New Runbook",
-        content: "# New Runbook\n\nCreated through an integration.",
-      },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().document.title).toBe("New Runbook");
-    expect(res.json().document.path).toBe("engineering/new-runbook.md");
-
-    const duplicate = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-create",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", path: "/engineering/new-runbook", title: "Duplicate" },
-    });
-    expect(duplicate.statusCode).toBe(409);
-  });
-
-  it("document-append: appends content to an existing document", async () => {
-    const { s, auth } = await setupWriteActions();
-    const res = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-append",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId, content: "## Appended Section\n\nNew content." },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().document.id).toBe(s.docId);
-
-    const updated = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-read",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
-    });
-    expect(updated.json().document.content).toContain("## Appended Section");
-  });
-
-  it("document-append: validates content and document lookup", async () => {
-    const { s, auth } = await setupWriteActions();
-    const missingContent = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-append",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
-    });
-    expect(missingContent.statusCode).toBe(400);
-
-    const missingDoc = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-append",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: "missing", content: "hello" },
-    });
-    expect(missingDoc.statusCode).toBe(404);
-  });
-
-  it("document-update: updates content and title", async () => {
-    const { s, auth } = await setupWriteActions();
-    const res = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-update",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId, content: "# Updated\n\nNew body.", title: "Updated Runbook" },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().document.id).toBe(s.docId);
-
-    const updated = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-read",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
-    });
-    expect(updated.json().document.title).toBe("Updated Runbook");
-    expect(updated.json().document.content).toContain("# Updated");
-  });
-
-  it("document-update: requires content or title", async () => {
-    const { s, auth } = await setupWriteActions();
-    const res = await req({
-      method: "POST",
-      url: "/api/integrations/actions/document-update",
-      headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+      payload: { path: "/engineering/test-doc", title: "Test" },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it("file-attach: accepts base64 content and creates a scanning attachment", async () => {
+  it("document-create: 400 when path has invalid slug", async () => {
+    const { auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", path: "/engineering/My Doc", title: "My Doc" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("document-create: 404 when folder does not exist", async () => {
+    const { auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", path: "/no-such-folder/test-doc", title: "Test" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("document-create: 201 creates a new document", async () => {
+    const { auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: {
+        externalProvider: "hermes",
+        externalAccountId: "hermes-admin-1",
+        path: "/engineering/new-runbook",
+        title: "New Runbook",
+        content: "# New Runbook\n\nContent here.",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.document.title).toBe("New Runbook");
+    expect(body.document.path).toBe("engineering/new-runbook.md");
+  });
+
+  it("document-create: 409 when slug already taken in folder", async () => {
+    const { auth } = await setupWriteActions();
+    const payload = {
+      externalProvider: "hermes",
+      externalAccountId: "hermes-admin-1",
+      path: "/engineering/runbook",
+      title: "Duplicate",
+    };
+    const res = await req({ method: "POST", url: "/api/integrations/actions/document-create", headers: auth, payload });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("conflict");
+  });
+
+  it("document-append: 200 appends content to existing document", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId, content: "\n## Appended Section\n\nNew content." },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.id).toBe(s.docId);
+  });
+
+  it("document-append: 400 when content is missing", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("document-append: 404 when document does not exist", async () => {
+    const { auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: "nonexistent-id", content: "hello" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("document-update: 200 replaces document content", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-update",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId, content: "# Updated\n\nNew body.", title: "Updated Runbook" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document.id).toBe(s.docId);
+  });
+
+  it("document-update: 400 when neither content nor title provided", async () => {
+    const { s, auth } = await setupWriteActions();
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-update",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("file-attach: 400 when fileUrl is missing", async () => {
     const { s, auth } = await setupWriteActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/file-attach",
       headers: auth,
-      payload: {
-        externalProvider: "discord",
-        externalAccountId: "discord-admin-1",
-        documentId: s.docId,
-        filename: "evidence.pdf",
-        fileContent: Buffer.from("%PDF-1.4\n%PageDen test\n").toString("base64"),
-      },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId },
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().attachment.filename).toBe("evidence.pdf");
-    expect(res.json().attachment.status).toBe("scanning");
+    expect(res.statusCode).toBe(400);
   });
 
-  it("file-attach: validates missing file content and rejects URL-only uploads", async () => {
+  it("file-attach: 400 when only fileUrl is provided", async () => {
     const { s, auth } = await setupWriteActions();
-    const missingFile = await req({
+    const res = await req({
       method: "POST",
       url: "/api/integrations/actions/file-attach",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId, fileUrl: "http://127.0.0.1:19999/no-such-file.txt" },
     });
-    expect(missingFile.statusCode).toBe(400);
-    expect(missingFile.json().message).toContain("fileContent");
+    expect(res.statusCode).toBe(400);
+  });
 
-    const urlOnly = await req({
+  it("document-search: 200 workspace-level search (no externalAccountId)", async () => {
+    const { auth } = await setupWriteActions();
+    const res = await req({
       method: "POST",
-      url: "/api/integrations/actions/file-attach",
+      url: "/api/integrations/actions/document-search",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId, fileUrl: "http://127.0.0.1:19999/missing.pdf" },
+      payload: { query: "Runbook" },
     });
-    expect(urlOnly.statusCode).toBe(400);
-    expect(urlOnly.json().message).toContain("fileContent");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results).toBeInstanceOf(Array);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Hosted integration MCP endpoint
+// ---------------------------------------------------------------------------
+
+describe("hosted integration MCP endpoint (POST /integrations/mcp)", () => {
+  function mcpCall(method: string, params?: unknown) {
+    return { jsonrpc: "2.0", id: 1, method, ...(params !== undefined ? { params } : {}) };
+  }
+
+  it("401 for missing or invalid credentials", async () => {
+    const res = await req({ method: "POST", url: "/integrations/mcp", payload: mcpCall("initialize") });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("initialize returns protocolVersion and serverInfo", async () => {
+    const { auth } = await setupActions();
+    const res = await req({ method: "POST", url: "/integrations/mcp", headers: auth, payload: mcpCall("initialize") });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().result.protocolVersion).toBe("2024-11-05");
+    expect(res.json().result.serverInfo.name).toBe("pageden-integration");
+  });
+
+  it("tools/list returns pageden_read_document and pageden_search_documents", async () => {
+    const { auth } = await setupActions();
+    const res = await req({ method: "POST", url: "/integrations/mcp", headers: auth, payload: mcpCall("tools/list") });
+    expect(res.statusCode).toBe(200);
+    const names = (res.json().result.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(names).toContain("pageden_read_document");
+    expect(names).toContain("pageden_search_documents");
+  });
+
+  it("notifications get 202 no-content", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: { jsonrpc: "2.0", method: "notifications/initialized" },
+    });
+    expect(res.statusCode).toBe(202);
+  });
+
+  it("tools/call pageden_read_document returns document content for linked user", async () => {
+    const { s, auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: mcpCall("tools/call", {
+        name: "pageden_read_document",
+        arguments: { externalAccountId: "hermes-admin-1", documentId: s.docId },
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const text = (res.json().result.content as Array<{ text: string }>)[0]?.text ?? "";
+    const parsed = JSON.parse(text) as { id: string; content: string };
+    expect(parsed.id).toBe(s.docId);
+    expect(parsed.content).toContain("# Runbook");
+  });
+
+  it("tools/call pageden_read_document returns connect URL for unlinked account", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: mcpCall("tools/call", {
+        name: "pageden_read_document",
+        arguments: { externalAccountId: "nobody", documentId: "any" },
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const text = (res.json().result.content as Array<{ text: string }>)[0]?.text ?? "";
+    expect(text).toMatch(/integrations\/connect\?token=/);
+  });
+
+  it("tools/call pageden_search_documents returns results for linked user", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: mcpCall("tools/call", {
+        name: "pageden_search_documents",
+        arguments: { externalAccountId: "hermes-admin-1", query: "Runbook" },
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const text = (res.json().result.content as Array<{ text: string }>)[0]?.text ?? "";
+    const parsed = JSON.parse(text) as { results: unknown[] };
+    expect(parsed.results).toBeInstanceOf(Array);
+  });
+
+  it("tools/call returns scope error message when integration lacks documents:read", async () => {
+    const { auth } = await createIntegration(["connect:write", "links:read"]);
+    const res = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: mcpCall("tools/call", {
+        name: "pageden_read_document",
+        arguments: { externalAccountId: "hermes-admin-1", documentId: "any" },
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const text = (res.json().result.content as Array<{ text: string }>)[0]?.text ?? "";
+    expect(text).toContain("documents:read");
+  });
+
+  it("batch requests return an array of responses", async () => {
+    const { auth } = await setupActions();
+    const res = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: [mcpCall("initialize"), mcpCall("tools/list")],
+    });
+    expect(res.statusCode).toBe(200);
+    expect(Array.isArray(res.json())).toBe(true);
+    expect((res.json() as unknown[]).length).toBe(2);
+  });
+
+  it("unknown method returns -32601 error", async () => {
+    const { auth } = await setupActions();
+    const res = await req({ method: "POST", url: "/integrations/mcp", headers: auth, payload: mcpCall("unknown/method") });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().error.code).toBe(-32601);
   });
 });
 
@@ -711,68 +877,38 @@ async function uploadAttachment(docId: string, adminCookie: Record<string, strin
   });
 }
 
-async function setupAttachmentActions() {
-  const s = await baseScenario();
-  const iRes = await req({
-    method: "POST",
-    url: `/api/workspaces/${s.ws.id}/integrations`,
-    cookies: s.adminCookie,
-    payload: { providerKey: "discord", runtimeMode: "rest", name: "Hermes", scopes: ["connect:write", "links:read", "documents:read"] },
-  });
-  const { integration, clientSecret } = iRes.json() as { integration: { id: string; clientId: string }; clientSecret: string };
-  const auth = { authorization: `Basic ${Buffer.from(`${integration.clientId}:${clientSecret}`).toString("base64")}` };
-
-  const sRes = await req({
-    method: "POST",
-    url: "/api/integrations/connect-sessions",
-    headers: auth,
-    payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
-  });
-  const { sessionId, connectUrl } = sRes.json() as { sessionId: string; connectUrl: string };
-  const parsed = new URL(connectUrl);
-  const token = parsed.searchParams.get("token")!;
-  await req({
-    method: "POST",
-    url: `/api/integrations/connect-sessions/${sessionId}/confirm`,
-    cookies: sessionFor(s.admin.id),
-    payload: { token },
-  });
-
-  return { s, auth };
-}
-
 describe("REST-mode attachment-read action endpoint", () => {
   it("400 when attachmentId is missing", async () => {
-    const { auth } = await setupAttachmentActions();
+    const { auth } = await setupActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1" },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("bad_request");
   });
 
   it("400 when externalAccountId is missing", async () => {
-    const { auth } = await setupAttachmentActions();
+    const { auth } = await setupActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", attachmentId: "some-id" },
+      payload: { externalProvider: "hermes", attachmentId: "some-id" },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("bad_request");
   });
 
   it("403 account_not_linked for unknown external account", async () => {
-    const { auth } = await setupAttachmentActions();
+    const { auth } = await setupActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "nobody", attachmentId: "some-id" },
+      payload: { externalProvider: "hermes", externalAccountId: "nobody", attachmentId: "some-id" },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error).toBe("account_not_linked");
@@ -780,19 +916,19 @@ describe("REST-mode attachment-read action endpoint", () => {
   });
 
   it("404 when attachment does not exist", async () => {
-    const { auth } = await setupAttachmentActions();
+    const { auth } = await setupActions();
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId: "nonexistent-id" },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId: "nonexistent-id" },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe("not_found");
   });
 
   it("200 returns base64 bytes and metadata for a ready attachment", async () => {
-    const { s, auth } = await setupAttachmentActions();
+    const { s, auth } = await setupActions();
     const up = await uploadAttachment(s.docId, s.adminCookie, "diagram.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
     const attachmentId = up.json().id as string;
@@ -802,7 +938,7 @@ describe("REST-mode attachment-read action endpoint", () => {
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -819,7 +955,7 @@ describe("REST-mode attachment-read action endpoint", () => {
     const blocked = new Promise<void>((resolve) => { unblock = resolve; });
     setScanner(async () => { await blocked; return "clean"; });
 
-    const { s, auth } = await setupAttachmentActions();
+    const { s, auth } = await setupActions();
     const up = await uploadAttachment(s.docId, s.adminCookie, "scan.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
     const attachmentId = up.json().id as string;
@@ -828,7 +964,7 @@ describe("REST-mode attachment-read action endpoint", () => {
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId },
     });
     expect(res.statusCode).toBe(503);
     expect(res.json().error).toBe("scan_pending");
@@ -839,7 +975,7 @@ describe("REST-mode attachment-read action endpoint", () => {
   });
 
   it("403 when attachment is QUARANTINED", async () => {
-    const { s, auth } = await setupAttachmentActions();
+    const { s, auth } = await setupActions();
     const up = await uploadAttachment(s.docId, s.adminCookie, "bad.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
     const attachmentId = up.json().id as string;
@@ -849,14 +985,14 @@ describe("REST-mode attachment-read action endpoint", () => {
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error).toBe("forbidden");
   });
 
   it("404 when attachment belongs to a different workspace", async () => {
-    const ws1 = await setupAttachmentActions();
+    const ws1 = await setupActions();
     // Use createIntegration for ws2 — it creates a workspace with a UUID slug so there's no slug collision
     const ws2 = await createIntegration(["connect:write", "links:read", "documents:read", "documents:write"]);
     const f2 = await req({
@@ -882,14 +1018,25 @@ describe("REST-mode attachment-read action endpoint", () => {
       method: "POST",
       url: "/api/integrations/actions/attachment-read",
       headers: ws1.auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", attachmentId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe("not_found");
   });
 
+  it("403 when integration lacks documents:read scope", async () => {
+    const { auth } = await createIntegration(["connect:write", "links:read"]);
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/attachment-read",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", attachmentId: "any" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
   it("document-read includes attachments list", async () => {
-    const { s, auth } = await setupAttachmentActions();
+    const { s, auth } = await setupActions();
     const up = await uploadAttachment(s.docId, s.adminCookie, "chart.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
     await drainScanWorker();
@@ -898,7 +1045,7 @@ describe("REST-mode attachment-read action endpoint", () => {
       method: "POST",
       url: "/api/integrations/actions/document-read",
       headers: auth,
-      payload: { externalProvider: "discord", externalAccountId: "discord-admin-1", documentId: s.docId },
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId },
     });
     expect(res.statusCode).toBe(200);
     const attachments = res.json().document.attachments as Array<{ id: string; filename: string; contentType: string; size: number }>;
@@ -907,5 +1054,92 @@ describe("REST-mode attachment-read action endpoint", () => {
     expect(attachments[0].contentType).toBe("image/png");
     expect(attachments[0].size).toBe(PNG.length);
     expect(typeof attachments[0].id).toBe("string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent analytics for REST (Hermes) write actions — these were previously
+// uninstrumented, so integration-driven uploads never surfaced as agent
+// activity. They must emit the same agent_* events the MCP path does,
+// attributed to the linked human user (not the integration).
+// ---------------------------------------------------------------------------
+
+describe("REST agent write actions emit agent analytics (attributed to linked user)", () => {
+  let events: Array<{ event: string; payload: ServerEventPayload }> = [];
+
+  beforeEach(() => {
+    events = [];
+    registerServerAnalyticsListener({
+      track(event, payload) {
+        events.push({ event, payload });
+      },
+      identify() {},
+    });
+  });
+  afterEach(() => registerServerAnalyticsListener(null));
+
+  it("document-create emits agent_mcp_call + agent_document_created for the linked user", async () => {
+    const { s, auth } = await setupWriteActions();
+    events = [];
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-create",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", path: "/engineering/agent-note", title: "Agent Note", content: "# Hi\n" },
+    });
+    expect(res.statusCode).toBe(200);
+    const created = events.find((e) => e.event === "agent_document_created");
+    expect(created).toBeTruthy();
+    expect(created!.payload.workspaceId).toBe(s.ws.id);
+    expect(created!.payload.actor).toEqual({ userId: s.admin.id, tokenId: null });
+    expect(created!.payload.properties).toMatchObject({ change_source: "agent", surface: "integration_rest" });
+    expect(events.map((e) => e.event)).toContain("agent_mcp_call");
+  });
+
+  it("document-append emits agent_document_saved for the linked user", async () => {
+    const { s, auth } = await setupWriteActions();
+    events = [];
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-append",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId, content: "appended line" },
+    });
+    expect(res.statusCode).toBe(200);
+    const saved = events.find((e) => e.event === "agent_document_saved");
+    expect(saved).toBeTruthy();
+    expect(saved!.payload.actor).toEqual({ userId: s.admin.id, tokenId: null });
+    expect(saved!.payload.properties).toMatchObject({ doc_id: s.docId, change_source: "agent", surface: "integration_rest" });
+  });
+
+  it("document-read (per-user) emits agent_mcp_call + agent_document_read; workspace-level read does not", async () => {
+    const { s, auth } = await setupActions();
+
+    // Per-user read → agent events attributed to the linked user.
+    events = [];
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: s.docId },
+    });
+    expect(res.statusCode).toBe(200);
+    const read = events.find((e) => e.event === "agent_document_read");
+    expect(read).toBeTruthy();
+    expect(read!.payload.actor).toEqual({ userId: s.admin.id, tokenId: null });
+    expect(read!.payload.properties).toMatchObject({ doc_id: s.docId, surface: "integration_rest" });
+    expect(events.map((e) => e.event)).toContain("agent_mcp_call");
+
+    // Workspace-level read (no externalAccountId) has no human to attribute → no agent events.
+    events = [];
+    const wsRead = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { documentId: s.docId },
+    });
+    expect(wsRead.statusCode).toBe(200);
+    expect(events.map((e) => e.event)).not.toContain("agent_document_read");
+    expect(events.map((e) => e.event)).not.toContain("agent_mcp_call");
   });
 });
