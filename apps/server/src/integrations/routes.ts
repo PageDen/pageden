@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { isUniqueViolation, validationError } from "../errors.js";
 import { requireAuth } from "../auth.js";
 import { env } from "../env.js";
@@ -74,6 +76,46 @@ function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function isBlockedAddress(host: string): boolean {
+  const normalized = host.toLowerCase();
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    const [a = 0, b = 0] = normalized.split(".").map((part) => Number(part));
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      a >= 224
+    );
+  }
+  if (ipVersion === 6) {
+    return normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+  }
+  return false;
+}
+
+async function validateExternalFileUrl(raw: string): Promise<URL | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (parsed.username || parsed.password) return null;
+  if (isBlockedAddress(parsed.hostname)) return null;
+
+  const addresses = await lookup(parsed.hostname, { all: true, verbatim: false });
+  if (addresses.length === 0 || addresses.some((entry) => isBlockedAddress(entry.address))) return null;
+  return parsed;
 }
 
 function parseBasicAuth(request: FastifyRequest): { clientId: string; clientSecret: string } | null {
@@ -1168,11 +1210,13 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
       contentType = MIME[ext] ?? "application/octet-stream";
     } else {
       try {
-        const resp = await fetch(fileUrl!, { signal: AbortSignal.timeout(30_000) });
+        const safeFileUrl = await validateExternalFileUrl(fileUrl!);
+        if (!safeFileUrl) return reply.code(400).send({ error: "bad_request", message: "fileUrl must be a public http(s) URL." });
+        const resp = await fetch(safeFileUrl, { signal: AbortSignal.timeout(30_000) });
         if (!resp.ok) return reply.code(400).send({ error: "bad_request", message: `Could not fetch file: HTTP ${resp.status}` });
         fileBuffer = Buffer.from(await resp.arrayBuffer());
         contentType = resp.headers.get("content-type")?.split(";")[0]?.trim() || "application/octet-stream";
-        detectedFilename = request.body.filename?.trim() || decodeURIComponent(fileUrl!.split("/").pop()?.split("?")[0] || "attachment");
+        detectedFilename = request.body.filename?.trim() || decodeURIComponent(safeFileUrl.pathname.split("/").pop() || "attachment");
       /* v8 ignore next 2 */
       } catch {
         return reply.code(400).send({ error: "bad_request", message: "Failed to download file from the provided URL." });
