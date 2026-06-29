@@ -47,6 +47,23 @@ export interface MeResponse {
   workspaces: WorkspaceDTO[];
 }
 
+export interface AccountDeletionPreviewResponse {
+  userEmail: string;
+  soleWorkspaces: Array<{ id: string; name: string }>;
+  sharedWorkspaces: Array<{ id: string; name: string; otherMemberCount: number }>;
+}
+
+export interface AccountDeletionCodeResponse {
+  ok: true;
+  expiresAt: string;
+}
+
+export interface AccountDeletionResultResponse {
+  ok: true;
+  deletedWorkspaces: number;
+  removedStorageObjects: number;
+}
+
 export interface DocumentMeta {
   id: string;
   workspaceId: string;

@@ -9,15 +9,20 @@ import { env } from "../../src/env.js";
 
 let lastReset: { to: string; url: string } | null = null;
 let lastVerify: { to: string; url: string } | null = null;
+let lastDeletionCode: { to: string; code: string } | null = null;
 beforeEach(() => {
   lastReset = null;
   lastVerify = null;
+  lastDeletionCode = null;
   setMailer({
     async sendPasswordReset(to, url) {
       lastReset = { to, url };
     },
     async sendEmailVerification(to, url) {
       lastVerify = { to, url };
+    },
+    async sendAccountDeletionCode(to, code) {
+      lastDeletionCode = { to, code };
     },
   });
 });
@@ -246,6 +251,67 @@ describe("change password invalidates other sessions", () => {
     const otherCookie = sessionFor(user.id); // version 0, e.g. another device
     await req({ method: "POST", url: "/api/auth/change-password", cookies: sessionFor(user.id), payload: { currentPassword: PW, newPassword: "Changed-pw-123456789" } });
     expect((await req({ method: "GET", url: "/api/me", cookies: otherCookie })).statusCode).toBe(401);
+  });
+});
+
+describe("account deletion", () => {
+  it("requires a confirmation code, deletes solo workspaces, and preserves shared workspaces", async () => {
+    const { ws: solo, user } = await adminUser();
+    const shared = await createWorkspace("Shared", "shared");
+    await addMember(shared.id, user.id, "admin");
+    const teammate = await createUser("teammate@t.co", "Teammate");
+    await addMember(shared.id, teammate.id, "member");
+    const cookie = sessionFor(user.id);
+
+    const preview = await req({ method: "GET", url: "/api/account/deletion-preview", cookies: cookie });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      userEmail: "admin@t.co",
+      soleWorkspaces: [{ id: solo.id, name: solo.name }],
+      sharedWorkspaces: [{ id: shared.id, name: shared.name, otherMemberCount: 1 }],
+    });
+
+    const sent = await req({ method: "POST", url: "/api/account/deletion-code", cookies: cookie });
+    expect(sent.statusCode).toBe(200);
+    expect(sent.json().expiresAt).toEqual(expect.any(String));
+    expect(lastDeletionCode).toEqual({ to: "admin@t.co", code: expect.stringMatching(/^\d{6}$/) });
+
+    const invalid = await req({
+      method: "DELETE",
+      url: "/api/account",
+      cookies: cookie,
+      payload: { confirm: "delete", code: "000000" },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().fields).toHaveProperty("confirm");
+
+    const deleted = await req({
+      method: "DELETE",
+      url: "/api/account",
+      cookies: cookie,
+      payload: { confirm: "DELETE", code: lastDeletionCode!.code },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toMatchObject({ ok: true, deletedWorkspaces: 1 });
+    expect(deleted.cookies.find((c) => c.name === "pm_session")?.value).toBe("");
+
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+    expect(await prisma.workspace.findUnique({ where: { id: solo.id } })).toBeNull();
+    expect(await prisma.workspace.findUnique({ where: { id: shared.id } })).toBeTruthy();
+    expect(await prisma.workspaceMembership.findUnique({ where: { workspaceId_userId: { workspaceId: shared.id, userId: teammate.id } } })).toBeTruthy();
+    expect(await prisma.user.findUnique({ where: { email: "deleted-user@pageden.system" } })).toBeTruthy();
+  });
+
+  it("does not allow bearer-token account deletion", async () => {
+    const { user } = await adminUser();
+    const created = await req({ method: "POST", url: "/api/tokens", cookies: sessionFor(user.id), payload: { name: "Plugin" } });
+    const raw = created.json().token as string;
+
+    const preview = await req({ method: "GET", url: "/api/account/deletion-preview", headers: bearer(raw) });
+    const code = await req({ method: "POST", url: "/api/account/deletion-code", headers: bearer(raw) });
+
+    expect(preview.statusCode).toBe(403);
+    expect(code.statusCode).toBe(403);
   });
 });
 

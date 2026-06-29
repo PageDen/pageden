@@ -26,6 +26,7 @@ describe("createMailer", () => {
     const mailer = createMailer();
     await mailer.sendPasswordReset("a@t.co", "https://app/reset?token=x");
     await mailer.sendEmailVerification("a@t.co", "https://app/verify?token=y");
+    await mailer.sendAccountDeletionCode("a@t.co", "123456");
     await mailer.sendPermissionGranted("a@t.co", {
       actorName: "Chris",
       workspaceName: "Pageden workspace",
@@ -43,10 +44,11 @@ describe("createMailer", () => {
       commentBody: "<review this>",
       openUrl: "https://app/w/ws/p/Roadmap#comment-1",
     });
-    expect(log).toHaveBeenCalledTimes(4);
+    expect(log).toHaveBeenCalledTimes(5);
     expect(log.mock.calls[0]![0]).toContain("https://app/reset?token=x");
-    expect(log.mock.calls[2]![0]).toContain("https://app/w/ws/p/Roadmap");
-    expect(log.mock.calls[3]![0]).toContain("#comment-1");
+    expect(log.mock.calls[2]![0]).toContain("123456");
+    expect(log.mock.calls[3]![0]).toContain("https://app/w/ws/p/Roadmap");
+    expect(log.mock.calls[4]![0]).toContain("#comment-1");
   });
 
   it("uses the Resend API when RESEND_API_KEY is set", async () => {
@@ -55,6 +57,7 @@ describe("createMailer", () => {
     const mailer = createMailer();
     await mailer.sendPasswordReset("a@t.co", "https://app/reset?token=x");
     await mailer.sendEmailVerification("a@t.co", "https://app/verify?token=y");
+    await mailer.sendAccountDeletionCode("a@t.co", "123456");
     await mailer.sendPermissionGranted("a@t.co", {
       actorName: "Chris",
       workspaceName: "Pageden workspace",
@@ -63,13 +66,16 @@ describe("createMailer", () => {
       role: "viewer",
       openUrl: "https://app/w/ws",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.resend.com/emails");
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect((init.headers as Record<string, string>)["user-agent"]).toBe("Pageden/1.0");
     const body = JSON.parse(init.body as string);
     expect(body.to).toBe("a@t.co");
-    const permissionBody = JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string);
+    const deletionBody = JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string);
+    expect(deletionBody.subject).toContain("account deletion");
+    expect(deletionBody.text).toContain("123456");
+    const permissionBody = JSON.parse((fetchMock.mock.calls[3]![1] as RequestInit).body as string);
     expect(permissionBody.subject).toContain("shared a folder");
     expect(permissionBody.html).toContain("https://app/w/ws");
 
@@ -89,10 +95,10 @@ describe("createMailer", () => {
       commentBody: "x".repeat(600),
       openUrl: "https://app/w/ws/p/strategy#comment-1",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    const managerBody = JSON.parse((fetchMock.mock.calls[3]![1] as RequestInit).body as string);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const managerBody = JSON.parse((fetchMock.mock.calls[4]![1] as RequestInit).body as string);
     expect(managerBody.text).toContain("as Manager");
-    const mentionBody = JSON.parse((fetchMock.mock.calls[4]![1] as RequestInit).body as string);
+    const mentionBody = JSON.parse((fetchMock.mock.calls[5]![1] as RequestInit).body as string);
     expect(mentionBody.subject).toContain("agent@t.co mentioned you");
     expect(mentionBody.text).toContain("x".repeat(500));
     expect(mentionBody.text).not.toContain("x".repeat(501));
