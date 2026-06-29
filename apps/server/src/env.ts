@@ -54,8 +54,6 @@ export const env = {
   webOrigin: normalizeOrigin(process.env.WEB_ORIGIN ?? "http://localhost:3000"),
   bootstrapAdminEmail: process.env.BOOTSTRAP_ADMIN_EMAIL,
   bootstrapAdminPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD,
-  // ClamAV TCP endpoint (optional). Format: "tcp://host:port". When unset, scanning is skipped.
-  clamavUrl: process.env.CLAMAV_URL,
   // Google OAuth (optional). When unset, the Google sign-in routes report not-configured.
   googleClientId: process.env.GOOGLE_CLIENT_ID,
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,

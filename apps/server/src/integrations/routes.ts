@@ -1241,13 +1241,6 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     const role = await resolveDocumentRole(link.userId, attachment.documentId);
     if (!atLeast(role, "viewer")) return reply.code(404).send({ error: "not_found", message: "Attachment not found." });
 
-    if (attachment.status === "SCANNING") {
-      return reply.code(503).send({ error: "scan_pending", message: "Attachment is being scanned, try again shortly." });
-    }
-    if (attachment.status === "QUARANTINED") {
-      return reply.code(403).send({ error: "forbidden", message: "Attachment is not available." });
-    }
-
     const bytes = await readBlob(attachment.storageKey);
     await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
 

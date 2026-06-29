@@ -1,20 +1,16 @@
-import { beforeAll, afterAll, beforeEach, afterEach, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, beforeEach, describe, it, expect } from "vitest";
 import { getApp, closeApp, req, sessionFor, bearer } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario, createUser, addMember, grant, createWorkspace } from "../fixtures/seed.js";
 import { createRawToken, hashToken } from "../../src/tokens.js";
 import { env } from "../../src/env.js";
 import { MAX_ATTACHMENT_BYTES } from "../../src/attachments/routes.js";
-import { drainScanWorker, setScanner } from "../../src/attachments/scanner.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
 beforeEach(async () => { await resetDb(); });
-afterEach(() => { setScanner(undefined); });
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452deadbeef", "hex");
-// Standard EICAR test string — any real ClamAV detects this as Eicar-Signature.
-const EICAR = Buffer.from('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*');
 
 async function upload(docId: string, auth: Record<string, string>, name: string, body: Buffer, contentType = "image/png") {
   const isBearer = "authorization" in auth;
@@ -37,9 +33,7 @@ describe("attachments", () => {
     expect(meta.contentType).toBe("image/png");
     expect(meta.size).toBe(PNG.length);
     expect(typeof meta.sha256).toBe("string");
-    expect(meta.status).toBe("scanning"); // scan is async; drain before downloading
-
-    await drainScanWorker();
+    expect(meta.status).toBe("ready");
 
     const list = await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie });
     expect(list.statusCode).toBe(200);
@@ -51,19 +45,17 @@ describe("attachments", () => {
     expect(Buffer.compare(dl.rawPayload, PNG)).toBe(0);
   });
 
-  it("upload response includes status field (scanning on create)", async () => {
+  it("upload response includes status field", async () => {
     const s = await baseScenario();
     const up = await upload(s.docId, s.adminCookie, "test.png", PNG, "image/png");
     expect(up.statusCode).toBe(202);
-    expect(up.json().status).toBe("scanning");
+    expect(up.json().status).toBe("ready");
   });
 
   it("meta polling endpoint returns attachment metadata with status", async () => {
     const s = await baseScenario();
     const up = await upload(s.docId, s.adminCookie, "poll.png", PNG, "image/png");
     const id = up.json().id;
-
-    await drainScanWorker(); // wait for scan to promote to ready
 
     const meta = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
     expect(meta.statusCode).toBe(200);
@@ -81,66 +73,6 @@ describe("attachments", () => {
     await addMember(s.ws.id, outsider.id, "member");
     const res = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: sessionFor(outsider.id) });
     expect(res.statusCode).toBe(404);
-  });
-
-  it("SCANNING attachment is not downloadable — 503 with retry-after until scan completes", async () => {
-    const s = await baseScenario();
-
-    // Block the scanner so the attachment stays SCANNING while we attempt the download.
-    let unblock!: () => void;
-    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
-    setScanner(async () => { await blocked; return "clean"; });
-
-    const up = await upload(s.docId, s.adminCookie, "pending.png", PNG, "image/png");
-    const id = up.json().id;
-
-    const dl = await req({ method: "GET", url: `/api/attachments/${id}`, cookies: s.adminCookie });
-    expect(dl.statusCode).toBe(503);
-    expect(dl.headers["retry-after"]).toBe("5");
-
-    // Release the scanner and confirm it becomes downloadable.
-    unblock();
-    await drainScanWorker();
-    const dl2 = await req({ method: "GET", url: `/api/attachments/${id}`, cookies: s.adminCookie });
-    expect(dl2.statusCode).toBe(200);
-  });
-
-  it("infected file is quarantined — meta shows quarantined, download blocked (403)", async () => {
-    const s = await baseScenario();
-    setScanner(async (data) => Buffer.compare(data, EICAR) === 0 ? "infected" : "clean");
-
-    const up = await upload(s.docId, s.adminCookie, "virus.png", EICAR, "image/png");
-    expect(up.statusCode).toBe(202);
-    const id = up.json().id;
-
-    await drainScanWorker();
-
-    const meta = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
-    expect(meta.json().status).toBe("quarantined");
-
-    const dl = await req({ method: "GET", url: `/api/attachments/${id}`, cookies: s.adminCookie });
-    expect(dl.statusCode).toBe(403);
-  });
-
-  it("scanner runtime failures become scan_failed and block download with 503", async () => {
-    const s = await baseScenario();
-    setScanner(async () => {
-      throw new Error("scanner offline");
-    });
-
-    const up = await upload(s.docId, s.adminCookie, "scan-fail.png", PNG, "image/png");
-    expect(up.statusCode).toBe(202);
-    const id = up.json().id;
-
-    await drainScanWorker();
-
-    const meta = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
-    expect(meta.statusCode).toBe(200);
-    expect(meta.json().status).toBe("scan_failed");
-
-    const dl = await req({ method: "GET", url: `/api/attachments/${id}`, cookies: s.adminCookie });
-    expect(dl.statusCode).toBe(503);
-    expect(dl.json().error).toBe("scan_failed");
   });
 
   it("rejects disallowed MIME type with 415", async () => {
@@ -209,8 +141,6 @@ describe("attachments", () => {
     expect(eUp.statusCode).toBe(202);
     const attId = eUp.json().id;
 
-    await drainScanWorker();
-
     // viewer can download (read) but not delete
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: sessionFor(viewer.id) })).statusCode).toBe(200);
     expect((await req({ method: "DELETE", url: `/api/attachments/${attId}`, cookies: sessionFor(viewer.id) })).statusCode).toBe(403);
@@ -236,7 +166,6 @@ describe("attachments", () => {
     const s = await baseScenario();
     const up = await upload(s.docId, s.adminCookie, "linked.png", PNG);
     const attId = up.json().id as string;
-    await drainScanWorker();
 
     const save = await req({
       method: "PUT",
@@ -258,8 +187,6 @@ describe("attachments", () => {
     const up = await upload(s.docId, bearer(raw), "plugin.png", PNG);
     expect(up.statusCode).toBe(202);
 
-    await drainScanWorker();
-
     const dl = await req({ method: "GET", url: `/api/attachments/${up.json().id}`, headers: bearer(raw) });
     expect(dl.statusCode).toBe(200);
     expect(Buffer.compare(dl.rawPayload, PNG)).toBe(0);
@@ -268,7 +195,6 @@ describe("attachments", () => {
   it("download sets X-Content-Type-Options: nosniff", async () => {
     const s = await baseScenario();
     const up = await upload(s.docId, s.adminCookie, "x.png", PNG);
-    await drainScanWorker();
     const dl = await req({ method: "GET", url: `/api/attachments/${up.json().id}`, cookies: s.adminCookie });
     expect(dl.headers["x-content-type-options"]).toBe("nosniff");
   });
@@ -295,59 +221,6 @@ describe("attachments", () => {
     expect((await req({ method: "DELETE", url: `/api/documents/${s.docId}`, cookies: s.adminCookie })).statusCode).toBe(200);
     expect((await req({ method: "GET", url: `/api/attachments/${attId}`, cookies: s.adminCookie })).statusCode).toBe(404);
     expect((await req({ method: "GET", url: `/api/documents/${s.docId}/attachments`, cookies: s.adminCookie })).statusCode).toBe(404);
-  });
-
-  it("admin: list quarantined returns the quarantined row; non-admin gets 403", async () => {
-    const s = await baseScenario();
-    setScanner(async () => "infected");
-    const up = await upload(s.docId, s.adminCookie, "virus.png", EICAR, "image/png");
-    await drainScanWorker();
-
-    const list = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/attachments/quarantined`, cookies: s.adminCookie });
-    expect(list.statusCode).toBe(200);
-    const body = list.json() as { attachments: Array<{ id: string }>; next: string | null };
-    expect(body.attachments.map((a) => a.id)).toContain(up.json().id);
-    expect(body.next).toBeNull();
-
-    const member = await createUser("member@t.co");
-    await addMember(s.ws.id, member.id, "member");
-    const denied = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/attachments/quarantined`, cookies: sessionFor(member.id) });
-    expect(denied.statusCode).toBe(403);
-  });
-
-  it("admin: unquarantine re-queues for scan and resolves to ready when scanner is clean", async () => {
-    const s = await baseScenario();
-    setScanner(async () => "infected");
-    const up = await upload(s.docId, s.adminCookie, "virus.png", EICAR, "image/png");
-    await drainScanWorker();
-    const id = up.json().id;
-
-    setScanner(async () => "clean");
-    const unq = await req({ method: "POST", url: `/api/attachments/${id}/unquarantine`, cookies: s.adminCookie });
-    expect(unq.statusCode).toBe(200);
-    expect(unq.json().ok).toBe(true);
-
-    await drainScanWorker();
-    const after = await req({ method: "GET", url: `/api/attachments/${id}/meta`, cookies: s.adminCookie });
-    expect(after.json().status).toBe("ready");
-  });
-
-  it("unquarantine: 404 for non-existent or non-quarantined attachment", async () => {
-    const s = await baseScenario();
-    const notFound = await req({ method: "POST", url: "/api/attachments/no-such-id/unquarantine", cookies: s.adminCookie });
-    expect(notFound.statusCode).toBe(404);
-  });
-
-  it("unquarantine: non-admin gets 403", async () => {
-    const s = await baseScenario();
-    setScanner(async () => "infected");
-    const up = await upload(s.docId, s.adminCookie, "v2.png", EICAR, "image/png");
-    await drainScanWorker();
-
-    const member = await createUser("member2@t.co");
-    await addMember(s.ws.id, member.id, "member");
-    const denied = await req({ method: "POST", url: `/api/attachments/${up.json().id}/unquarantine`, cookies: sessionFor(member.id) });
-    expect(denied.statusCode).toBe(403);
   });
 
   it("cross-workspace: an outsider cannot read another workspace's attachment id (404)", async () => {

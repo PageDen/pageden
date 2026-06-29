@@ -817,8 +817,8 @@ export const searchSchema = z
 
 export const reindexResultSchema = z.object({ reindexed: z.number(), skipped: z.number() }).strict();
 
-// Attachments (M6 + status lifecycle)
-export const attachmentStatusSchema = z.enum(["scanning", "ready", "quarantined", "scan_failed"]);
+// Attachments
+export const attachmentStatusSchema = z.enum(["ready"]);
 
 export const attachmentSchema = z
   .object({
@@ -833,15 +833,3 @@ export const attachmentSchema = z
   .strict();
 
 export const attachmentListSchema = z.object({ attachments: z.array(attachmentSchema) }).strict();
-
-export const quarantinedAttachmentSchema = attachmentSchema
-  .extend({
-    documentId: z.string(),
-    documentTitle: z.string(),
-    uploadedByEmail: z.string(),
-  })
-  .strict();
-
-export const quarantinedAttachmentListSchema = z
-  .object({ attachments: z.array(quarantinedAttachmentSchema), next: z.string().nullable() })
-  .strict();

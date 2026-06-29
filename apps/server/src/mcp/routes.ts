@@ -1699,7 +1699,7 @@ async function requestAttachmentUpload(auth: AuthContext, args: Record<string, u
     expiresInSeconds: UPLOAD_GRANT_TTL_SECONDS,
     headers: { "content-type": contentType },
     instructions:
-      "PUT the raw file bytes to uploadUrl with the given Content-Type within expiresInSeconds. The response is the attachment metadata (status 'scanning').",
+      "PUT the raw file bytes to uploadUrl with the given Content-Type within expiresInSeconds. The response is the attachment metadata.",
   };
 }
 
