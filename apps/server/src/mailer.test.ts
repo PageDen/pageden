@@ -34,9 +34,19 @@ describe("createMailer", () => {
       role: "editor",
       openUrl: "https://app/w/ws/p/Roadmap",
     });
-    expect(log).toHaveBeenCalledTimes(3);
+    await mailer.sendCommentMentioned("a@t.co", {
+      actorName: "Chris <script>",
+      actorEmail: "chris@t.co",
+      workspaceName: "Pageden workspace",
+      documentTitle: "Roadmap",
+      documentPath: "docs/roadmap.md",
+      commentBody: "<review this>",
+      openUrl: "https://app/w/ws/p/Roadmap#comment-1",
+    });
+    expect(log).toHaveBeenCalledTimes(4);
     expect(log.mock.calls[0]![0]).toContain("https://app/reset?token=x");
     expect(log.mock.calls[2]![0]).toContain("https://app/w/ws/p/Roadmap");
+    expect(log.mock.calls[3]![0]).toContain("#comment-1");
   });
 
   it("uses the Resend API when RESEND_API_KEY is set", async () => {
@@ -62,6 +72,30 @@ describe("createMailer", () => {
     const permissionBody = JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string);
     expect(permissionBody.subject).toContain("shared a folder");
     expect(permissionBody.html).toContain("https://app/w/ws");
+
+    await mailer.sendPermissionGranted("a@t.co", {
+      actorName: "Chris",
+      workspaceName: "Pageden workspace",
+      resourceType: "document",
+      resourceName: "Strategy",
+      role: "manager",
+      openUrl: "https://app/w/ws/p/strategy",
+    });
+    await mailer.sendCommentMentioned("a@t.co", {
+      actorName: "",
+      actorEmail: "agent@t.co",
+      workspaceName: "Pageden workspace",
+      documentTitle: "Strategy",
+      commentBody: "x".repeat(600),
+      openUrl: "https://app/w/ws/p/strategy#comment-1",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const managerBody = JSON.parse((fetchMock.mock.calls[3]![1] as RequestInit).body as string);
+    expect(managerBody.text).toContain("as Manager");
+    const mentionBody = JSON.parse((fetchMock.mock.calls[4]![1] as RequestInit).body as string);
+    expect(mentionBody.subject).toContain("agent@t.co mentioned you");
+    expect(mentionBody.text).toContain("x".repeat(500));
+    expect(mentionBody.text).not.toContain("x".repeat(501));
   });
 
   it("uses the Brevo API when BREVO_API_KEY is set", async () => {
@@ -79,6 +113,19 @@ describe("createMailer", () => {
     expect(body.sender).toEqual({ name: "Pageden", email: "no-reply@pageden.app" });
     expect(body.to).toEqual([{ email: "a@t.co" }]);
     expect(body.htmlContent).toContain("https://app/verify?token=y");
+
+    await mailer.sendCommentMentioned("b@t.co", {
+      actorName: "Chris",
+      workspaceName: "Workspace & Co",
+      documentTitle: "Doc <One>",
+      documentPath: "folder/doc.md",
+      commentBody: "<hello>",
+      openUrl: "https://app/comment",
+    });
+    const mention = JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string);
+    expect(mention.htmlContent).toContain("Workspace &amp; Co");
+    expect(mention.htmlContent).toContain("Doc &lt;One&gt;");
+    expect(mention.htmlContent).toContain("&lt;hello&gt;");
   });
 
   it("uses EMAIL_PROVIDER to choose Resend when both provider keys exist", async () => {

@@ -2,10 +2,14 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getApp, closeApp, req, bearer, sessionFor } from "../helpers/app.js";
 import { prisma, resetDb } from "../helpers/db.js";
 import { baseScenario, createUser, member } from "../fixtures/seed.js";
+import { createMailer, setMailer, type Mailer } from "../../src/mailer.js";
 
 beforeAll(async () => { await getApp(); });
 afterAll(async () => { await closeApp(); await prisma.$disconnect(); });
-beforeEach(async () => { await resetDb(); });
+beforeEach(async () => {
+  setMailer(createMailer());
+  await resetDb();
+});
 
 async function tool(token: string, name: string, args: Record<string, unknown>) {
   return req({
@@ -112,6 +116,86 @@ describe("inline comments (REST)", () => {
     const stranger = await createUser("stranger@t.co", "S");
     const res = await req({ method: "GET", url: `/api/documents/${s.docId}/comments`, cookies: sessionFor(stranger.id) });
     expect(res.statusCode).toBe(404);
+  });
+
+  it("lists readable mention targets and sends mention notifications once per user", async () => {
+    const s = await baseScenario();
+    const viewer = await member(s.ws.id, "viewer-mention@t.co", "member");
+    const hidden = await member(s.ws.id, "hidden-mention@t.co", "member");
+    await prisma.permission.create({
+      data: { workspaceId: s.ws.id, userId: viewer.user.id, resourceType: "document", resourceId: s.docId, role: "viewer" },
+    });
+
+    const sent: Array<{ to: string; input: Parameters<Mailer["sendCommentMentioned"]>[1] }> = [];
+    setMailer({
+      ...createMailer(),
+      async sendCommentMentioned(to, input) {
+        sent.push({ to, input });
+      },
+    });
+
+    const mentionUsers = await req({
+      method: "GET",
+      url: `/api/documents/${s.docId}/comment-mention-users`,
+      cookies: s.adminCookie,
+    });
+    expect(mentionUsers.statusCode).toBe(200);
+    const userIds = new Set((mentionUsers.json().users as Array<{ id: string }>).map((user) => user.id));
+    expect(userIds.has(s.admin.id)).toBe(true);
+    expect(userIds.has(viewer.user.id)).toBe(true);
+    expect(userIds.has(hidden.user.id)).toBe(false);
+
+    const invalid = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/comments`,
+      cookies: s.adminCookie,
+      payload: { body: "Invalid mention", mentionedUserIds: [hidden.user.id] },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().fields.mentionedUserIds).toBeTruthy();
+
+    const created = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/comments`,
+      cookies: s.adminCookie,
+      payload: { body: "Please review this", mentionedUserIds: [viewer.user.id, viewer.user.id, null, ""] },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().comment.mentionedUserIds).toEqual([viewer.user.id]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe(viewer.user.email);
+    expect(sent[0]!.input.openUrl).toContain(`#comment-${created.json().comment.id}`);
+
+    const audit = await prisma.auditEvent.findFirst({
+      where: { action: "comment_mention_email_sent", targetId: created.json().comment.id as string },
+    });
+    expect(audit?.metadata).toMatchObject({ recipientUserId: viewer.user.id, recipientEmail: viewer.user.email });
+  });
+
+  it("keeps the comment when mention email delivery fails and audits the failure", async () => {
+    const s = await baseScenario();
+    const viewer = await member(s.ws.id, "fail-mention@t.co", "member");
+    await prisma.permission.create({
+      data: { workspaceId: s.ws.id, userId: viewer.user.id, resourceType: "document", resourceId: s.docId, role: "viewer" },
+    });
+    setMailer({
+      ...createMailer(),
+      async sendCommentMentioned() {
+        throw new Error("smtp down");
+      },
+    });
+
+    const created = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/comments`,
+      cookies: s.adminCookie,
+      payload: { body: "Delivery can fail", mentionedUserIds: [viewer.user.id] },
+    });
+    expect(created.statusCode).toBe(201);
+    const audit = await prisma.auditEvent.findFirst({
+      where: { action: "comment_mention_email_failed", targetId: created.json().comment.id as string },
+    });
+    expect(audit?.metadata).toMatchObject({ recipientUserId: viewer.user.id, error: "smtp down" });
   });
 });
 
