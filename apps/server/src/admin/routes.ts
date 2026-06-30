@@ -183,6 +183,41 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     return { enabled: workspace.workspaceTransferEnabled };
   });
 
+  app.get<{ Params: { id: string } }>("/api/workspaces/:id/settings/public-sharing", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "read");
+    const workspaceId = request.params.id;
+    if (!(await canManageWorkspace(auth.userId, workspaceId))) return notFound(reply, "Workspace not found.");
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { publicSharingEnabled: true },
+    });
+    if (!workspace) return notFound(reply, "Workspace not found.");
+    return { enabled: workspace.publicSharingEnabled };
+  });
+
+  app.put<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/workspaces/:id/settings/public-sharing", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const workspaceId = request.params.id;
+    if (!(await canManageWorkspace(auth.userId, workspaceId))) return notFound(reply, "Workspace not found.");
+    if (typeof request.body?.enabled !== "boolean") return validationError(reply, { enabled: "enabled must be true or false." });
+    const workspace = await prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { publicSharingEnabled: request.body.enabled },
+      select: { publicSharingEnabled: true },
+    });
+    await writeAuditEvent({
+      workspaceId,
+      userId: auth.userId,
+      action: "public_sharing_setting_changed",
+      targetType: "workspace",
+      targetId: workspaceId,
+      metadata: { enabled: workspace.publicSharingEnabled },
+    });
+    return { enabled: workspace.publicSharingEnabled };
+  });
+
   // Phase C2: read the current agent edit scope so the UI can render its picker
   // without having to call the bigger workspace context endpoint.
   app.get<{ Params: { id: string } }>(

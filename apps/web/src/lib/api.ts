@@ -60,6 +60,7 @@ import {
   treeSchema,
   writeResultSchema,
   workspaceTransferSettingsSchema,
+  workspacePublicSharingSettingsSchema,
 } from "@pageden/api-types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -215,6 +216,10 @@ export const api = {
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/workspace-transfer`, { schema: workspaceTransferSettingsSchema }),
   setWorkspaceTransferSettings: (workspaceId: string, enabled: boolean) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/workspace-transfer`, { body: { enabled }, schema: workspaceTransferSettingsSchema }),
+  workspacePublicSharingSettings: (workspaceId: string) =>
+    request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/public-sharing`, { schema: workspacePublicSharingSettingsSchema }),
+  setWorkspacePublicSharingSettings: (workspaceId: string, enabled: boolean) =>
+    request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/public-sharing`, { body: { enabled }, schema: workspacePublicSharingSettingsSchema }),
   register: (email: string, name: string, password: string, companyName: string, subdomain: string, captchaToken?: string) =>
     request("POST", "/auth/register", { body: { email, name, password, companyName, subdomain, captchaToken }, schema: meResponseSchema }),
   verifyEmail: (token: string) => request("POST", "/auth/verify-email", { body: { token }, schema: okSchema }),

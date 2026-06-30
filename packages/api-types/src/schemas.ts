@@ -207,11 +207,10 @@ export const agentEditScopeUpdateSchema = z
   .object({ workspaceId: z.string(), agentEditScopeFolderId: z.string().nullable() })
   .strict();
 
-export const documentShareSchema = z
+const shareBaseSchema = z
   .object({
     id: z.string(),
     workspaceId: z.string(),
-    documentId: z.string(),
     slug: z.string(),
     hasPassword: z.boolean(),
     allowIndexing: z.boolean(),
@@ -224,8 +223,14 @@ export const documentShareSchema = z
   })
   .strict();
 
+export const documentShareSchema = z.discriminatedUnion("targetType", [
+  shareBaseSchema.extend({ targetType: z.literal("document"), documentId: z.string() }).strict(),
+  shareBaseSchema.extend({ targetType: z.literal("folder"), folderId: z.string() }).strict(),
+]);
+
 export const documentShareResponseSchema = z.object({ share: documentShareSchema }).strict();
 export const documentShareListSchema = z.object({ workspaceId: z.string(), shares: z.array(documentShareSchema) }).strict();
+export const workspacePublicSharingSettingsSchema = z.object({ enabled: z.boolean() }).strict();
 export const publicShareSchema = z
   .object({
     title: z.string(),
