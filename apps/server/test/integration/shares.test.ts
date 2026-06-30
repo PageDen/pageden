@@ -19,6 +19,18 @@ function toolJson(response: Awaited<ReturnType<typeof tool>>) {
   return JSON.parse(response.json().result.content[0].text);
 }
 
+async function uploadAttachment(docId: string, adminCookie: Record<string, string>, filename: string, body = Buffer.from("png-bytes")) {
+  const res = await req({
+    method: "POST",
+    url: `/api/documents/${docId}/attachments?filename=${encodeURIComponent(filename)}`,
+    headers: { "content-type": "image/png" },
+    cookies: adminCookie,
+    payload: body,
+  });
+  expect(res.statusCode).toBe(202);
+  return res;
+}
+
 describe("DocumentShare REST + public /s/:slug", () => {
   it("manager creates a share; anonymous /s/:slug returns sanitized Markdown", async () => {
     const s = await baseScenario();
@@ -195,6 +207,129 @@ describe("DocumentShare REST + public /s/:slug", () => {
         },
       }),
     ).rejects.toThrow();
+  });
+
+  it("public manual manifest includes canonical subtree docs and rewrites attachment URLs", async () => {
+    const s = await baseScenario();
+    const attachment = await uploadAttachment(s.docId, s.adminCookie, "diagram.png");
+    const attachmentId = attachment.json().id as string;
+    const update = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: s.version,
+        content: `# Runbook\n\n![diagram](/api/attachments/${attachmentId})\n`,
+      },
+    });
+    expect(update.statusCode).toBe(200);
+
+    const draft = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, folderId: s.folderId, title: "Draft Doc", slug: "draft-doc", content: "# Draft\n" },
+    });
+    expect(draft.statusCode).toBe(201);
+    await prisma.document.update({ where: { id: draft.json().id as string }, data: { status: "draft" } });
+
+    const create = await req({ method: "POST", url: `/api/folders/${s.folderId}/share`, cookies: s.adminCookie, payload: {} });
+    const slug = create.json().share.slug as string;
+    const manifest = await req({ method: "GET", url: `/api/public/shares/${slug}` });
+    expect(manifest.statusCode).toBe(200);
+    expect(manifest.json().type).toBe("manual");
+    expect(manifest.json().nav.map((item: { docId: string }) => item.docId)).toEqual([s.docId]);
+    expect(manifest.json().landing.content).toContain(`/api/public/shares/${slug}/attachments/${attachmentId}`);
+    expect(manifest.json().landing.content).not.toContain(`/api/attachments/${attachmentId}`);
+  });
+
+  it("public manual page uses stable docId URLs and enforces subtree containment", async () => {
+    const s = await baseScenario();
+    const create = await req({ method: "POST", url: `/api/folders/${s.folderId}/share`, cookies: s.adminCookie, payload: {} });
+    const slug = create.json().share.slug as string;
+
+    const beforeRename = await req({ method: "GET", url: `/api/public/shares/${slug}/page?docId=${s.docId}` });
+    expect(beforeRename.statusCode).toBe(200);
+    expect(beforeRename.json().title).toBe("Runbook");
+
+    const renamed = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/rename`,
+      cookies: s.adminCookie,
+      payload: { title: "Renamed Runbook", slug: "renamed-runbook" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    const afterRename = await req({ method: "GET", url: `/api/public/shares/${slug}/page?docId=${s.docId}` });
+    expect(afterRename.statusCode).toBe(200);
+    expect(afterRename.json().title).toBe("Renamed Runbook");
+
+    const outsideFolder = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, name: "Outside", slug: "outside" },
+    });
+    expect(outsideFolder.statusCode).toBe(201);
+    const moved = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/move`,
+      cookies: s.adminCookie,
+      payload: { folderId: outsideFolder.json().id },
+    });
+    expect(moved.statusCode).toBe(200);
+    const afterMove = await req({ method: "GET", url: `/api/public/shares/${slug}/page?docId=${s.docId}` });
+    expect(afterMove.statusCode).toBe(404);
+  });
+
+  it("public manual page rejects docs outside the shared subtree", async () => {
+    const s = await baseScenario();
+    const outsideFolder = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, name: "Outside", slug: "outside" },
+    });
+    expect(outsideFolder.statusCode).toBe(201);
+    const outsideDoc = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, folderId: outsideFolder.json().id, title: "Outside", slug: "outside-doc", content: "# Outside\n" },
+    });
+    expect(outsideDoc.statusCode).toBe(201);
+    const create = await req({ method: "POST", url: `/api/folders/${s.folderId}/share`, cookies: s.adminCookie, payload: {} });
+    const slug = create.json().share.slug as string;
+    const res = await req({ method: "GET", url: `/api/public/shares/${slug}/page?docId=${outsideDoc.json().id}` });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("public attachment proxy streams in-subtree attachments and hides out-of-subtree attachments", async () => {
+    const s = await baseScenario();
+    const inBytes = Buffer.from("inside-image");
+    const inside = await uploadAttachment(s.docId, s.adminCookie, "inside.png", inBytes);
+    const create = await req({ method: "POST", url: `/api/folders/${s.folderId}/share`, cookies: s.adminCookie, payload: {} });
+    const slug = create.json().share.slug as string;
+
+    const ok = await req({ method: "GET", url: `/api/public/shares/${slug}/attachments/${inside.json().id}` });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.headers["content-type"]).toContain("image/png");
+    expect(Buffer.from(ok.body).equals(inBytes)).toBe(true);
+
+    const outsideFolder = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, name: "Outside", slug: "outside" },
+    });
+    const outsideDoc = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, folderId: outsideFolder.json().id, title: "Outside", slug: "outside-doc", content: "# Outside\n" },
+    });
+    const outside = await uploadAttachment(outsideDoc.json().id as string, s.adminCookie, "outside.png");
+    const hidden = await req({ method: "GET", url: `/api/public/shares/${slug}/attachments/${outside.json().id}` });
+    expect(hidden.statusCode).toBe(404);
   });
 });
 

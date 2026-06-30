@@ -231,12 +231,45 @@ export const documentShareSchema = z.discriminatedUnion("targetType", [
 export const documentShareResponseSchema = z.object({ share: documentShareSchema }).strict();
 export const documentShareListSchema = z.object({ workspaceId: z.string(), shares: z.array(documentShareSchema) }).strict();
 export const workspacePublicSharingSettingsSchema = z.object({ enabled: z.boolean() }).strict();
-export const publicShareSchema = z
+const publicShareInfoSchema = z.object({ slug: z.string(), expiresAt: iso.nullable() }).strict();
+const manualNavItemSchema = z
   .object({
+    docId: z.string(),
     title: z.string(),
-    path: z.string(),
+    href: z.string(),
+    depth: z.number(),
+  })
+  .strict();
+
+export const publicShareSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("document"),
+      title: z.string(),
+      path: z.string(),
+      content: z.string(),
+      allowIndexing: z.boolean(),
+      share: publicShareInfoSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("manual"),
+      title: z.string(),
+      allowIndexing: z.boolean(),
+      nav: z.array(manualNavItemSchema),
+      landing: z.object({ docId: z.string(), title: z.string(), content: z.string() }).strict().nullable(),
+      share: publicShareInfoSchema,
+    })
+    .strict(),
+]);
+
+export const publicSharePageSchema = z
+  .object({
+    docId: z.string(),
+    title: z.string(),
     content: z.string(),
-    share: z.object({ slug: z.string(), allowIndexing: z.boolean(), expiresAt: iso.nullable() }).strict(),
+    breadcrumb: z.array(z.object({ docId: z.string(), title: z.string() }).strict()),
   })
   .strict();
 
