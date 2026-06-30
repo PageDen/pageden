@@ -305,8 +305,10 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // Transfer a folder subtree to another workspace. Explicit permissions on
-  // moved folders/documents are cleared so destination inheritance applies.
+  // Transfer a folder subtree to another workspace. The moved folder can land at
+  // the destination root (destination admin required) or under a destination
+  // folder (destination editor required). Explicit permissions on moved folders
+  // and documents are cleared so destination inheritance applies.
   app.post<{ Params: { id: string }; Body: { workspaceId?: string; parentFolderId?: string | null } }>(
     "/api/folders/:id/transfer-workspace",
     async (request, reply) => {
@@ -503,7 +505,7 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
     return { ok: true };
   });
 
-  // Empty (manager): soft-delete all descendants and documents while keeping this folder.
+  // Empty (manager): soft-delete all descendant folders and documents while keeping this folder.
   app.post<{ Params: { id: string }; Body?: { confirmationName?: string } }>("/api/folders/:id/empty", async (request, reply) => {
     const auth = await requireAuth(request);
     requireTokenScope(auth, "update");
@@ -523,7 +525,9 @@ export async function registerFolderRoutes(app: FastifyInstance): Promise<void> 
       const locked = await tx.$queryRaw<Array<{ id: string; name: string }>>`
         SELECT "id", "name" FROM "Folder" WHERE "id" = ${folder.id} AND "deletedAt" IS NULL FOR UPDATE`;
       if (locked.length === 0) return { status: "gone" as const };
-      if (locked[0]!.name !== confirmationName) return { status: "confirmation_mismatch" as const };
+      if (locked[0]!.name !== confirmationName) {
+        return { status: "confirmation_mismatch" as const };
+      }
       const az = await authorizeFolderRole(auth, folder.id, "manager", tx);
       if (!az.ok) return az.status === "not_found" ? { status: "not_found" as const } : { status: "forbidden" as const };
 

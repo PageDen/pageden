@@ -111,6 +111,55 @@ body { @apply bg-slate-50 text-slate-900 antialiased; }
   background-color: rgb(51 65 85) !important;
 }
 
+.dark .pageden-mobile-topbar {
+  border-color: rgb(30 41 59) !important;
+  background-color: rgb(2 6 23 / 0.96) !important;
+  color: rgb(226 232 240) !important;
+}
+
+.dark .pageden-mobile-topbar .text-slate-950,
+.dark .pageden-mobile-topbar .text-slate-900,
+.dark .pageden-mobile-topbar .text-slate-800,
+.dark .pageden-mobile-topbar .text-slate-700,
+.dark .pageden-mobile-topbar .text-slate-600 {
+  color: rgb(226 232 240) !important;
+}
+
+.dark .pageden-mobile-topbar .text-slate-500,
+.dark .pageden-mobile-topbar .text-slate-400 {
+  color: rgb(148 163 184) !important;
+}
+
+.dark .pageden-mobile-topbar .hover\:bg-slate-100:hover {
+  background-color: rgb(30 41 59) !important;
+}
+
+.dark .pageden-mobile-topbar .hover\:text-slate-950:hover {
+  color: rgb(248 250 252) !important;
+}
+
+.dark .pageden-mobile-drawer-footer {
+  border-color: rgb(30 41 59) !important;
+  background-color: rgb(2 6 23 / 0.96) !important;
+  color: rgb(226 232 240) !important;
+}
+
+.dark .pageden-mobile-drawer-footer .text-slate-950,
+.dark .pageden-mobile-drawer-footer .text-slate-900,
+.dark .pageden-mobile-drawer-footer .text-slate-800,
+.dark .pageden-mobile-drawer-footer .text-slate-700,
+.dark .pageden-mobile-drawer-footer .text-slate-600 {
+  color: rgb(203 213 225) !important;
+}
+
+.dark .pageden-mobile-drawer-footer .hover\:bg-slate-100:hover {
+  background-color: rgb(30 41 59) !important;
+}
+
+.dark .pageden-mobile-drawer-footer .hover\:text-slate-950:hover {
+  color: rgb(248 250 252) !important;
+}
+
 .dark .prose {
   --tw-prose-body: rgb(226 232 240);
   --tw-prose-headings: rgb(248 250 252);
