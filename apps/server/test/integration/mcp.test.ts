@@ -409,6 +409,33 @@ describe("MCP agent access", () => {
     const createdData = toolJson(created);
     expect(createdData.path).toBe("development/plans/agent-draft.md");
 
+    const createdByPath = await tool(s.token, "pageden_create_document", {
+      workspaceId: s.ws.id,
+      path: "development/plans/path-created.md",
+      title: "Path Created",
+      content: "---\nstatus: superseded\nsupersededBy: engineering/runbook.md\n---\n\n# Path Created\n",
+    });
+    const createdByPathData = toolJson(createdByPath);
+    expect(createdByPathData.path).toBe("development/plans/path-created.md");
+    expect(await prisma.document.findUniqueOrThrow({ where: { id: createdByPathData.id } })).toMatchObject({ status: "superseded" });
+
+    const canonical = await tool(s.token, "pageden_mark_document_canonical", {
+      workspaceId: s.ws.id,
+      path: "development/plans/path-created.md",
+    });
+    const canonicalData = toolJson(canonical);
+    expect(canonicalData.ok).toBe(true);
+    const canonicalDoc = await prisma.document.findUniqueOrThrow({ where: { id: createdByPathData.id } });
+    expect(canonicalDoc.status).toBe("canonical");
+    expect(canonicalDoc.supersededById).toBeNull();
+
+    const deleted = await tool(s.token, "pageden_delete_document", {
+      workspaceId: s.ws.id,
+      path: "development/plans/path-created.md",
+    });
+    expect(toolJson(deleted).ok).toBe(true);
+    expect(await prisma.document.findFirst({ where: { id: createdByPathData.id, deletedAt: null } })).toBeNull();
+
     const duplicate = await tool(s.token, "pageden_create_document", {
       workspaceId: s.ws.id,
       folderId: childFolderData.id,

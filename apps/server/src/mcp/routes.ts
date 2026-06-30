@@ -43,10 +43,10 @@ type Tx = Prisma.TransactionClient;
 
 const MAX_QUERY = SEARCH_QUERY_MAX;
 const DEFAULT_LIMIT = 10;
-const tools = [
+const toolDefinitions = [
   {
     name: "pageden_search",
-    description: "Search readable documents in a Pageden workspace.",
+    description: "Search readable documents in a Pageden workspace. Results include id and path — pass either to pageden_read_document to get the full body.",
     inputSchema: {
       type: "object",
       properties: {
@@ -103,7 +103,7 @@ const tools = [
   },
   {
     name: "pageden_recent_changes",
-    description: "List recently updated readable documents.",
+    description: "List recently updated readable documents. Each result includes id and path — pass either to pageden_read_document to get the full body.",
     inputSchema: {
       type: "object",
       properties: { workspaceId: { type: "string" }, limit: { type: "number", minimum: 1, maximum: 50 } },
@@ -186,17 +186,27 @@ const tools = [
   },
   {
     name: "pageden_create_document",
-    description: "Create a document in a folder where the token/user can edit.",
+    description:
+      "Create a document in a folder where the token/user can edit. " +
+      "Supply either path (e.g. 'pageden-dev/docs/my-doc') OR folderId + slug — not both. " +
+      "When path is given, the slug is derived from the last segment and the folder is resolved by the preceding path.",
     inputSchema: {
       type: "object",
       properties: {
         workspaceId: { type: "string" },
-        folderId: { type: "string" },
+        path: {
+          type: "string",
+          description: "Full document path such as 'folder/sub/my-doc' or 'folder/sub/my-doc.md'. Derives slug + folder automatically. Use instead of folderId + slug.",
+        },
+        folderId: { type: "string", description: "Target folder id. Required when path is not supplied." },
         title: { type: "string" },
-        slug: { type: "string" },
+        slug: {
+          type: "string",
+          description: "URL-safe slug (lowercase letters, numbers, hyphens). Required when path is not supplied.",
+        },
         content: { type: "string" },
       },
-      required: ["folderId", "title", "slug"],
+      required: ["title"],
     },
   },
   {
@@ -298,6 +308,18 @@ const tools = [
         title: { type: "string" },
       },
       required: ["documentId", "baseVersion", "content"],
+    },
+  },
+  {
+    name: "pageden_mark_document_canonical",
+    description: "Promote a draft, superseded, or archived document to canonical without replacing the whole document body.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        workspaceId: { type: "string", description: "Required when using path unless the agent token is workspace-bound." },
+      },
     },
   },
   {
@@ -558,7 +580,22 @@ const tools = [
       },
     },
   },
+  {
+    name: "pageden_delete_document",
+    description:
+      "Soft-delete a document. The document is hidden from all readers immediately; revisions are retained for recovery. Requires manager access on the document.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string", description: "Document id to delete." },
+        path: { type: "string", description: "Alternative to documentId — resolves by path within the workspace." },
+      },
+    },
+  },
 ];
+
+const tools = toolDefinitions;
 
 export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   app.get("/.well-known/pageden-mcp.json", async (request) => {
@@ -716,6 +753,7 @@ async function callTool(
   else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
+  else if (name === "pageden_mark_document_canonical") data = await markDocumentCanonical(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else if (name === "pageden_replace_section") data = await replaceSectionByMcp(auth, args, request);
   else if (name === "pageden_read_section") data = await readSection(auth, args);
@@ -736,6 +774,7 @@ async function callTool(
   else if (name === "pageden_share_document") data = await shareByMcp(auth, args, request);
   else if (name === "pageden_revoke_share") data = await revokeShareByMcp(auth, args);
   else if (name === "pageden_list_shares") data = await listSharesByMcp(auth, args, request);
+  else if (name === "pageden_delete_document") data = await deleteDocument(auth, args);
   else throw new Error(`Unknown tool: ${name}`);
 
   const calledWorkspaceId =
@@ -1728,13 +1767,33 @@ async function attachFile(auth: AuthContext, args: Record<string, unknown>, requ
 async function createDocument(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "create");
   const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
-  const folderId = stringParam(args, "folderId");
   const title = stringParam(args, "title").trim();
-  const slug = stringParam(args, "slug").trim().toLowerCase();
   const content = maybeString(args.content) ?? "";
   if (!title) throw new Error("title is required.");
-  if (!slug || !isValidSlug(slug)) throw new Error("slug must be lowercase letters, numbers, and hyphens.");
-  const folder = await prisma.folder.findFirst({ where: { id: folderId, workspaceId, deletedAt: null }, select: { id: true } });
+
+  let resolvedFolderId: string;
+  let resolvedSlug: string;
+  const docPath = maybeString(args.path);
+  if (docPath) {
+    const normalized = docPath.replace(/^\//, "").replace(/\.md$/i, "").trim();
+    if (!normalized) throw new Error("path is invalid.");
+    const lastSlash = normalized.lastIndexOf("/");
+    resolvedSlug = lastSlash === -1 ? normalized : normalized.slice(lastSlash + 1);
+    const folderPath = lastSlash === -1 ? "" : normalized.slice(0, lastSlash);
+    if (!isValidSlug(resolvedSlug)) throw new Error("The last path segment must be a valid slug (lowercase letters, numbers, hyphens).");
+    const folderRecord = await prisma.folder.findFirst({ where: { path: folderPath, workspaceId, deletedAt: null }, select: { id: true } });
+    if (!folderRecord) throw new Error(`Folder not found at path: ${folderPath || "(root)"}`);
+    resolvedFolderId = folderRecord.id;
+  } else {
+    const rawFolderId = maybeString(args.folderId);
+    const rawSlug = maybeString(args.slug)?.trim().toLowerCase() ?? "";
+    if (!rawFolderId) throw new Error("Either path or folderId is required.");
+    if (!rawSlug || !isValidSlug(rawSlug)) throw new Error("slug must be lowercase letters, numbers, and hyphens.");
+    resolvedFolderId = rawFolderId;
+    resolvedSlug = rawSlug;
+  }
+
+  const folder = await prisma.folder.findFirst({ where: { id: resolvedFolderId, workspaceId, deletedAt: null }, select: { id: true } });
   if (!folder) throw new Error("Folder not found.");
   const folderRole = await resolveFolderRole(auth.userId, folder.id);
   if (folderRole === null) throw new Error("Folder not found.");
@@ -1748,11 +1807,11 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
       await lockFolderTree(tx, workspaceId);
       const lockedFolder = await tx.folder.findFirst({ where: { id: folder.id, workspaceId, deletedAt: null }, select: { path: true } });
       if (!lockedFolder) throw new Error("Folder not found.");
-      const path = buildDocumentPath(lockedFolder.path, slug);
-      const existing = await tx.document.findFirst({ where: { folderId, slug, deletedAt: null }, select: { id: true } });
+      const path = buildDocumentPath(lockedFolder.path, resolvedSlug);
+      const existing = await tx.document.findFirst({ where: { folderId: resolvedFolderId, slug: resolvedSlug, deletedAt: null }, select: { id: true } });
       if (existing) throw new Error("A document with this slug already exists in the folder.");
       const doc = await tx.document.create({
-        data: { workspaceId, folderId, title, slug, path, createdById: auth.userId, updatedById: auth.userId },
+        data: { workspaceId, folderId: resolvedFolderId, title, slug: resolvedSlug, path, createdById: auth.userId, updatedById: auth.userId },
       });
       const revision = await tx.documentRevision.create({
         data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent", contributorIds: [auth.userId] },
@@ -1796,6 +1855,150 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
     if (isUniqueViolation(error)) throw new Error("A document with this slug or path already exists.", { cause: error });
     throw error;
   }
+}
+
+function documentContentWithStatus(content: string, status: "canonical" | "draft" | "superseded" | "archived"): string {
+  const statusLine = `status: ${status}`;
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return `---\n${statusLine}\n---\n\n${content}`;
+
+  const rawFrontmatter = match[1] ?? "";
+  const body = content.slice(match[0].length);
+  const lines = rawFrontmatter.split(/\r?\n/);
+  const kept: string[] = [];
+  let skippingKey: string | null = null;
+
+  for (const line of lines) {
+    const keyMatch = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (keyMatch) {
+      const key = keyMatch[1]!.toLowerCase();
+      skippingKey = key === "status" || key === "supersededby" ? key : null;
+      if (key === "status" || key === "supersededby") continue;
+    } else if (skippingKey && /^\s*-\s+/.test(line)) {
+      continue;
+    } else {
+      skippingKey = null;
+    }
+    kept.push(line);
+  }
+
+  const cleaned = kept.filter((line, index, arr) => line.trim() || arr[index - 1]?.trim() || arr[index + 1]?.trim());
+  cleaned.unshift(statusLine);
+  return `---\n${cleaned.join("\n").trim()}\n---\n\n${body.replace(/^\s+/, "")}`;
+}
+
+async function markDocumentCanonical(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  let documentId = maybeString(args.documentId);
+  if (!documentId) {
+    const path = stringParam(args, "path");
+    const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+    const doc = await prisma.document.findFirst({
+      where: { workspaceId, path, deletedAt: null },
+      select: { id: true },
+    });
+    if (!doc) throw new Error("Document not found.");
+    documentId = doc.id;
+  }
+  await assertTokenOwnsDocument(auth, documentId);
+
+  const doc = await prisma.document.findFirst({
+    where: { id: documentId, deletedAt: null },
+    select: { id: true, workspaceId: true, currentVersionId: true, currentChecksum: true, updatedAt: true, status: true, supersededById: true },
+  });
+  if (!doc) throw new Error("Document not found.");
+  if (doc.status === "canonical" && doc.supersededById === null) {
+    return {
+      workspaceId: doc.workspaceId,
+      ok: true,
+      documentId: doc.id,
+      version: doc.currentVersionId ?? "",
+      checksum: doc.currentChecksum ?? "",
+      updatedAt: doc.updatedAt.toISOString(),
+      noOp: true,
+    };
+  }
+
+  let content = "";
+  if (doc.currentVersionId) {
+    const revision = await prisma.documentRevision.findUnique({
+      where: { id: doc.currentVersionId },
+      select: { storageKey: true },
+    });
+    if (revision) content = await readContent(revision.storageKey);
+  }
+
+  const outcome = await applyDocumentWrite({
+    documentId: doc.id,
+    auth,
+    baseVersion: doc.currentVersionId ?? "",
+    content: documentContentWithStatus(content, "canonical"),
+    changeSource: "agent",
+    allowNonCanonical: true,
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      outcome.status === "conflict"
+        ? `Conflict. Current version is ${outcome.currentVersion}.`
+        : outcome.status ?? "Mark canonical failed.",
+    );
+  }
+  await writeAuditEvent({
+    workspaceId: doc.workspaceId,
+    userId: auth.userId,
+    action: "document_updated_by_agent",
+    targetType: "document",
+    targetId: doc.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version, operation: "mark_canonical" },
+  });
+  if (!outcome.noOp) {
+    trackServerEvent(
+      "agent_document_saved",
+      doc.workspaceId,
+      { userId: auth.userId, tokenId: auth.tokenId ?? null },
+      {
+        doc_id: doc.id,
+        token_id: auth.tokenId ?? null,
+        change_source: "agent",
+        operation: "mark_canonical",
+      },
+    );
+  }
+  return { workspaceId: doc.workspaceId, ...outcome, noOp: outcome.noOp ?? false, updatedAt: outcome.updatedAt?.toISOString() };
+}
+
+async function deleteDocument(auth: AuthContext, args: Record<string, unknown>) {
+  requireTokenScope(auth, "update");
+  const documentId = maybeString(args.documentId);
+  const path = maybeString(args.path);
+  const workspaceId = maybeString(args.workspaceId) ?? auth.tokenWorkspaceId ?? undefined;
+  if (!documentId && !path) throw new Error("documentId or path is required.");
+  if (path && !workspaceId) throw new Error("workspaceId is required when deleting by path.");
+  const doc = await prisma.document.findFirst({
+    where: documentId ? { id: documentId, deletedAt: null } : { workspaceId: workspaceId!, path: path!, deletedAt: null },
+    select: { id: true, workspaceId: true },
+  });
+  if (!doc) throw new Error("Document not found.");
+  if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) throw new Error("This agent token is bound to another workspace.");
+  const role = await resolveDocumentRole(auth.userId, doc.id);
+  if (!role) throw new Error("Document not found.");
+  if (!atLeast(role, "manager")) throw new Error("Forbidden. Deleting a document requires manager access.");
+  const deletedAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    await lockFolderTree(tx, doc.workspaceId);
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Document" WHERE "id" = ${doc.id} AND "deletedAt" IS NULL FOR UPDATE`;
+    if (locked.length === 0) throw new Error("Document not found.");
+    await tx.document.update({ where: { id: doc.id }, data: { deletedAt } });
+    await tx.permission.deleteMany({ where: { workspaceId: doc.workspaceId, resourceType: "document", resourceId: doc.id } });
+    await writeAuditEvent(
+      { workspaceId: doc.workspaceId, userId: auth.userId, action: "document_deleted", targetType: "document", targetId: doc.id },
+      tx,
+    );
+  });
+  return { workspaceId: doc.workspaceId, ok: true, deletedAt: deletedAt.toISOString() };
 }
 
 async function createFolder(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
