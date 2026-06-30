@@ -4,9 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, crudErrorMessage } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { WorkspaceUrlInput } from "../../components/ui/workspace-url-input";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { meQuery } from "../../lib/queries";
-import { workspaceBaseDomain } from "../../lib/workspace-url";
 import { track } from "../../lib/analytics-bus";
 
 function subdomainFromName(value: string): string {
@@ -46,6 +46,10 @@ export function CreateWorkspacePage() {
     mutation.mutate();
   }
 
+  function clearSubmitError() {
+    if (error) setError(null);
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <form onSubmit={onSubmit} className="w-full max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
@@ -65,6 +69,7 @@ export function CreateWorkspacePage() {
             aria-label="Company"
             value={name}
             onChange={(e) => {
+              clearSubmitError();
               const nextName = e.target.value;
               setName(nextName);
               if (!subdomainEdited) setSubdomain(subdomainFromName(nextName));
@@ -75,19 +80,16 @@ export function CreateWorkspacePage() {
         {cloudHosted ? (
           <label className="block space-y-1">
             <span className="text-sm font-medium">Workspace URL</span>
-            <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100">
-              <Input
-                aria-label="Workspace URL"
-                value={subdomain}
-                onChange={(e) => {
-                  setSubdomainEdited(true);
-                  setSubdomain(e.target.value.toLowerCase());
-                }}
-                className="border-0 focus:border-transparent focus:ring-0"
-                required
-              />
-              <span className="shrink-0 pr-3 text-sm text-slate-500">.{workspaceBaseDomain}</span>
-            </div>
+            <WorkspaceUrlInput
+              aria-label="Workspace URL"
+              value={subdomain}
+              onChange={(e) => {
+                clearSubmitError();
+                setSubdomainEdited(true);
+                setSubdomain(e.target.value.toLowerCase());
+              }}
+              required
+            />
             {availability.isFetching ? (
               <p className="text-xs text-slate-400">Checking availability…</p>
             ) : availability.data ? (

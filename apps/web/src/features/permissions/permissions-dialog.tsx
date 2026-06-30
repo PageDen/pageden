@@ -74,9 +74,9 @@ export function PermissionsDialog({
     onSuccess: (result) => {
       setError(null);
       setNotice(`Shared with ${result.user.email}.`);
-      track("permission_granted", { kind, method: "email" });
       void queryClient.invalidateQueries({ queryKey: usersQuery(workspaceId).queryKey });
       invalidate();
+      track("permission_granted", { kind, method: "email" });
     },
     onError: (e) => {
       setNotice(null);
@@ -193,7 +193,7 @@ export function PermissionsDialog({
               {explicit.map((row) => (
                 <li
                   key={row.id}
-                  className="grid gap-2 rounded-md border border-slate-200 p-2 text-sm sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-center"
+                  className="grid grid-cols-[minmax(0,1fr)_6.5rem_auto] items-center gap-2 rounded-md border border-slate-200 p-2 text-sm"
                 >
                   <span className="min-w-0">
                     <span className="block truncate">{subjectLabel(row.subjectType, row.subjectId)}</span>
@@ -205,7 +205,7 @@ export function PermissionsDialog({
                   </span>
                   <select
                     aria-label="Role"
-                    className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+                    className="min-w-0 rounded-md border border-slate-300 px-2 py-2 text-sm"
                     value={row.role}
                     onChange={(e) =>
                       updateRole.mutate({ permissionId: row.id, role: e.target.value as PermissionInput["role"] })
@@ -216,14 +216,16 @@ export function PermissionsDialog({
                     <option value="editor">Editor</option>
                     <option value="manager">Manager</option>
                   </select>
-                  <Button
-                    variant="ghost"
-                    className="justify-self-start sm:justify-self-end"
+                  <button
+                    type="button"
+                    aria-label={`Remove ${subjectLabel(row.subjectType, row.subjectId)}`}
+                    title="Remove"
                     onClick={() => removeRow.mutate(row.id)}
                     disabled={removeRow.isPending && removeRow.variables === row.id}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-200 disabled:opacity-50"
                   >
-                    Remove
-                  </Button>
+                    <Trash2 size={16} aria-hidden="true" />
+                  </button>
                 </li>
               ))}
             </ul>
