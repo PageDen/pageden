@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,6 +17,7 @@ const sharePasswords = new Map<string, string>();
 
 export function PublicShareReader() {
   const params = useParams({ strict: false }) as { slug?: string; docId?: string };
+  const navigate = useNavigate();
   const slug = params.slug ?? "";
   const docId = params.docId;
   const [passwordDraft, setPasswordDraft] = useState("");
@@ -131,6 +132,23 @@ export function PublicShareReader() {
           <header className="mb-6 border-b border-slate-200 pb-5">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">PageDen manual</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-normal text-slate-950">{activeTitle}</h1>
+            {data.nav.length > 0 ? (
+              <select
+                aria-label="Manual page"
+                className="mt-4 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 shadow-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 lg:hidden"
+                value={activeDocId ?? ""}
+                onChange={(event) => {
+                  const nextDocId = event.target.value;
+                  if (nextDocId) void navigate({ to: "/s/$slug/p/$docId", params: { slug, docId: nextDocId } });
+                }}
+              >
+                {data.nav.map((item) => (
+                  <option key={item.docId} value={item.docId}>
+                    {`${item.depth > 0 ? "  ".repeat(Math.min(item.depth, 6)) : ""}${item.title}`}
+                  </option>
+                ))}
+              </select>
+            ) : null}
           </header>
           {page.isLoading && docId ? (
             <p className="text-sm text-slate-400">Loading…</p>
