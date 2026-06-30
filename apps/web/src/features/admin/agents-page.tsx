@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { Bot, Check, Clipboard, Code2, Download, ExternalLink, KeyRound, PlugZap, ShieldCheck, Sparkles } from "lucide-react";
+import { Bot, Check, Clipboard, Code2, Download, KeyRound, PlugZap, ShieldCheck, Sparkles } from "lucide-react";
 import { api, crudErrorMessage } from "../../lib/api";
 import { tokensQuery, meQuery } from "../../lib/queries";
 import { formatDateTime } from "../../lib/format";
@@ -78,9 +78,6 @@ export function AgentsPage() {
   const hasMultipleWorkspaces = (me.data?.workspaces.length ?? 0) > 1;
 
   const endpoint = `${window.location.origin}/mcp`;
-  const connectUrl = `${window.location.origin}/w/${encodeURIComponent(workspaceId)}/agents?connect=mcp`;
-  const discoveryUrl = `${window.location.origin}/.well-known/pageden-mcp.json`;
-  const oauthDiscoveryUrl = `${window.location.origin}/.well-known/oauth-authorization-server`;
   const selectedScopes = preset === "read" ? readScopes : editorScopes;
 
   const create = useMutation({
@@ -338,41 +335,6 @@ export function AgentsPage() {
                   <li key={step}>{step}</li>
                 ))}
               </ol>
-            </div>
-            <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm leading-6 text-orange-900 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-100">
-              <div className="flex items-center gap-2 font-medium">
-                <ExternalLink size={15} aria-hidden="true" />
-                OAuth / one-click clients
-              </div>
-              <p className="mt-1">
-                Clients that support MCP OAuth can discover Pageden automatically. Clients that do not support it yet can use the generated config above.
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void copy("connect-url", connectUrl)}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-orange-800 hover:text-orange-950 dark:text-orange-200 dark:hover:text-orange-100"
-                >
-                  {copied === "connect-url" ? <Check size={13} aria-hidden="true" /> : <Clipboard size={13} aria-hidden="true" />}
-                  {copied === "connect-url" ? "Copied connect link" : "Copy connect link"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void copy("discovery-url", discoveryUrl)}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-orange-800 hover:text-orange-950 dark:text-orange-200 dark:hover:text-orange-100"
-                >
-                  {copied === "discovery-url" ? <Check size={13} aria-hidden="true" /> : <Clipboard size={13} aria-hidden="true" />}
-                  {copied === "discovery-url" ? "Copied discovery URL" : "Copy discovery URL"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void copy("oauth-url", oauthDiscoveryUrl)}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-orange-800 hover:text-orange-950 dark:text-orange-200 dark:hover:text-orange-100"
-                >
-                  {copied === "oauth-url" ? <Check size={13} aria-hidden="true" /> : <Clipboard size={13} aria-hidden="true" />}
-                  {copied === "oauth-url" ? "Copied OAuth URL" : "Copy OAuth URL"}
-                </button>
-              </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-300">
               <div className="font-medium text-slate-900 dark:text-slate-100">5. Test connection</div>

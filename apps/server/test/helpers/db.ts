@@ -6,7 +6,6 @@ const TABLES = [
   "ExternalConnectSession",
   "ExternalAccountLink",
   "WorkspaceIntegration",
-  "McpOAuthCode",
   "DeviceAuthRequest",
   "DocumentRevision",
   "Document",
