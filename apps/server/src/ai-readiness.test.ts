@@ -22,6 +22,13 @@ See [[Roadmap]] and ![[diagram.png]].
     expect(context.wikilinks).toEqual(["diagram.png", "Roadmap"]);
   });
 
+  it("ignores unterminated frontmatter fences", () => {
+    const context = documentContext("---\ntitle: Draft\n# Body");
+
+    expect(context.frontmatter).toEqual({});
+    expect(context.body).toContain("title: Draft");
+  });
+
   it("ignores headings inside fenced code blocks", () => {
     const context = documentContext(`# Deployment Plan
 
@@ -42,12 +49,5 @@ TOKEN=example
       { level: 1, title: "Deployment Plan", anchor: "deployment-plan" },
       { level: 2, title: "Real Section", anchor: "real-section" },
     ]);
-  });
-
-  it("ignores unterminated frontmatter fences", () => {
-    const context = documentContext("---\ntitle: Draft\n# Body");
-
-    expect(context.frontmatter).toEqual({});
-    expect(context.body).toContain("title: Draft");
   });
 });
