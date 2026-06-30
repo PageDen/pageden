@@ -82,6 +82,20 @@ Volume names are prefixed by the Compose project name. Run `docker volume ls` if
 
 7. Open <http://localhost:3000> and log in with `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`.
 
+## Public sharing and manuals
+
+Pageden can publish read-only public links for documents and folders. Folder links render as public manuals at `/s/:slug`, with stable document pages at `/s/:slug/p/:docId`.
+
+Self-hosted Docker deployments should expose the `web` service, not the `server` service. The bundled `apps/web/nginx.conf` handles the routing split:
+
+- `/s/:slug` and `/s/:slug/p/:docId` fall back to the SPA `index.html`;
+- `/api/public/shares/:slug` and related public API routes proxy to the server through `/api/`;
+- `/mcp` and `/.well-known/` also proxy through the web container.
+
+If you place Caddy, nginx, Traefik, or another reverse proxy in front of Pageden, route public traffic to the web container on `PAGEDEN_WEB_PORT`. Do not send `/s/...` directly to the server, or direct refreshes on public links will fail.
+
+For the user workflow and API contract, see [Public sharing and folder manuals](public-sharing.md).
+
 ## Configuration
 
 | Env var | Required | Example | Notes |
@@ -120,6 +134,8 @@ PAGEDEN_WEB_PORT=3000
 Then configure your reverse proxy to send traffic to the Docker host on `http://127.0.0.1:3000` or the appropriate host/port.
 
 The first self-host implementation intentionally does not include a Caddy, certbot, DNS, or wildcard-domain overlay. Keep HTTPS as external reverse-proxy configuration for v1.
+
+When public sharing is enabled, direct browser requests for `/s/:slug` and `/s/:slug/p/:docId` must reach the web container and return the SPA. API requests under `/api/public/shares/...` must keep reaching the same-origin `/api` proxy.
 
 ## Updating
 
