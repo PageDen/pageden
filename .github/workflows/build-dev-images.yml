@@ -11,7 +11,7 @@ name: Build Dev Images
 
 on:
   push:
-    branches: [main]
+    branches: [main, infra/dev-images]
   workflow_dispatch:
     inputs:
       sha:
