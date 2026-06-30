@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const ORIGINAL_ENV = {
+  DATABASE_URL: process.env.DATABASE_URL,
+  SESSION_SECRET: process.env.SESSION_SECRET,
+  TOKEN_HASH_SECRET: process.env.TOKEN_HASH_SECRET,
+  WEB_ORIGIN: process.env.WEB_ORIGIN,
+  CLOUD_HOSTED: process.env.CLOUD_HOSTED,
+  BASE_DOMAIN: process.env.BASE_DOMAIN,
+};
+
 async function loadDomains(env: Record<string, string | undefined>) {
   vi.resetModules();
   process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
@@ -17,6 +26,10 @@ async function loadDomains(env: Record<string, string | undefined>) {
 
 afterEach(() => {
   vi.resetModules();
+  for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 describe("workspace host routing", () => {
