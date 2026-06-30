@@ -26,6 +26,7 @@ export type EventName =
   | "document_created"
   | "document_read"
   | "document_reference_copied"
+  | "folder_reference_copied"
   | "document_saved"
   | "document_marked_canonical"
   | "document_restored"

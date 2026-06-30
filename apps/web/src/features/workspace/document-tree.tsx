@@ -142,7 +142,19 @@ function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, 
   const docs = docsByFolder.get(folder.id) ?? [];
   const hasChildren = subFolders.length > 0 || docs.length > 0;
 
+  // Copying a reference is a read-only client action, so it's offered to every
+  // role (not just managers), mirroring the document row.
+  const copyReference: MenuItem = {
+    label: "Copy reference",
+    icon: Copy,
+    onClick: () => {
+      void copyDocPath(workspaceRelativePath(folder.path));
+      track("folder_reference_copied", { format: "path", folder_id: folder.id, source: "tree" });
+    },
+  };
+
   const menuItems: MenuItem[] = [
+    copyReference,
     ...(canEdit(folder.permission)
       ? [
           { label: "New document", icon: FilePlus, onClick: () => actions.onNewDoc(folder) },
