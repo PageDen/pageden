@@ -1,0 +1,74 @@
+# DRAFT (not yet wired) — builds DEVELOPMENT images from the self-hosted repo
+# and pushes to ghcr.io so the $12 Droplet B only has to `docker pull`.
+#
+# Dedicated image names (pageden-dev-*) so they never clobber the public
+# self-hosted pageden-server / pageden-web images published by docker.yml,
+# nor the cloud staging/prod images.
+#
+# The dev instance is served at go.pageden.dev (basic-auth gated) via the
+# shared edge on Droplet B. See the staging-dev runbook in the pageden-cloud repo.
+name: Build Dev Images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to build (defaults to the triggering ref)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            image: ghcr.io/pageden/pageden-dev-server
+            dockerfile: apps/server/Dockerfile
+            build-args: ""
+          - name: web
+            image: ghcr.io/pageden/pageden-dev-web
+            dockerfile: apps/web/Dockerfile
+            # Self-hosted dev: bake the dev domain. No Mixpanel/Sentry (self-hosted
+            # no-ops when those are empty), so they are intentionally omitted.
+            build-args: |
+              VITE_WORKSPACE_BASE_DOMAIN=pageden.dev
+              VITE_APP_ENV=development
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.sha || github.sha }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          build-args: ${{ matrix.build-args }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=dev-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=dev-${{ matrix.name }}
