@@ -40,6 +40,13 @@ type JsonRpcRequest = {
 
 type McpContent = { type: "text"; text: string };
 type Tx = Prisma.TransactionClient;
+type McpToolAnnotations = {
+  title: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+};
 
 const MAX_QUERY = SEARCH_QUERY_MAX;
 const DEFAULT_LIMIT = 10;
@@ -212,7 +219,10 @@ const toolDefinitions = [
   {
     name: "pageden_attach_file",
     description:
-      "Upload a file and attach it to a document. Pass the bytes base64-encoded. Allowed types: PNG, JPEG, GIF, WebP, MP4, WebM, PDF, DOCX (max 50 MB). Requires the 'attachments' scope and editor access on the document.",
+      "Upload a file and attach it to a document. Pass the bytes base64-encoded. Allowed types: PNG, JPEG, GIF, WebP, MP4, WebM, PDF, DOCX. " +
+      "Max file size 50 MB; base64 encoding adds ~33% overhead so the actual payload sent to this tool may be up to ~67 MB. " +
+      "For files over ~500 KB prefer pageden_request_attachment_upload (uploads raw bytes, no base64 inflation). " +
+      "Requires the 'attachments' scope and editor access on the document.",
     inputSchema: {
       type: "object",
       properties: {
@@ -595,7 +605,72 @@ const toolDefinitions = [
   },
 ];
 
-const tools = toolDefinitions;
+const readOnlyTool = (title: string): McpToolAnnotations => ({
+  title,
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+});
+
+const writeTool = (title: string, options: { destructive?: boolean } = {}): McpToolAnnotations => ({
+  title,
+  readOnlyHint: false,
+  destructiveHint: options.destructive ?? false,
+  idempotentHint: false,
+  openWorldHint: false,
+});
+
+const toolAnnotations: Record<string, McpToolAnnotations> = {
+  pageden_list_workspaces: readOnlyTool("List workspaces"),
+  pageden_search: readOnlyTool("Search documents"),
+  pageden_list_documents: readOnlyTool("List documents"),
+  pageden_read_document: readOnlyTool("Read document"),
+  pageden_recent_changes: readOnlyTool("List recent changes"),
+  pageden_answer_from_docs: readOnlyTool("Answer from documents"),
+  pageden_find_related_docs: readOnlyTool("Find related documents"),
+  pageden_workspace_summary: readOnlyTool("Summarize workspace"),
+  pageden_lint_wikilinks: readOnlyTool("Lint wikilinks"),
+  pageden_rewrite_wikilinks: writeTool("Rewrite wikilinks", { destructive: true }),
+  pageden_create_document: writeTool("Create document"),
+  pageden_attach_file: writeTool("Attach file to document"),
+  pageden_request_attachment_upload: writeTool("Request attachment upload URL"),
+  pageden_create_folder: writeTool("Create folder"),
+  pageden_upsert_document_by_path: writeTool("Upsert document by path", { destructive: true }),
+  pageden_import_markdown_tree: writeTool("Import Markdown tree", { destructive: true }),
+  pageden_update_document: writeTool("Update document", { destructive: true }),
+  pageden_mark_document_canonical: writeTool("Mark document canonical"),
+  pageden_append_to_document: writeTool("Append to document"),
+  pageden_replace_section: writeTool("Replace document section", { destructive: true }),
+  pageden_read_section: readOnlyTool("Read document section"),
+  pageden_get_task_packet: readOnlyTool("Get task packet"),
+  pageden_list_decisions: readOnlyTool("List decisions"),
+  pageden_document_relationships: readOnlyTool("Show document relationships"),
+  pageden_doc_stats: readOnlyTool("Show document stats"),
+  pageden_diff: readOnlyTool("Show document diff"),
+  pageden_find_decisions: readOnlyTool("Find decisions"),
+  pageden_activity_timeline: readOnlyTool("Show activity timeline"),
+  pageden_add_section_comment: writeTool("Add section comment"),
+  pageden_list_comments: readOnlyTool("List comments"),
+  pageden_resolve_comment: writeTool("Resolve comment"),
+  pageden_my_unread: readOnlyTool("List unread documents"),
+  pageden_claim_document: writeTool("Claim document"),
+  pageden_release_document: writeTool("Release document claim"),
+  pageden_list_claims: readOnlyTool("List document claims"),
+  pageden_share_document: writeTool("Share document"),
+  pageden_revoke_share: writeTool("Revoke share", { destructive: true }),
+  pageden_list_shares: readOnlyTool("List shares"),
+  pageden_delete_document: writeTool("Delete document", { destructive: true }),
+};
+
+const tools = toolDefinitions.map((tool) => ({
+  ...tool,
+  annotations: (() => {
+    const annotations = toolAnnotations[tool.name];
+    if (!annotations) throw new Error(`Missing MCP tool annotations for ${tool.name}`);
+    return annotations;
+  })(),
+}));
 
 export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   app.get("/.well-known/pageden-mcp.json", async (request) => {
@@ -693,6 +768,11 @@ async function handleJsonRpc(
         protocolVersion: "2024-11-05",
         capabilities: { tools: {}, resources: {} },
         serverInfo: { name: "pageden", version: "0.1.0" },
+        instructions:
+          "To read a document's full content use pageden_read_document (by path or id). " +
+          "pageden_search and pageden_recent_changes return metadata and snippets only; always follow up with pageden_read_document to get the body. " +
+          "For answering questions from the knowledge base, prefer pageden_answer_from_docs. " +
+          "Documents are also available as MCP resources through resources/list and resources/read.",
       });
     }
     if (msg.method === "ping") return rpcResult(id, {});
