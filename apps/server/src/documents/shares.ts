@@ -1,12 +1,13 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomBytes } from "node:crypto";
+import { AttachmentStatus } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
 import { atLeast, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { hashPassword, verifyPassword } from "../passwords.js";
-import { readContent } from "../storage.js";
+import { readBlob, readContent } from "../storage.js";
 
 // Public share links: a manager creates a slug-URL anyone can read, optionally
 // password-protected and/or time-bombed. Writes go through the existing role
@@ -250,7 +251,22 @@ export type PublicShareResult =
   | { status: "wrong_password" }
   | { status: "not_found" };
 
-export async function readPublicShare(slug: string, password: string | null): Promise<PublicShareResult> {
+type ValidShareResult =
+  | { status: "ok"; share: ShareRow }
+  | { status: "password_required" }
+  | { status: "wrong_password" }
+  | { status: "not_found" };
+
+type ManualDocRow = {
+  id: string;
+  title: string;
+  slug: string;
+  path: string;
+  folder: { path: string };
+  currentVersionId: string | null;
+};
+
+async function resolveValidShare(slug: string, password: string | null): Promise<ValidShareResult> {
   const share = await prisma.documentShare.findUnique({ where: { slug } });
   if (!share) return { status: "not_found" };
   if (share.revokedAt) return { status: "not_found" };
@@ -260,25 +276,211 @@ export async function readPublicShare(slug: string, password: string | null): Pr
     select: { publicSharingEnabled: true },
   });
   if (!workspace?.publicSharingEnabled) return { status: "not_found" };
-  if (!share.documentId) return { status: "not_found" };
   if (share.passwordHash) {
     if (!password) return { status: "password_required" };
     const ok = await verifyPassword(share.passwordHash, password);
     if (!ok) return { status: "wrong_password" };
   }
+  return { status: "ok", share };
+}
+
+function publicAttachmentUrl(slug: string, attachmentId: string): string {
+  return `/api/public/shares/${encodeURIComponent(slug)}/attachments/${encodeURIComponent(attachmentId)}`;
+}
+
+function rewriteAttachmentUrls(content: string, slug: string): string {
+  return content.replace(/\/api\/attachments\/([A-Za-z0-9_-]+)/g, (_match, id: string) => publicAttachmentUrl(slug, id));
+}
+
+async function currentDocumentContent(currentVersionId: string | null, slug: string): Promise<string> {
+  if (!currentVersionId) return "";
+  const revision = await prisma.documentRevision.findUnique({
+    where: { id: currentVersionId },
+    select: { storageKey: true },
+  });
+  if (!revision) return "";
+  return rewriteAttachmentUrls(await readContent(revision.storageKey), slug);
+}
+
+function isDescendantPath(path: string, rootPath: string): boolean {
+  return path === rootPath || path.startsWith(`${rootPath}/`);
+}
+
+function docDepth(doc: ManualDocRow, rootPath: string): number {
+  const folderPath = doc.folder.path;
+  if (folderPath === rootPath) return 0;
+  const relative = folderPath.slice(rootPath.length + 1);
+  return relative ? relative.split("/").length : 0;
+}
+
+function chooseLanding(docs: ManualDocRow[]): ManualDocRow | null {
+  return docs.find((doc) => ["index", "readme"].includes(doc.slug.toLowerCase())) ?? docs[0] ?? null;
+}
+
+async function manualDocs(share: ShareRow): Promise<{ root: { id: string; name: string; path: string }; docs: ManualDocRow[] } | null> {
+  if (!share.folderId) return null;
+  const root = await prisma.folder.findFirst({
+    where: { id: share.folderId, deletedAt: null },
+    select: { id: true, name: true, path: true },
+  });
+  if (!root) return null;
+  const docs = await prisma.document.findMany({
+    where: {
+      workspaceId: share.workspaceId,
+      deletedAt: null,
+      status: "canonical",
+      folder: { deletedAt: null, path: { startsWith: root.path } },
+    },
+    select: { id: true, title: true, slug: true, path: true, currentVersionId: true, folder: { select: { path: true } } },
+    orderBy: { path: "asc" },
+  });
+  return { root, docs: docs.filter((doc) => isDescendantPath(doc.folder.path, root.path)) };
+}
+
+export type PublicShareViewResult =
+  | { status: "ok"; body: unknown; allowIndexing: boolean }
+  | { status: "password_required" }
+  | { status: "wrong_password" }
+  | { status: "not_found" };
+
+export async function readPublicShareView(slug: string, password: string | null): Promise<PublicShareViewResult> {
+  const valid = await resolveValidShare(slug, password);
+  if (valid.status !== "ok") return valid;
+  const { share } = valid;
+  if (share.documentId) {
+    const doc = await prisma.document.findFirst({
+      where: { id: share.documentId, deletedAt: null, status: "canonical" },
+      select: { id: true, title: true, path: true, currentVersionId: true },
+    });
+    if (!doc) return { status: "not_found" };
+    return {
+      status: "ok",
+      allowIndexing: share.allowIndexing,
+      body: {
+        type: "document",
+        title: doc.title,
+        path: doc.path,
+        content: await currentDocumentContent(doc.currentVersionId, share.slug),
+        allowIndexing: share.allowIndexing,
+        share: { slug: share.slug, expiresAt: share.expiresAt ? share.expiresAt.toISOString() : null },
+      },
+    };
+  }
+
+  const manual = await manualDocs(share);
+  if (!manual) return { status: "not_found" };
+  const landing = chooseLanding(manual.docs);
+  return {
+    status: "ok",
+    allowIndexing: share.allowIndexing,
+    body: {
+      type: "manual",
+      title: manual.root.name,
+      allowIndexing: share.allowIndexing,
+      nav: manual.docs.map((doc) => ({
+        docId: doc.id,
+        title: doc.title,
+        href: `/s/${share.slug}/p/${doc.id}`,
+        depth: docDepth(doc, manual.root.path),
+      })),
+      landing: landing
+        ? { docId: landing.id, title: landing.title, content: await currentDocumentContent(landing.currentVersionId, share.slug) }
+        : null,
+      share: { slug: share.slug, expiresAt: share.expiresAt ? share.expiresAt.toISOString() : null },
+    },
+  };
+}
+
+export async function readPublicManualPage(
+  slug: string,
+  password: string | null,
+  docId: string | undefined,
+): Promise<PublicShareViewResult> {
+  if (!docId) return { status: "not_found" };
+  const valid = await resolveValidShare(slug, password);
+  if (valid.status !== "ok") return valid;
+  const { share } = valid;
+  if (!share.folderId) return { status: "not_found" };
+  const manual = await manualDocs(share);
+  if (!manual) return { status: "not_found" };
+  const doc = manual.docs.find((candidate) => candidate.id === docId);
+  if (!doc) return { status: "not_found" };
+  return {
+    status: "ok",
+    allowIndexing: share.allowIndexing,
+    body: {
+      docId: doc.id,
+      title: doc.title,
+      content: await currentDocumentContent(doc.currentVersionId, share.slug),
+      breadcrumb: [{ docId: doc.id, title: doc.title }],
+    },
+  };
+}
+
+export async function readPublicShareAttachment(
+  slug: string,
+  password: string | null,
+  attachmentId: string,
+): Promise<
+  | { status: "ok"; bytes: Buffer; contentType: string; size: number; sha256: string; filename: string; allowIndexing: boolean }
+  | { status: "password_required" }
+  | { status: "wrong_password" }
+  | { status: "not_found" }
+> {
+  const valid = await resolveValidShare(slug, password);
+  if (valid.status !== "ok") return valid;
+  const { share } = valid;
+  const attachment = await prisma.attachment.findFirst({
+    where: {
+      id: attachmentId,
+      workspaceId: share.workspaceId,
+      deletedAt: null,
+      status: AttachmentStatus.READY,
+    },
+    select: {
+      id: true,
+      documentId: true,
+      filename: true,
+      contentType: true,
+      size: true,
+      sha256: true,
+      storageKey: true,
+      document: { select: { id: true, deletedAt: true, status: true, folder: { select: { path: true, deletedAt: true } } } },
+    },
+  });
+  if (!attachment || attachment.document.deletedAt || attachment.document.status !== "canonical" || attachment.document.folder.deletedAt) {
+    return { status: "not_found" };
+  }
+  if (share.documentId) {
+    if (attachment.documentId !== share.documentId) return { status: "not_found" };
+  } else if (share.folderId) {
+    const root = await prisma.folder.findFirst({ where: { id: share.folderId, deletedAt: null }, select: { path: true } });
+    if (!root || !isDescendantPath(attachment.document.folder.path, root.path)) return { status: "not_found" };
+  } else {
+    return { status: "not_found" };
+  }
+  return {
+    status: "ok",
+    bytes: await readBlob(attachment.storageKey),
+    contentType: attachment.contentType,
+    size: attachment.size,
+    sha256: attachment.sha256,
+    filename: attachment.filename,
+    allowIndexing: share.allowIndexing,
+  };
+}
+
+export async function readPublicShare(slug: string, password: string | null): Promise<PublicShareResult> {
+  const valid = await resolveValidShare(slug, password);
+  if (valid.status !== "ok") return valid;
+  const { share } = valid;
+  if (!share.documentId) return { status: "not_found" };
   const doc = await prisma.document.findFirst({
-    where: { id: share.documentId, deletedAt: null },
+    where: { id: share.documentId, deletedAt: null, status: "canonical" },
     select: { id: true, title: true, path: true, currentVersionId: true },
   });
   if (!doc) return { status: "not_found" };
-  let content = "";
-  if (doc.currentVersionId) {
-    const revision = await prisma.documentRevision.findUnique({
-      where: { id: doc.currentVersionId },
-      select: { storageKey: true },
-    });
-    if (revision) content = await readContent(revision.storageKey);
-  }
+  const content = await currentDocumentContent(doc.currentVersionId, share.slug);
   return { status: "ok", share: shareDto(share), content, title: doc.title, path: doc.path };
 }
 
@@ -352,6 +554,59 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
 // Anonymous /s/:slug route lives in shares/public-routes.ts so the public
 // share endpoint is registered outside the authenticated route prefix tree.
 export async function registerPublicShareRoutes(app: FastifyInstance): Promise<void> {
+  function setIndexingHeaders(reply: FastifyReply, allowIndexing: boolean) {
+    reply.header("x-pageden-share-indexing", allowIndexing ? "allow" : "deny");
+    reply.header("x-robots-tag", allowIndexing ? "all" : "noindex, nofollow");
+  }
+
+  function publicError(result: { status: "password_required" | "wrong_password" | "not_found" }, reply: FastifyReply) {
+    if (result.status === "password_required") return reply.code(401).send({ error: "password_required" });
+    if (result.status === "wrong_password") return reply.code(403).send({ error: "wrong_password" });
+    return reply.code(404).send({ error: "not_found", message: "Share not found." });
+  }
+
+  app.get<{ Params: { slug: string }; Querystring: { password?: string } }>(
+    "/api/public/shares/:slug",
+    { config: { rateLimit: { max: Number(process.env.PUBLIC_SHARE_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const password = typeof request.query?.password === "string" && request.query.password ? request.query.password : null;
+      const result = await readPublicShareView(request.params.slug, password);
+      if (result.status !== "ok") return publicError(result, reply);
+      setIndexingHeaders(reply, result.allowIndexing);
+      return result.body;
+    },
+  );
+
+  app.get<{ Params: { slug: string }; Querystring: { docId?: string; password?: string } }>(
+    "/api/public/shares/:slug/page",
+    { config: { rateLimit: { max: Number(process.env.PUBLIC_SHARE_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const password = typeof request.query?.password === "string" && request.query.password ? request.query.password : null;
+      const result = await readPublicManualPage(request.params.slug, password, request.query.docId);
+      if (result.status !== "ok") return publicError(result, reply);
+      setIndexingHeaders(reply, result.allowIndexing);
+      return result.body;
+    },
+  );
+
+  app.get<{ Params: { slug: string; attachmentId: string }; Querystring: { password?: string } }>(
+    "/api/public/shares/:slug/attachments/:attachmentId",
+    { config: { rateLimit: { max: Number(process.env.PUBLIC_SHARE_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const password = typeof request.query?.password === "string" && request.query.password ? request.query.password : null;
+      const result = await readPublicShareAttachment(request.params.slug, password, request.params.attachmentId);
+      if (result.status !== "ok") return publicError(result, reply);
+      setIndexingHeaders(reply, result.allowIndexing);
+      return reply
+        .header("content-type", result.contentType)
+        .header("content-length", String(result.size))
+        .header("etag", `"${result.sha256}"`)
+        .header("x-content-type-options", "nosniff")
+        .header("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(result.filename)}`)
+        .send(result.bytes);
+    },
+  );
+
   app.get<{ Params: { slug: string }; Querystring: { password?: string } }>(
     "/s/:slug",
     { config: { rateLimit: { max: Number(process.env.PUBLIC_SHARE_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
