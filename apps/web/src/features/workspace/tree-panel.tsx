@@ -9,6 +9,7 @@ import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/ui/dialog";
 import { DocumentTree, type Doc, type DocClaimSummary, type Folder, type TreeActions } from "./document-tree";
 import { PermissionsDialog } from "../permissions/permissions-dialog";
+import { ShareDialog } from "../document/share-dialog";
 import { track } from "../../lib/analytics-bus";
 
 type DialogState =
@@ -20,6 +21,7 @@ type DialogState =
   | { kind: "moveFolder"; folder: Folder }
   | { kind: "transferDoc"; doc: Doc }
   | { kind: "transferFolder"; folder: Folder }
+  | { kind: "shareFolder"; folder: Folder }
   | { kind: "deleteDoc"; doc: Doc }
   | { kind: "emptyFolder"; folder: Folder }
   | { kind: "deleteFolder"; folder: Folder }
@@ -157,6 +159,7 @@ export function TreePanel({
     onRenameFolder: (folder) => open({ kind: "renameFolder", folder }),
     onMoveFolder: (folder) => open({ kind: "moveFolder", folder }),
     onTransferFolder: (folder) => open({ kind: "transferFolder", folder }),
+    onShareFolder: (folder) => open({ kind: "shareFolder", folder }),
     onEmptyFolder: (folder) => open({ kind: "emptyFolder", folder }),
     onDeleteFolder: (folder) => open({ kind: "deleteFolder", folder }),
     onPermissionsDoc: (doc) => open({ kind: "permsDoc", doc }),
@@ -300,6 +303,16 @@ export function TreePanel({
               destinationWorkspaceId,
             })
           }
+        />
+      ) : null}
+
+      {dialog?.kind === "shareFolder" ? (
+        <ShareDialog
+          targetType="folder"
+          targetId={dialog.folder.id}
+          workspaceId={workspaceId}
+          title={dialog.folder.path}
+          onClose={() => setDialog(null)}
         />
       ) : null}
 

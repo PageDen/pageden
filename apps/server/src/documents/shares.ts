@@ -12,7 +12,8 @@ import { readBlob, readContent } from "../storage.js";
 // Public share links: a manager creates a slug-URL anyone can read, optionally
 // password-protected and/or time-bombed. Writes go through the existing role
 // gate (manager-only); revocation reuses the same gate plus author override.
-// Public reads via /s/:slug never authenticate — see public-share-routes.ts.
+// Public API reads never authenticate; the SPA owns /s/:slug and calls
+// /api/public/shares/:slug for the JSON contract.
 
 const MAX_NOTE_PASSWORD = 128;
 const MAX_TTL_DAYS = 365;
@@ -214,7 +215,7 @@ export async function revokeShare(
 export async function listShares(
   auth: AuthContext,
   workspaceId: string,
-  opts: { documentId?: string; includeRevoked?: boolean },
+  opts: { documentId?: string; folderId?: string; includeRevoked?: boolean },
 ): Promise<{ status: "ok"; shares: ReturnType<typeof shareDto>[] } | { status: "not_found" }> {
   // Workspace membership is the gate at the list level; per-doc reads are
   // already filtered through resolveDocumentRole inside the loop so a member
@@ -227,6 +228,7 @@ export async function listShares(
 
   const where: Record<string, unknown> = { workspaceId };
   if (opts.documentId) where.documentId = opts.documentId;
+  if (opts.folderId) where.folderId = opts.folderId;
   if (!opts.includeRevoked) where.revokedAt = null;
   const rows = await prisma.documentShare.findMany({ where, orderBy: { createdAt: "desc" } });
   const visible: ShareRow[] = [];
@@ -534,7 +536,7 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.get<{ Params: { workspaceId: string }; Querystring: { documentId?: string; includeRevoked?: string } }>(
+  app.get<{ Params: { workspaceId: string }; Querystring: { documentId?: string; folderId?: string; includeRevoked?: string } }>(
     "/api/workspaces/:workspaceId/shares",
     { config: { rateLimit: { max: Number(process.env.SHARE_READ_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
     async (request, reply) => {
@@ -543,6 +545,7 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
       const includeRevoked = request.query.includeRevoked === "true" || request.query.includeRevoked === "1";
       const result = await listShares(auth, request.params.workspaceId, {
         documentId: request.query.documentId,
+        folderId: request.query.folderId,
         includeRevoked,
       });
       if (result.status === "not_found") return notFound(reply, "Workspace not found.");
@@ -551,8 +554,8 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
   );
 }
 
-// Anonymous /s/:slug route lives in shares/public-routes.ts so the public
-// share endpoint is registered outside the authenticated route prefix tree.
+// Anonymous public share endpoints are registered outside the authenticated
+// route prefix tree. The browser-facing /s/:slug route belongs to the SPA.
 export async function registerPublicShareRoutes(app: FastifyInstance): Promise<void> {
   function setIndexingHeaders(reply: FastifyReply, allowIndexing: boolean) {
     reply.header("x-pageden-share-indexing", allowIndexing ? "allow" : "deny");
@@ -607,25 +610,4 @@ export async function registerPublicShareRoutes(app: FastifyInstance): Promise<v
     },
   );
 
-  app.get<{ Params: { slug: string }; Querystring: { password?: string } }>(
-    "/s/:slug",
-    { config: { rateLimit: { max: Number(process.env.PUBLIC_SHARE_RATE_LIMIT_MAX ?? 120), timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      const slug = request.params.slug;
-      const password = typeof request.query?.password === "string" && request.query.password ? request.query.password : null;
-      const result = await readPublicShare(slug, password);
-      if (result.status === "not_found") return notFound(reply, "Share not found.");
-      if (result.status === "password_required") return reply.code(401).send({ error: "password_required" });
-      if (result.status === "wrong_password") return reply.code(403).send({ error: "wrong_password" });
-      reply.header("x-pageden-share-indexing", result.share.allowIndexing ? "allow" : "deny");
-      // Indexing opt-in mirrors Docmost's search_indexing flag.
-      reply.header("x-robots-tag", result.share.allowIndexing ? "all" : "noindex, nofollow");
-      return {
-        title: result.title,
-        path: result.path,
-        content: result.content,
-        share: { slug: result.share.slug, allowIndexing: result.share.allowIndexing, expiresAt: result.share.expiresAt },
-      };
-    },
-  );
 }
