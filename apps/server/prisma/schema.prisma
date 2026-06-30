@@ -127,6 +127,7 @@ model Workspace {
   agentEditScopeFolderId String?
   agentEditScopeFolder   Folder?               @relation("WorkspaceAgentEditScope", fields: [agentEditScopeFolderId], references: [id], onDelete: SetNull)
   workspaceTransferEnabled Boolean             @default(true)
+  publicSharingEnabled Boolean                  @default(true)
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   members                WorkspaceMembership[]
@@ -215,6 +216,7 @@ model Folder {
   updatedBy      User            @relation("FolderUpdatedBy", fields: [updatedById], references: [id])
   documents      Document[]
   agentScopeFor  Workspace[]     @relation("WorkspaceAgentEditScope")
+  shares         DocumentShare[]
 
   // Path and sibling slug uniqueness are enforced by PARTIAL unique indexes
   // in a raw migration, so soft-deleted rows do not block reuse.
@@ -557,17 +559,17 @@ model OAuthAccount {
   @@index([userId])
 }
 
-// Public share link for a single document. Anonymous /s/:slug returns sanitized
-// Markdown when the share is unrevoked, unexpired, and the (optional) password
-// matches. Subtree / folder-scoped sharing is deliberately deferred per the
-// accepted decision in pageden-dev/docs/permission-model-review-outline-docmost.md
-// — `includeFolderDocuments` will be added in a follow-up if real usage demands it.
+// Public share link for either a single document or a folder manual. Anonymous
+// public reads return sanitized Markdown when the share is unrevoked, unexpired,
+// and the optional password matches. `documentId` and `folderId` are XOR-checked
+// by raw SQL because Prisma cannot express cross-column check constraints.
 model DocumentShare {
   id            String    @id @default(cuid())
   workspaceId   String
-  documentId    String
+  documentId    String?
+  folderId      String?
   slug          String    @unique // random URL-safe token
-  passwordHash  String? // HMAC-SHA256 of the share password if one was set
+  passwordHash  String?
   allowIndexing Boolean   @default(false) // when true the public route may be crawled
   expiresAt     DateTime? // null = never expires
   revokedAt     DateTime?
@@ -575,11 +577,13 @@ model DocumentShare {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  document      Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document      Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  folder        Folder?   @relation(fields: [folderId], references: [id], onDelete: Cascade)
   createdBy     User      @relation("DocumentShareCreator", fields: [createdById], references: [id])
 
   @@index([workspaceId, revokedAt, expiresAt])
   @@index([documentId, revokedAt])
+  @@index([folderId, revokedAt])
 }
 
 // Server-side vault import jobs. The uploaded zip lives under the import/ storage prefix

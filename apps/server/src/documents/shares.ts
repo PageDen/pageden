@@ -4,7 +4,7 @@ import { prisma } from "../prisma.js";
 import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { forbidden, notFound, validationError } from "../errors.js";
-import { atLeast, resolveDocumentRole } from "../permissions/index.js";
+import { atLeast, resolveDocumentRole, resolveFolderRole } from "../permissions/index.js";
 import { hashPassword, verifyPassword } from "../passwords.js";
 import { readContent } from "../storage.js";
 
@@ -30,7 +30,8 @@ function parseTtl(ttlDays: number | undefined): Date | null {
 interface ShareRow {
   id: string;
   workspaceId: string;
-  documentId: string;
+  documentId: string | null;
+  folderId: string | null;
   slug: string;
   passwordHash: string | null;
   allowIndexing: boolean;
@@ -43,10 +44,9 @@ interface ShareRow {
 
 function shareDto(row: ShareRow) {
   const active = !row.revokedAt && (row.expiresAt === null || row.expiresAt.getTime() > Date.now());
-  return {
+  const base = {
     id: row.id,
     workspaceId: row.workspaceId,
-    documentId: row.documentId,
     slug: row.slug,
     hasPassword: row.passwordHash !== null,
     allowIndexing: row.allowIndexing,
@@ -57,6 +57,8 @@ function shareDto(row: ShareRow) {
     updatedAt: row.updatedAt.toISOString(),
     active,
   };
+  if (row.documentId) return { ...base, targetType: "document" as const, documentId: row.documentId };
+  return { ...base, targetType: "folder" as const, folderId: row.folderId ?? "" };
 }
 
 export async function createShare(
@@ -66,10 +68,11 @@ export async function createShare(
 ): Promise<{ status: "ok"; share: ReturnType<typeof shareDto> } | { status: "not_found" } | { status: "forbidden" } | { status: "validation"; field: string; message: string }> {
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
-    select: { id: true, workspaceId: true },
+    select: { id: true, workspaceId: true, workspace: { select: { publicSharingEnabled: true } } },
   });
   if (!doc) return { status: "not_found" };
   if (auth.tokenWorkspaceId && doc.workspaceId !== auth.tokenWorkspaceId) return { status: "not_found" };
+  if (!doc.workspace.publicSharingEnabled) return { status: "forbidden" };
   const role = await resolveDocumentRole(auth.userId, doc.id);
   if (!role) return { status: "not_found" };
   if (!atLeast(role, "manager")) return { status: "forbidden" };
@@ -117,6 +120,60 @@ export async function createShare(
   return { status: "ok", share: shareDto(row) };
 }
 
+export async function createFolderShare(
+  auth: AuthContext,
+  folderId: string,
+  opts: { ttlDays?: number; password?: string | null; allowIndexing?: boolean },
+): Promise<{ status: "ok"; share: ReturnType<typeof shareDto> } | { status: "not_found" } | { status: "forbidden" } | { status: "validation"; field: string; message: string }> {
+  const folder = await prisma.folder.findFirst({
+    where: { id: folderId, deletedAt: null },
+    select: { id: true, workspaceId: true, workspace: { select: { publicSharingEnabled: true } } },
+  });
+  if (!folder) return { status: "not_found" };
+  if (auth.tokenWorkspaceId && folder.workspaceId !== auth.tokenWorkspaceId) return { status: "not_found" };
+  if (!folder.workspace.publicSharingEnabled) return { status: "forbidden" };
+  const role = await resolveFolderRole(auth.userId, folder.id);
+  if (!role) return { status: "not_found" };
+  if (!atLeast(role, "manager")) return { status: "forbidden" };
+
+  const password = typeof opts.password === "string" ? opts.password.trim() : "";
+  if (password && password.length > MAX_NOTE_PASSWORD) {
+    return { status: "validation", field: "password", message: `password must be ${MAX_NOTE_PASSWORD} characters or fewer.` };
+  }
+  const passwordHash = password ? await hashPassword(password) : null;
+  const expiresAt = parseTtl(opts.ttlDays);
+
+  let slug = newSlug();
+  let attempts = 0;
+  while (await prisma.documentShare.findUnique({ where: { slug }, select: { id: true } })) {
+    if (++attempts >= 3) {
+      return { status: "validation", field: "slug", message: "Could not allocate a unique slug. Try again." };
+    }
+    slug = newSlug();
+  }
+
+  const row = await prisma.documentShare.create({
+    data: {
+      workspaceId: folder.workspaceId,
+      folderId: folder.id,
+      slug,
+      passwordHash,
+      allowIndexing: opts.allowIndexing === true,
+      expiresAt,
+      createdById: auth.userId,
+    },
+  });
+  await writeAuditEvent({
+    workspaceId: folder.workspaceId,
+    userId: auth.userId,
+    action: auth.tokenKind === "agent" ? "folder_shared_by_agent" : "folder_shared",
+    targetType: "document_share",
+    targetId: row.id,
+    metadata: { folderId: folder.id, expiresAt: expiresAt?.toISOString() ?? null, hasPassword: passwordHash !== null, allowIndexing: row.allowIndexing },
+  });
+  return { status: "ok", share: shareDto(row) };
+}
+
 export async function revokeShare(
   auth: AuthContext,
   shareId: string,
@@ -124,7 +181,11 @@ export async function revokeShare(
   const share = await prisma.documentShare.findUnique({ where: { id: shareId } });
   if (!share) return { status: "not_found" };
   if (auth.tokenWorkspaceId && share.workspaceId !== auth.tokenWorkspaceId) return { status: "not_found" };
-  const role = await resolveDocumentRole(auth.userId, share.documentId);
+  const role = share.documentId
+    ? await resolveDocumentRole(auth.userId, share.documentId)
+    : share.folderId
+      ? await resolveFolderRole(auth.userId, share.folderId)
+      : null;
   if (!role) return { status: "not_found" };
   const isAuthor = share.createdById === auth.userId;
   if (!isAuthor && !atLeast(role, "manager")) return { status: "forbidden" };
@@ -134,13 +195,17 @@ export async function revokeShare(
     where: { id: share.id },
     data: { revokedAt: new Date() },
   });
+  let revokeAction = auth.tokenKind === "agent" ? "document_share_revoked_by_agent" : "document_share_revoked";
+  if (share.folderId) {
+    revokeAction = auth.tokenKind === "agent" ? "folder_share_revoked_by_agent" : "folder_share_revoked";
+  }
   await writeAuditEvent({
     workspaceId: share.workspaceId,
     userId: auth.userId,
-    action: auth.tokenKind === "agent" ? "document_share_revoked_by_agent" : "document_share_revoked",
+    action: revokeAction,
     targetType: "document_share",
     targetId: share.id,
-    metadata: { documentId: share.documentId },
+    metadata: { documentId: share.documentId, folderId: share.folderId },
   });
   return { status: "ok", share: shareDto(updated) };
 }
@@ -165,7 +230,11 @@ export async function listShares(
   const rows = await prisma.documentShare.findMany({ where, orderBy: { createdAt: "desc" } });
   const visible: ShareRow[] = [];
   for (const row of rows) {
-    const role = await resolveDocumentRole(auth.userId, row.documentId);
+    const role = row.documentId
+      ? await resolveDocumentRole(auth.userId, row.documentId)
+      : row.folderId
+        ? await resolveFolderRole(auth.userId, row.folderId)
+        : null;
     if (role && atLeast(role, "manager")) visible.push(row);
   }
   return { status: "ok", shares: visible.map(shareDto) };
@@ -186,6 +255,12 @@ export async function readPublicShare(slug: string, password: string | null): Pr
   if (!share) return { status: "not_found" };
   if (share.revokedAt) return { status: "not_found" };
   if (share.expiresAt && share.expiresAt.getTime() <= Date.now()) return { status: "not_found" };
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: share.workspaceId },
+    select: { publicSharingEnabled: true },
+  });
+  if (!workspace?.publicSharingEnabled) return { status: "not_found" };
+  if (!share.documentId) return { status: "not_found" };
   if (share.passwordHash) {
     if (!password) return { status: "password_required" };
     const ok = await verifyPassword(share.passwordHash, password);
@@ -236,6 +311,24 @@ export async function registerShareRoutes(app: FastifyInstance): Promise<void> {
       if (result.status === "not_found") return notFound(reply, "Share not found.");
       if (result.status === "forbidden") return forbidden(reply);
       return { share: result.share };
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { ttlDays?: number; password?: string | null; allowIndexing?: boolean } }>(
+    "/api/folders/:id/share",
+    { config: { rateLimit: { max: Number(process.env.SHARE_WRITE_RATE_LIMIT_MAX ?? 30), timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const auth = await requireAuth(request);
+      requireTokenScope(auth, "update");
+      const result = await createFolderShare(auth, request.params.id, {
+        ttlDays: request.body?.ttlDays,
+        password: request.body?.password ?? null,
+        allowIndexing: request.body?.allowIndexing ?? false,
+      });
+      if (result.status === "not_found") return notFound(reply, "Folder not found.");
+      if (result.status === "forbidden") return forbidden(reply);
+      if (result.status === "validation") return validationError(reply, { [result.field]: result.message });
+      return reply.code(201).send({ share: result.share });
     },
   );
 

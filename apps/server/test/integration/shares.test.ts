@@ -32,6 +32,8 @@ describe("DocumentShare REST + public /s/:slug", () => {
     const share = create.json().share;
     expect(share.active).toBe(true);
     expect(share.hasPassword).toBe(false);
+    expect(share.targetType).toBe("document");
+    expect(share.documentId).toBe(s.docId);
 
     // No auth headers on this request.
     const anon = await req({ method: "GET", url: `/s/${share.slug}` });
@@ -119,6 +121,80 @@ describe("DocumentShare REST + public /s/:slug", () => {
     const others = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/shares`, cookies: other.cookie });
     // The other user is a workspace member but has no role on the doc — should see nothing.
     expect(others.json().shares).toHaveLength(0);
+  });
+
+  it("manager creates a folder share; list filters it through folder manager access", async () => {
+    const s = await baseScenario();
+    const create = await req({
+      method: "POST",
+      url: `/api/folders/${s.folderId}/share`,
+      cookies: s.adminCookie,
+      payload: { ttlDays: 7, allowIndexing: true },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().share).toMatchObject({
+      targetType: "folder",
+      folderId: s.folderId,
+      allowIndexing: true,
+      active: true,
+    });
+
+    const list = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/shares`, cookies: s.adminCookie });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().shares).toHaveLength(1);
+    expect(list.json().shares[0].targetType).toBe("folder");
+
+    const other = await member(s.ws.id, "folder-viewer@t.co", "member");
+    const others = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/shares`, cookies: other.cookie });
+    expect(others.statusCode).toBe(200);
+    expect(others.json().shares).toHaveLength(0);
+  });
+
+  it("rejects folder share creation by non-manager", async () => {
+    const s = await baseScenario();
+    const other = await member(s.ws.id, "folder-share-denied@t.co", "member");
+    const res = await req({ method: "POST", url: `/api/folders/${s.folderId}/share`, cookies: other.cookie, payload: {} });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("public sharing kill switch refuses creation and hides existing slugs", async () => {
+    const s = await baseScenario();
+    const create = await req({ method: "POST", url: `/api/documents/${s.docId}/share`, cookies: s.adminCookie, payload: {} });
+    expect(create.statusCode).toBe(201);
+    const slug = create.json().share.slug as string;
+
+    const disabled = await req({
+      method: "PUT",
+      url: `/api/workspaces/${s.ws.id}/settings/public-sharing`,
+      cookies: s.adminCookie,
+      payload: { enabled: false },
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.json().enabled).toBe(false);
+
+    const hidden = await req({ method: "GET", url: `/s/${slug}` });
+    expect(hidden.statusCode).toBe(404);
+
+    const docCreate = await req({ method: "POST", url: `/api/documents/${s.docId}/share`, cookies: s.adminCookie, payload: {} });
+    expect(docCreate.statusCode).toBe(403);
+
+    const folderCreate = await req({ method: "POST", url: `/api/folders/${s.folderId}/share`, cookies: s.adminCookie, payload: {} });
+    expect(folderCreate.statusCode).toBe(403);
+  });
+
+  it("DocumentShare target XOR rejects invalid rows", async () => {
+    const s = await baseScenario();
+    await expect(
+      prisma.documentShare.create({
+        data: {
+          workspaceId: s.ws.id,
+          documentId: s.docId,
+          folderId: s.folderId,
+          slug: "invalid-both-targets",
+          createdById: s.admin.id,
+        },
+      }),
+    ).rejects.toThrow();
   });
 });
 
