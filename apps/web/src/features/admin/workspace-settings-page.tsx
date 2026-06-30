@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { ApiError, api, crudErrorMessage } from "../../lib/api";
-import { treeQuery, workspaceTransferSettingsQuery } from "../../lib/queries";
+import { treeQuery, workspacePublicSharingSettingsQuery, workspaceTransferSettingsQuery } from "../../lib/queries";
 import { Button } from "../../components/ui/button";
 
 export function WorkspaceSettingsPage() {
@@ -16,8 +16,55 @@ export function WorkspaceSettingsPage() {
         <p className="text-sm text-slate-500">Admin-only knobs that affect every member and every agent in this workspace.</p>
       </div>
       <WorkspaceTransferSection workspaceId={workspaceId} />
+      <PublicSharingSection workspaceId={workspaceId} />
       <AgentEditScopeSection workspaceId={workspaceId} />
     </div>
+  );
+}
+
+function PublicSharingSection({ workspaceId }: { workspaceId: string }) {
+  const queryClient = useQueryClient();
+  const settings = useQuery({ ...workspacePublicSharingSettingsQuery(workspaceId), enabled: !!workspaceId });
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const update = useMutation({
+    mutationFn: (enabled: boolean) => api.setWorkspacePublicSharingSettings(workspaceId, enabled),
+    onSuccess: async () => {
+      setError(null);
+      setSaved(true);
+      await queryClient.invalidateQueries({ queryKey: workspacePublicSharingSettingsQuery(workspaceId).queryKey });
+      window.setTimeout(() => setSaved(false), 3000);
+    },
+    onError: (e) => setError(crudErrorMessage(e)),
+  });
+
+  if (settings.isLoading || (settings.isError && settings.error instanceof ApiError && settings.error.status === 404)) return null;
+
+  const enabled = settings.data?.enabled ?? true;
+
+  return (
+    <section>
+      <h2 className="mb-1 text-base font-semibold text-slate-900">Public sharing</h2>
+      <p className="mb-4 text-sm text-slate-500">
+        Allow managers to publish document links and folder manuals that anyone with the link can read.
+      </p>
+      <label className="flex items-start gap-3 rounded-md border border-slate-200 bg-white p-3">
+        <input
+          type="checkbox"
+          className="mt-1 h-4 w-4 rounded border-slate-300"
+          checked={enabled}
+          disabled={update.isPending}
+          onChange={(event) => update.mutate(event.target.checked)}
+        />
+        <span>
+          <span className="block text-sm font-medium text-slate-900">Allow public share links</span>
+          <span className="block text-sm text-slate-500">When disabled, existing public links stop resolving and new links cannot be created.</span>
+        </span>
+      </label>
+      {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
+      {saved ? <p className="mt-2 text-sm text-green-700">Saved.</p> : null}
+    </section>
   );
 }
 

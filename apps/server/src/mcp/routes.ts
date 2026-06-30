@@ -564,7 +564,7 @@ const toolDefinitions = [
         documentId: { type: "string" },
         path: { type: "string", description: "Alternative to documentId — resolves by path within the workspace." },
         ttlDays: { type: "number", minimum: 1, maximum: 365, description: "Days until the share expires; omit for no expiry." },
-        password: { type: "string", description: "Optional share password; readers must pass ?password=… on the /s/:slug URL." },
+        password: { type: "string", description: "Optional share password; public readers are prompted before the share opens." },
         allowIndexing: { type: "boolean", description: "When true the share is crawler-friendly (x-robots-tag: all). Default false." },
       },
     },

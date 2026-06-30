@@ -61,6 +61,8 @@ import {
   writeResultSchema,
   workspaceTransferSettingsSchema,
   workspacePublicSharingSettingsSchema,
+  publicShareSchema,
+  publicSharePageSchema,
 } from "@pageden/api-types";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -116,6 +118,7 @@ export class ApiError extends Error {
 interface RequestOptions<T> {
   body?: unknown;
   schema?: z.ZodType<T>;
+  skipUnauthorizedRedirect?: boolean;
 }
 
 async function request<T>(method: string, path: string, opts: RequestOptions<T> = {}): Promise<T> {
@@ -126,7 +129,7 @@ async function request<T>(method: string, path: string, opts: RequestOptions<T> 
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const json = safeJson(await res.text());
-  if (res.status === 401 && onUnauthorized) onUnauthorized();
+  if (res.status === 401 && onUnauthorized && !opts.skipUnauthorizedRedirect) onUnauthorized();
   if (!res.ok) throw new ApiError(res.status, json);
   if (opts.schema) {
     const parsed = opts.schema.safeParse(json);
@@ -220,6 +223,18 @@ export const api = {
     request("GET", `/workspaces/${encodeURIComponent(workspaceId)}/settings/public-sharing`, { schema: workspacePublicSharingSettingsSchema }),
   setWorkspacePublicSharingSettings: (workspaceId: string, enabled: boolean) =>
     request("PUT", `/workspaces/${encodeURIComponent(workspaceId)}/settings/public-sharing`, { body: { enabled }, schema: workspacePublicSharingSettingsSchema }),
+  publicShare: (slug: string, password?: string | null) => {
+    const qs = password ? `?password=${encodeURIComponent(password)}` : "";
+    return request("GET", `/public/shares/${encodeURIComponent(slug)}${qs}`, { schema: publicShareSchema, skipUnauthorizedRedirect: true });
+  },
+  publicSharePage: (slug: string, docId: string, password?: string | null) => {
+    const params = new URLSearchParams({ docId });
+    if (password) params.set("password", password);
+    return request("GET", `/public/shares/${encodeURIComponent(slug)}/page?${params.toString()}`, {
+      schema: publicSharePageSchema,
+      skipUnauthorizedRedirect: true,
+    });
+  },
   register: (email: string, name: string, password: string, companyName: string, subdomain: string, captchaToken?: string) =>
     request("POST", "/auth/register", { body: { email, name, password, companyName, subdomain, captchaToken }, schema: meResponseSchema }),
   verifyEmail: (token: string) => request("POST", "/auth/verify-email", { body: { token }, schema: okSchema }),
@@ -518,12 +533,18 @@ export const api = {
     body: { ttlDays?: number; password?: string | null; allowIndexing?: boolean },
   ) =>
     request("POST", `/documents/${encodeURIComponent(documentId)}/share`, { body, schema: documentShareResponseSchema }),
+  createFolderShare: (
+    folderId: string,
+    body: { ttlDays?: number; password?: string | null; allowIndexing?: boolean },
+  ) =>
+    request("POST", `/folders/${encodeURIComponent(folderId)}/share`, { body, schema: documentShareResponseSchema }),
   listShares: (
     workspaceId: string,
-    opts: { documentId?: string; includeRevoked?: boolean } = {},
+    opts: { documentId?: string; folderId?: string; includeRevoked?: boolean } = {},
   ) => {
     const params = new URLSearchParams();
     if (opts.documentId) params.set("documentId", opts.documentId);
+    if (opts.folderId) params.set("folderId", opts.folderId);
     if (opts.includeRevoked) params.set("includeRevoked", "true");
     const qs = params.toString();
     return request(

@@ -11,6 +11,9 @@ import { track } from "../../lib/analytics-bus";
 interface Share {
   id: string;
   slug: string;
+  targetType: "document" | "folder";
+  documentId?: string;
+  folderId?: string;
   hasPassword: boolean;
   allowIndexing: boolean;
   expiresAt: string | null;
@@ -31,21 +34,32 @@ function formatExpiry(value: string | null): string {
 }
 
 export function ShareDialog({
+  targetType = "document",
+  targetId,
   documentId,
+  folderId,
   workspaceId,
+  title,
   documentTitle,
   onClose,
 }: {
-  documentId: string;
+  targetType?: "document" | "folder";
+  targetId?: string;
+  documentId?: string;
+  folderId?: string;
   workspaceId: string;
-  documentTitle: string;
+  title?: string;
+  documentTitle?: string;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const sharesKey = ["document-shares", documentId];
+  const id = targetId ?? documentId ?? folderId ?? "";
+  const displayTitle = title ?? documentTitle ?? "Untitled";
+  const sharesKey = ["public-shares", targetType, id];
   const shares = useQuery({
     queryKey: sharesKey,
-    queryFn: () => api.listShares(workspaceId, { documentId, includeRevoked: false }),
+    queryFn: () => api.listShares(workspaceId, targetType === "folder" ? { folderId: id, includeRevoked: false } : { documentId: id, includeRevoked: false }),
+    enabled: Boolean(id),
     refetchOnMount: "always",
     staleTime: 0,
   });
@@ -58,11 +72,17 @@ export function ShareDialog({
 
   const create = useMutation({
     mutationFn: () =>
-      api.createShare(documentId, {
-        password: password.trim() ? password : null,
-        allowIndexing,
-        ttlDays: ttlDays.trim() ? Number(ttlDays) : undefined,
-      }),
+      targetType === "folder"
+        ? api.createFolderShare(id, {
+            password: password.trim() ? password : null,
+            allowIndexing,
+            ttlDays: ttlDays.trim() ? Number(ttlDays) : undefined,
+          })
+        : api.createShare(id, {
+            password: password.trim() ? password : null,
+            allowIndexing,
+            ttlDays: ttlDays.trim() ? Number(ttlDays) : undefined,
+          }),
     onSuccess: (result) => {
       setError(null);
       setPassword("");
@@ -98,15 +118,17 @@ export function ShareDialog({
     }
   }
 
-  const active = (shares.data?.shares ?? []).filter((s: Share) => s.active);
+  const active = (shares.data?.shares ?? []).filter((s: Share) =>
+    s.active && (targetType === "folder" ? s.targetType === "folder" && s.folderId === id : s.targetType === "document" && s.documentId === id),
+  );
 
   return (
     <Dialog
       title={
         <span className="block min-w-0">
           <span className="block">Public share</span>
-          <span className="block truncate text-sm font-normal text-slate-500" title={documentTitle}>
-            {documentTitle}
+          <span className="block truncate text-sm font-normal text-slate-500" title={displayTitle}>
+            {displayTitle}
           </span>
         </span>
       }
@@ -158,7 +180,7 @@ export function ShareDialog({
         )}
 
         <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3">
-          <p className="text-sm font-medium text-slate-700">Create a new link</p>
+          <p className="text-sm font-medium text-slate-700">{targetType === "folder" ? "Publish manual" : "Create a new link"}</p>
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="block space-y-1">
               <span className="text-xs text-slate-500">Password (optional)</span>

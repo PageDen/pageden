@@ -20,6 +20,7 @@ import {
   MoveUpRight,
   MoveRight,
   Pencil,
+  Share2,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
@@ -38,6 +39,7 @@ export interface TreeActions {
   onRenameFolder: (folder: Folder) => void;
   onMoveFolder: (folder: Folder) => void;
   onTransferFolder: (folder: Folder) => void;
+  onShareFolder: (folder: Folder) => void;
   onEmptyFolder: (folder: Folder) => void;
   onDeleteFolder: (folder: Folder) => void;
   onPermissionsDoc: (doc: Doc) => void;
@@ -166,6 +168,7 @@ function FolderNode({ folder, childFolders, docsByFolder, workspaceId, actions, 
           { label: "Rename", icon: Pencil, onClick: () => actions.onRenameFolder(folder) },
           { label: "Move", icon: MoveRight, onClick: () => actions.onMoveFolder(folder) },
           ...(workspaceTransferEnabled ? [{ label: "Move to workspace", icon: MoveUpRight, onClick: () => actions.onTransferFolder(folder) }] : []),
+          { label: "Publish as manual", icon: Share2, onClick: () => actions.onShareFolder(folder) },
           { label: "Permissions", icon: KeyRound, onClick: () => actions.onPermissionsFolder(folder) },
           { label: "Empty folder", icon: FolderX, destructive: true, onClick: () => actions.onEmptyFolder(folder) },
           { label: "Trash", icon: Trash2, destructive: true, onClick: () => actions.onDeleteFolder(folder) },

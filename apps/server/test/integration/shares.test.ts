@@ -31,8 +31,8 @@ async function uploadAttachment(docId: string, adminCookie: Record<string, strin
   return res;
 }
 
-describe("DocumentShare REST + public /s/:slug", () => {
-  it("manager creates a share; anonymous /s/:slug returns sanitized Markdown", async () => {
+describe("DocumentShare REST + public share API", () => {
+  it("manager creates a share; anonymous public API returns sanitized Markdown", async () => {
     const s = await baseScenario();
     const create = await req({
       method: "POST",
@@ -48,7 +48,7 @@ describe("DocumentShare REST + public /s/:slug", () => {
     expect(share.documentId).toBe(s.docId);
 
     // No auth headers on this request.
-    const anon = await req({ method: "GET", url: `/s/${share.slug}` });
+    const anon = await req({ method: "GET", url: `/api/public/shares/${share.slug}` });
     expect(anon.statusCode).toBe(200);
     expect(anon.json().title).toBe("Runbook");
     expect(anon.json().content).toContain("# Runbook");
@@ -69,7 +69,7 @@ describe("DocumentShare REST + public /s/:slug", () => {
     // Bypass the API to fast-forward the expiry — covers the "share existed but expired" branch.
     await prisma.documentShare.update({ where: { id: shareId }, data: { expiresAt: new Date(Date.now() - 1000) } });
     const slug = create.json().share.slug as string;
-    const res = await req({ method: "GET", url: `/s/${slug}` });
+    const res = await req({ method: "GET", url: `/api/public/shares/${slug}` });
     expect(res.statusCode).toBe(404);
   });
 
@@ -83,7 +83,7 @@ describe("DocumentShare REST + public /s/:slug", () => {
     expect(del.statusCode).toBe(200);
     expect(del.json().share.active).toBe(false);
 
-    const res = await req({ method: "GET", url: `/s/${slug}` });
+    const res = await req({ method: "GET", url: `/api/public/shares/${slug}` });
     expect(res.statusCode).toBe(404);
   });
 
@@ -98,14 +98,14 @@ describe("DocumentShare REST + public /s/:slug", () => {
     expect(create.json().share.hasPassword).toBe(true);
     const slug = create.json().share.slug as string;
 
-    const noPw = await req({ method: "GET", url: `/s/${slug}` });
+    const noPw = await req({ method: "GET", url: `/api/public/shares/${slug}` });
     expect(noPw.statusCode).toBe(401);
     expect(noPw.json().error).toBe("password_required");
 
-    const wrong = await req({ method: "GET", url: `/s/${slug}?password=oops` });
+    const wrong = await req({ method: "GET", url: `/api/public/shares/${slug}?password=oops` });
     expect(wrong.statusCode).toBe(403);
 
-    const ok = await req({ method: "GET", url: `/s/${slug}?password=hunter2` });
+    const ok = await req({ method: "GET", url: `/api/public/shares/${slug}?password=hunter2` });
     expect(ok.statusCode).toBe(200);
     expect(ok.json().content).toContain("# Runbook");
   });
@@ -119,7 +119,7 @@ describe("DocumentShare REST + public /s/:slug", () => {
       payload: { allowIndexing: true },
     });
     const slug = create.json().share.slug as string;
-    const res = await req({ method: "GET", url: `/s/${slug}` });
+    const res = await req({ method: "GET", url: `/api/public/shares/${slug}` });
     expect(res.headers["x-robots-tag"]).toBe("all");
   });
 
@@ -184,7 +184,7 @@ describe("DocumentShare REST + public /s/:slug", () => {
     expect(disabled.statusCode).toBe(200);
     expect(disabled.json().enabled).toBe(false);
 
-    const hidden = await req({ method: "GET", url: `/s/${slug}` });
+    const hidden = await req({ method: "GET", url: `/api/public/shares/${slug}` });
     expect(hidden.statusCode).toBe(404);
 
     const docCreate = await req({ method: "POST", url: `/api/documents/${s.docId}/share`, cookies: s.adminCookie, payload: {} });

@@ -41,6 +41,14 @@ export const workspaceTransferSettingsQuery = (workspaceId: string) =>
     staleTime: 30_000,
   });
 
+export const workspacePublicSharingSettingsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["workspace-public-sharing", "settings", workspaceId],
+    queryFn: () => api.workspacePublicSharingSettings(workspaceId),
+    retry: false,
+    staleTime: 30_000,
+  });
+
 export const workspaceActivityQuery = (workspaceId: string) =>
   queryOptions({ queryKey: ["activity", workspaceId], queryFn: () => api.workspaceActivity(workspaceId) });
 

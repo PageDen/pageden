@@ -34,6 +34,7 @@ const AdminGroups = lazy(() => import("./features/admin/admin-groups").then((m) 
 const WorkspaceSettingsPage = lazy(() => import("./features/admin/workspace-settings-page").then((m) => ({ default: m.WorkspaceSettingsPage })));
 const AuditLogPage = lazy(() => import("./features/admin/audit-log-page").then((m) => ({ default: m.AuditLogPage })));
 const DevicesPage = lazy(() => import("./features/admin/devices-page").then((m) => ({ default: m.DevicesPage })));
+const PublicShareReader = lazy(() => import("./features/share/public-share-reader").then((m) => ({ default: m.PublicShareReader })));
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div className="p-8 text-slate-400">Loading…</div>}>{children}</Suspense>;
@@ -103,6 +104,26 @@ const verifyEmailRoute = createRoute({
   component: () => (
     <Lazy>
       <VerifyEmailPage />
+    </Lazy>
+  ),
+});
+
+const publicShareRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/s/$slug",
+  component: () => (
+    <Lazy>
+      <PublicShareReader />
+    </Lazy>
+  ),
+});
+
+const publicSharePageRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/s/$slug/p/$docId",
+  component: () => (
+    <Lazy>
+      <PublicShareReader />
     </Lazy>
   ),
 });
@@ -350,6 +371,8 @@ const routeTree = rootRoute.addChildren([
   verifyEmailRoute,
   forgotPasswordRoute,
   resetPasswordRoute,
+  publicShareRoute,
+  publicSharePageRoute,
   authedRoute.addChildren([
     indexRoute,
     onboardingRoute,
