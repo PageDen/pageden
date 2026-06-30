@@ -2803,5 +2803,6 @@ function parsePagedenUri(uri: string): { workspaceId: string; path: string } {
 function requestOrigin(request: FastifyRequest): string {
   const forwardedProto = typeof request.headers["x-forwarded-proto"] === "string" ? request.headers["x-forwarded-proto"].split(",")[0]?.trim() : null;
   const proto = forwardedProto || request.protocol;
-  return `${proto}://${request.hostname}`;
+  const host = requestHost(request) || request.hostname;
+  return `${proto}://${host}`;
 }
