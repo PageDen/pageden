@@ -48,6 +48,7 @@ be controlled through configuration where needed.
 
 - Web document editor with versioning, optimistic concurrency, attachments, search, and
   permission-aware document access.
+- Public document links and folder manuals for read-only sharing outside the workspace.
 - Obsidian plugin for remote browse/search, document download, background sync, live editing,
   and vault import.
 - Web vault import with frontmatter preservation, duplicate handling, import reports, and
@@ -128,6 +129,8 @@ This public repository is for the open-source app and local/self-host developmen
 For the Docker-based self-host stack, see [Self-host Pageden with Docker](docs/self-hosting-docker.md).
 The stack uses PostgreSQL, locally built Pageden server and web images, one-shot migration/seed jobs,
 and persistent filesystem storage.
+
+For public document links and folder manuals, see [Public sharing and folder manuals](docs/public-sharing.md).
 
 For custom deployments, build the app with the commands above and run it with your own
 PostgreSQL database, storage, reverse proxy, and TLS setup.
