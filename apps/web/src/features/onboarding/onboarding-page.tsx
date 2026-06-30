@@ -9,6 +9,7 @@ import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { WorkspaceUrlInput } from "../../components/ui/workspace-url-input";
 import { track } from "../../lib/analytics-bus";
 
 type Workspace = {
@@ -83,6 +84,10 @@ export function OnboardingPage() {
     createWorkspace.mutate();
   }
 
+  function clearSubmitError() {
+    if (error) setError(null);
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-950 dark:bg-slate-950 dark:text-slate-100 sm:py-12">
       <div className="mx-auto max-w-6xl">
@@ -152,6 +157,7 @@ export function OnboardingPage() {
                   <Input
                     value={name}
                     onChange={(event) => {
+                      clearSubmitError();
                       const next = event.target.value;
                       setName(next);
                       if (!subdomainEdited) setSubdomain(subdomainFromName(next));
@@ -163,19 +169,16 @@ export function OnboardingPage() {
                 {cloudHosted ? (
                   <label className="block space-y-1.5">
                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Workspace URL</span>
-                    <div className="flex items-center rounded-md border border-slate-300 bg-white transition focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-100 dark:border-slate-700 dark:bg-slate-950 dark:focus-within:border-orange-400 dark:focus-within:ring-orange-500/20">
-                      <Input
-                        value={subdomain}
-                        onChange={(event) => {
-                          setSubdomainEdited(true);
-                          setSubdomain(event.target.value.toLowerCase());
-                        }}
-                        className="border-0 focus:border-transparent focus:ring-0"
-                        placeholder="acme"
-                        required={!selectedWorkspace}
-                      />
-                      <span className="shrink-0 pr-3 text-sm text-slate-500 dark:text-slate-400">.{workspaceBaseDomain}</span>
-                    </div>
+                    <WorkspaceUrlInput
+                      value={subdomain}
+                      onChange={(event) => {
+                        clearSubmitError();
+                        setSubdomainEdited(true);
+                        setSubdomain(event.target.value.toLowerCase());
+                      }}
+                      placeholder="acme"
+                      required={!selectedWorkspace}
+                    />
                     {availability.isFetching ? (
                       <p className="text-xs text-slate-400 dark:text-slate-500">Checking availability...</p>
                     ) : availability.data ? (
@@ -200,7 +203,8 @@ export function OnboardingPage() {
               title="Import your Obsidian vault"
               description="Pick your vault folder, preview Markdown files, check duplicates, upload attachments, and download an import report."
               disabled={!selectedWorkspace}
-              href={selectedWorkspace ? `/w/${encodeURIComponent(selectedWorkspace.id)}/import` : undefined}
+              to={selectedWorkspace ? "/w/$workspaceId/import" : undefined}
+              workspaceId={selectedWorkspace?.id}
               buttonLabel="Import vault"
               onNavigate={finishOnboarding}
             />
@@ -210,7 +214,8 @@ export function OnboardingPage() {
               title="Connect an AI agent"
               description="Choose Codex, Claude, Hermes, OpenClaw, or another MCP client. Pageden creates a scoped key and ready-to-use config."
               disabled={!selectedWorkspace}
-              href={selectedWorkspace ? `/w/${encodeURIComponent(selectedWorkspace.id)}/agents` : undefined}
+              to={selectedWorkspace ? "/w/$workspaceId/agents" : undefined}
+              workspaceId={selectedWorkspace?.id}
               buttonLabel="Connect agent"
               onNavigate={finishOnboarding}
             />
@@ -288,7 +293,8 @@ function OnboardingAction({
   title,
   description,
   disabled,
-  href,
+  to,
+  workspaceId,
   buttonLabel,
   onNavigate,
 }: {
@@ -297,7 +303,8 @@ function OnboardingAction({
   title: string;
   description: string;
   disabled: boolean;
-  href?: string;
+  to?: "/w/$workspaceId/import" | "/w/$workspaceId/agents";
+  workspaceId?: string;
   buttonLabel: string;
   onNavigate?: () => void;
 }) {
@@ -311,15 +318,16 @@ function OnboardingAction({
             <h3 className="text-lg font-semibold text-slate-950 dark:text-slate-50">{title}</h3>
           </div>
           <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">{description}</p>
-          {href && !disabled ? (
-            <a
-              href={href}
+          {to && workspaceId && !disabled ? (
+            <Link
+              to={to}
+              params={{ workspaceId }}
               onClick={onNavigate}
               className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-orange-600 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-orange-700"
             >
               {buttonLabel}
               <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-            </a>
+            </Link>
           ) : (
             <p className="mt-4 text-sm font-medium text-slate-400 dark:text-slate-500">Create or choose a workspace first.</p>
           )}
