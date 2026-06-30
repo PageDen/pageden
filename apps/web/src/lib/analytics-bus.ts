@@ -35,8 +35,6 @@ export type EventName =
   | "share_link_revoked"
   | "search_performed"
   | "agent_token_created"
-  | "oauth_connect_url_copied"
-  | "oauth_readiness_tested"
   | "member_invited"
   | "vault_import_completed";
 

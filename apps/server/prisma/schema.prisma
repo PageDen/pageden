@@ -88,7 +88,6 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   accountDeletionCodes    AccountDeletionCode[]
   oauthAccounts           OAuthAccount[]
-  mcpOAuthCodes           McpOAuthCode[]
   uploadedAttachments     Attachment[]             @relation("AttachmentUploadedBy")
   authoredComments        DocumentComment[]        @relation("DocumentCommentAuthor")
   resolvedComments        DocumentComment[]        @relation("DocumentCommentResolver")
@@ -140,7 +139,6 @@ model Workspace {
   integrations           WorkspaceIntegration[]
   externalAccountLinks   ExternalAccountLink[]
   externalConnectSessions ExternalConnectSession[]
-  mcpOAuthCodes          McpOAuthCode[]
   comments               DocumentComment[]
   readCursors            TokenReadCursor[]
   claims                 DocumentClaim[]
@@ -557,27 +555,6 @@ model OAuthAccount {
 
   @@unique([provider, providerAccountId])
   @@index([userId])
-}
-
-model McpOAuthCode {
-  id            String    @id @default(cuid())
-  jti           String    @unique
-  codeHash      String?   @unique // HMAC of the opaque authorization code returned to the client
-  userId        String
-  workspaceId   String
-  clientId      String
-  redirectUri   String
-  codeChallenge String? // PKCE S256 challenge; nullable only for pre-migration short-lived rows
-  scopes        String[]  @default([])
-  expiresAt     DateTime
-  consumedAt    DateTime?
-  createdAt     DateTime  @default(now())
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-
-  @@index([expiresAt])
-  @@index([userId])
-  @@index([workspaceId])
 }
 
 // Public share link for a single document. Anonymous /s/:slug returns sanitized
