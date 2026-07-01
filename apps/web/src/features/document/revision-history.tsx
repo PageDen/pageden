@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Check, ChevronDown, Clipboard, Download, FileClock, RotateCcw, Sparkles, Star, Tag } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { CollapsedRevisionSummary, DocumentHistoryItem, RevisionSummary } from "@pageden/api-types";
 import { documentHistoryQuery, documentQuery, meQuery, revisionDetailQuery } from "../../lib/queries";
 import { api } from "../../lib/api";
@@ -14,6 +12,7 @@ import { formatDateTime } from "../../lib/format";
 import { documentReadablePath } from "../../lib/document-links";
 import { pageTitle, usePageTitle } from "../../lib/use-page-title";
 import { track } from "../../lib/analytics-bus";
+import { DocumentMarkdownPreview } from "./document-markdown-preview";
 
 type HistoryEntry = (RevisionSummary | CollapsedRevisionSummary) & { groupCount?: number };
 type ViewMode = "preview" | "changes";
@@ -237,9 +236,12 @@ export function RevisionHistory() {
               ) : selectedDetail.isError ? (
                 <p className="text-sm text-red-600">Could not load this version.</p>
               ) : mode === "preview" ? (
-                <article className="pageden-document-view prose prose-slate max-w-none break-words rounded-lg border border-slate-200 bg-white p-5 text-[16px] leading-8 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:prose-invert sm:p-7">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedContent}</ReactMarkdown>
-                </article>
+                <DocumentMarkdownPreview
+                  content={selectedContent}
+                  documentId={documentId}
+                  workspaceId={workspaceId}
+                  className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-7"
+                />
               ) : previousOlder ? (
                 <DiffView loading={previousDetail.isLoading} lines={diff} previousVersion={previousOlder.versionNumber} selectedVersion={selected?.versionNumber ?? 0} />
               ) : (
