@@ -1,5 +1,5 @@
-# DRAFT (not yet wired) — builds DEVELOPMENT images from the self-hosted repo
-# and pushes to ghcr.io so the $12 Droplet B only has to `docker pull`.
+# Builds DEVELOPMENT images from the self-hosted repo, pushes to ghcr.io, then
+# auto-deploys to Droplet B (pull + migrate + restart).
 #
 # Dedicated image names (pageden-dev-*) so they never clobber the public
 # self-hosted pageden-server / pageden-web images published by docker.yml,
@@ -72,3 +72,33 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=dev-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=dev-${{ matrix.name }}
+
+  # Auto-deploy the freshly-built images to Droplet B (dev). Only on main.
+  # Host + SSH key come from repo secrets (no infra IP in this public repo).
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-staging-dev
+      cancel-in-progress: false
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.PAGEDEN_STAGINGDEV_SSH_KEY }}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${{ secrets.STAGINGDEV_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Pull + migrate + restart dev on Droplet B
+        run: |
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes "root@${{ secrets.STAGINGDEV_HOST }}" "set -euo pipefail
+            cd /opt/pageden-staging-dev
+            docker compose pull dev-server dev-web
+            docker compose run --rm dev-migrate pnpm --filter @pageden/server db:migrate:deploy
+            docker compose up -d dev-server dev-web
+            docker image prune -f >/dev/null 2>&1 || true
+          "
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes "root@${{ secrets.STAGINGDEV_HOST }}" \
+            'cid=$(cd /opt/pageden-staging-dev && docker compose ps -q dev-server); docker exec "$cid" node -e "fetch(\"http://localhost:4000/api/ready\").then(r=>{if(!r.ok){process.exit(1)}else{console.log(\"dev healthy\")}}).catch(e=>{console.error(e);process.exit(1)})"'
