@@ -33,6 +33,111 @@ Pageden, and import an existing vault into a workspace.
 5. Click **Connect to Pageden** and approve the login in your browser.
 6. Pick the workspace to sync with this vault.
 
+## Using Pageden In Obsidian
+
+After setup, Pageden adds commands to Obsidian's command palette. Open the command palette with
+`Ctrl+P` or `Cmd+P`, type `Pageden`, then choose the action you need.
+
+### Bring an existing vault into Pageden
+
+Use this when your notes already live in Obsidian and you want to publish them into a Pageden
+workspace.
+
+1. Open the command palette.
+2. Run **Pageden: Import this vault to Pageden**.
+3. Choose the Pageden folder name for the imported notes. The default is `Imported from Obsidian`.
+4. Review the import preview.
+5. Click **Import vault**.
+
+The import creates folders and documents in Pageden. Existing remote documents with the same path
+are skipped rather than overwritten. Referenced local attachments are uploaded when the vault
+adapter supports binary reads.
+
+### Download Pageden documents into Obsidian
+
+Use this when the source documents already exist in Pageden and you want local Markdown copies in
+your vault.
+
+1. Run **Pageden: Browse remote documents** to pick one document, or run
+   **Pageden: Download a Pageden folder** to download every document in a folder.
+2. The plugin writes downloaded files under the configured local folder. The default is
+   `Remote Docs`.
+3. Edit the downloaded Markdown files normally in Obsidian.
+
+You can also run **Pageden: Download all Pageden documents** to create local copies of every
+document your account can access.
+
+### Edit and sync documents
+
+Downloaded Pageden documents are normal Markdown files. Edit them in Obsidian, then let background
+sync send the changes back to Pageden.
+
+- Keep **Background sync** enabled for automatic pull and push.
+- Run **Pageden: Sync now** when you want to sync immediately.
+- Run **Pageden: Push active document** when you want to push only the note you are currently
+  editing.
+
+The Obsidian status bar shows the current sync state, such as `Pageden: synced`, `Pageden: up to
+date`, or `Pageden: conflict`.
+
+### Create a new Pageden document from Obsidian
+
+To create a new document from Obsidian:
+
+1. Create a Markdown note inside the configured local folder, for example
+   `Remote Docs/team/plan.md`.
+2. Write the note in Obsidian.
+3. Run **Pageden: Push active document**, or wait for background sync.
+
+The plugin creates any missing remote folders, creates the document in Pageden, and records sync
+metadata so later edits use the normal conflict checks.
+
+### Search and download from Pageden
+
+Use **Pageden: Search remote documents** when you know what you need but do not know where it lives
+in the workspace.
+
+1. Run **Pageden: Search remote documents**.
+2. Enter a search term.
+3. Pick a result and click **Download**.
+
+Search only returns documents your Pageden account is allowed to read.
+
+### Use live document mode
+
+Use **Pageden: Open live document** when you want to edit the same document as the web app in a live
+collaboration session.
+
+Live mode opens a Pageden editor pane in Obsidian instead of editing a local Markdown file. Use it
+for co-editing with other people. Use downloaded files plus background sync when you prefer the
+normal Obsidian file workflow.
+
+### Work with attachments
+
+When a Markdown note references local files, the plugin can sync those attachments with Pageden.
+For example:
+
+```markdown
+![diagram](diagram.png)
+![[diagram.png]]
+```
+
+When you push a note, changed referenced attachments are uploaded. When you download or pull a
+document, server attachments are written beside the local Markdown file.
+
+### Resolve conflicts
+
+A conflict can happen when the local note and the Pageden document both changed since the last
+sync. The plugin keeps your local file untouched and writes the server copy as a sibling file named
+`*.conflict.md`.
+
+To resolve it:
+
+1. Compare your local note with the `*.conflict.md` file.
+2. Manually copy over the content you want to keep.
+3. Delete the conflict file by running **Pageden: Resolve conflict for this note**.
+4. Run **Pageden: Push active document** or **Pageden: Sync now**.
+
 ## Settings Reference
 
 - Server URL, default `https://go.pageden.app`
