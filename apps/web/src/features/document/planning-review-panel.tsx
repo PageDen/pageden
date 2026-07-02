@@ -15,6 +15,7 @@ type WorkflowStatus = "drafting" | "review" | "revision" | "final-review" | "acc
 type DocumentHistory = Awaited<ReturnType<typeof api.documentHistory>>;
 type RevisionEntry = DocumentHistory["revisions"][number] | DocumentHistory["revisions"][number]["collapsedRevisions"][number];
 type TimelineItem = DocumentHistory["timeline"][number];
+type ReviewActivityItem = TimelineItem & { count?: number };
 type DocumentDiff = Awaited<ReturnType<typeof api.documentDiff>>;
 
 const actionLabel: Record<RecommendedAction, string> = {
@@ -410,7 +411,7 @@ function LatestChanges({
   );
 }
 
-function ReviewActivity({ events, loading }: { events: TimelineItem[]; loading: boolean }) {
+function ReviewActivity({ events, loading }: { events: ReviewActivityItem[]; loading: boolean }) {
   if (loading) return <p className="text-xs text-slate-400">Loading review activity...</p>;
   if (events.length === 0) {
     return <p className="text-xs italic text-slate-400 dark:text-slate-500">No recent review activity.</p>;
@@ -426,7 +427,10 @@ function ReviewActivity({ events, loading }: { events: TimelineItem[]; loading: 
           if (item.type !== "event") return null;
           return (
             <li key={item.id} className="rounded-md bg-white px-2.5 py-2 text-xs ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-              <div className="font-medium text-slate-700 dark:text-slate-200">{reviewActivityLabel(item.event.action, item.event.actor)}</div>
+              <div className="font-medium text-slate-700 dark:text-slate-200">
+                {reviewActivityLabel(item.event.action, item.event.actor)}
+                {item.count && item.count > 1 ? <span className="ml-1 text-slate-400">×{item.count}</span> : null}
+              </div>
               <div className="mt-0.5 text-[11px] text-slate-400">{formatDateTime(item.createdAt)}</div>
             </li>
           );
@@ -454,7 +458,7 @@ function flattenRevisions(revisions: DocumentHistory["revisions"]): RevisionEntr
   return out.sort((a, b) => b.versionNumber - a.versionNumber);
 }
 
-function reviewActivityEvents(timeline: DocumentHistory["timeline"]): TimelineItem[] {
+function reviewActivityEvents(timeline: DocumentHistory["timeline"]): ReviewActivityItem[] {
   const actions = new Set([
     "comment_added_by_agent",
     "comment_resolved_by_agent",
@@ -464,7 +468,23 @@ function reviewActivityEvents(timeline: DocumentHistory["timeline"]): TimelineIt
     "document_plan_finalized_by_agent",
     "document_updated_by_agent",
   ]);
-  return timeline.filter((item) => item.type === "event" && actions.has(item.event.action)).slice(0, 4);
+  const filtered = timeline.filter((item): item is Extract<TimelineItem, { type: "event" }> => item.type === "event" && actions.has(item.event.action));
+  const coalesced: ReviewActivityItem[] = [];
+  for (const item of filtered) {
+    const previous = coalesced[coalesced.length - 1];
+    if (previous?.type === "event" && reviewActivityCoalesceKey(previous) === reviewActivityCoalesceKey(item)) {
+      previous.count = (previous.count ?? 1) + 1;
+      continue;
+    }
+    coalesced.push({ ...item });
+  }
+  return coalesced.slice(0, 4);
+}
+
+function reviewActivityCoalesceKey(item: Extract<TimelineItem, { type: "event" }>): string {
+  const metadata = item.event.metadata && typeof item.event.metadata === "object" && !Array.isArray(item.event.metadata) ? item.event.metadata : {};
+  const tokenId = "tokenId" in metadata && typeof metadata.tokenId === "string" ? metadata.tokenId : "";
+  return [item.event.action, item.event.actor, item.event.targetId ?? "", tokenId].join(":");
 }
 
 type PlanningDiffLine = { kind: "same" | "add" | "remove"; text: string };

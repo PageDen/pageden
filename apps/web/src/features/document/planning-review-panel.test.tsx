@@ -155,6 +155,32 @@ const history = {
         metadata: null,
       },
     },
+    {
+      type: "event" as const,
+      id: "event-2",
+      createdAt: "2026-07-02T08:05:30.000Z",
+      event: {
+        action: "document_updated_by_agent",
+        actor: "agent" as const,
+        userId: "user-1",
+        targetType: "document",
+        targetId: "document-1",
+        metadata: { tokenId: "agent-token-1" },
+      },
+    },
+    {
+      type: "event" as const,
+      id: "event-3",
+      createdAt: "2026-07-02T08:05:15.000Z",
+      event: {
+        action: "document_updated_by_agent",
+        actor: "agent" as const,
+        userId: "user-1",
+        targetType: "document",
+        targetId: "document-1",
+        metadata: { tokenId: "agent-token-1" },
+      },
+    },
   ],
 };
 
@@ -196,6 +222,8 @@ describe("PlanningReviewPanel", () => {
     expect(await screen.findByText("Added step")).toBeTruthy();
     expect(screen.getByText("Review activity")).toBeTruthy();
     expect(screen.getByText("Agent submitted planning review")).toBeTruthy();
+    expect(screen.getByText("Agent edited document")).toBeTruthy();
+    expect(screen.getByText("×2")).toBeTruthy();
   });
 
   it("does not fetch or render when disabled", () => {
