@@ -130,6 +130,25 @@
       font-size: 12px; color: var(--gray); text-align: center;
     }
     .browser-body { display: flex; height: 440px; }
+    .browser-body.screenshot-body {
+      display: block;
+      height: auto;
+      background: #f8fafc;
+    }
+    .app-screenshot {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .showcase-screenshot {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .showcase-visual.screenshot-frame {
+      background: #fff;
+      border-radius: 14px;
+    }
     .app-sidebar {
       width: 220px; flex-shrink: 0;
       background: #fafafa; border-right: 1px solid var(--border);
@@ -375,6 +394,7 @@
       .how-steps { grid-template-columns: 1fr; }
       .footer-top { grid-template-columns: 1fr 1fr; }
       .browser-body { height: 280px; }
+      .browser-body.screenshot-body { height: auto; }
       .app-sidebar { width: 160px; }
       .social-inner { gap: 28px; }
       .social-sep { display: none; }
@@ -436,37 +456,13 @@
         </div>
         <div class="browser-url">go.pageden.app</div>
       </div>
-      <div class="browser-body">
-        <div class="app-sidebar">
-          <div class="sidebar-label">Workspace</div>
-          <div class="sidebar-item active">📄 Getting Started</div>
-          <div class="sidebar-section">
-            <div class="sidebar-label">Engineering</div>
-            <div class="sidebar-item l2">Architecture</div>
-            <div class="sidebar-item l2">API Reference</div>
-            <div class="sidebar-item l2">Deployment</div>
-          </div>
-          <div class="sidebar-section">
-            <div class="sidebar-label">Product</div>
-            <div class="sidebar-item l2">Roadmap 2026</div>
-            <div class="sidebar-item l2">Feature Specs</div>
-          </div>
-          <div class="sidebar-section">
-            <div class="sidebar-label">HR</div>
-            <div class="sidebar-item l2">Onboarding</div>
-          </div>
-        </div>
-        <div class="app-editor">
-          <div class="editor-h1">Getting Started with Pageden</div>
-          <div class="editor-meta">Last edited 2 min ago · Chris</div>
-          <div class="editor-line"></div>
-          <div class="editor-line med"></div>
-          <div class="editor-line short"></div>
-          <div class="editor-callout">💡 Tip: Press <strong>/</strong> anywhere to insert tables, code blocks, images, and more.</div>
-          <div class="editor-line"></div>
-          <div class="editor-image-ph">🖼</div>
-          <div class="editor-line short"></div>
-        </div>
+      <div class="browser-body screenshot-body">
+        <img
+          class="app-screenshot"
+          src="/screenshots/workspace-document.png"
+          alt="Pageden workspace showing a folder tree, document page, comments, and AI readiness panel"
+          loading="eager"
+        />
       </div>
     </div>
   </div>
@@ -580,23 +576,13 @@
           <li>Full Markdown compatibility</li>
         </ul>
       </div>
-      <div class="showcase-visual">
-        <div class="mock-topbar">
-          <span class="mock-crumb">Team Docs › Getting Started</span>
-          <div class="mock-btns">
-            <span class="mock-btn">Share</span>
-            <span class="mock-btn primary">Publish</span>
-          </div>
-        </div>
-        <div class="mock-body">
-          <div class="mock-h">Getting Started with Pageden</div>
-          <div class="mock-meta">Last edited 2 minutes ago · Chris</div>
-          <div class="mock-line"></div>
-          <div class="mock-line" style="width:70%"></div>
-          <div class="mock-line" style="width:55%"></div>
-          <div class="mock-slash">/ &nbsp;<span style="color:#374151">Table · Code · Image · Callout</span></div>
-          <div class="mock-line" style="width:80%"></div>
-        </div>
+      <div class="showcase-visual screenshot-frame">
+        <img
+          class="showcase-screenshot"
+          src="/screenshots/document-editor.png"
+          alt="Pageden document page with document actions, content, comments, attachments, and AI readiness panels"
+          loading="lazy"
+        />
       </div>
     </div>
 
@@ -612,56 +598,35 @@
           <li>Search across pages, comments & attachments</li>
         </ul>
       </div>
-      <div class="showcase-visual">
-        <div class="mock-search">
-          <div class="mock-search-bar">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            <span class="mock-search-text">How do we handle customer refunds?</span>
-          </div>
-          <div class="mock-result ai">
-            <div class="mock-ai-label">✦ AI Answer</div>
-            <div class="mock-ai-text">Based on your docs, refunds are processed within 5–7 business days via the original payment method. See the Billing Policy for exceptions...</div>
-          </div>
-          <div class="mock-result">
-            <div class="mock-doc">
-              <span class="mock-doc-icon">📄</span>
-              <div><div class="mock-doc-title">Billing & Refund Policy</div><div class="mock-doc-sub">Finance › Policies</div></div>
-            </div>
-          </div>
-          <div class="mock-result">
-            <div class="mock-doc">
-              <span class="mock-doc-icon">📄</span>
-              <div><div class="mock-doc-title">Customer Support Handbook</div><div class="mock-doc-sub">Support › Guides</div></div>
-            </div>
-          </div>
-        </div>
+      <div class="showcase-visual screenshot-frame">
+        <img
+          class="showcase-screenshot"
+          src="/screenshots/search-results.png"
+          alt="Pageden sidebar search showing a matching document result"
+          loading="lazy"
+        />
       </div>
     </div>
 
-    <!-- Row 3: Tree -->
+    <!-- Row 3: AI agents -->
     <div class="showcase-row">
       <div class="showcase-text">
-        <div class="showcase-tag">Organization</div>
-        <h3 class="showcase-h3">Nested pages, zero chaos</h3>
-        <p class="showcase-p">Organize knowledge in a nested page tree that mirrors how your team actually thinks. Permissions flow naturally from parent to child pages.</p>
+        <div class="showcase-tag">AI agents</div>
+        <h3 class="showcase-h3">Connect agents with permissioned access</h3>
+        <p class="showcase-p">Give Claude, Codex, and other MCP clients a controlled path into your workspace. Choose read-only or write access, test the connection, and revoke access when needed.</p>
         <ul class="showcase-list">
-          <li>Unlimited nesting depth</li>
-          <li>Drag-and-drop reordering</li>
-          <li>Inherited permissions & visibility</li>
+          <li>OAuth connector URL for hosted agents</li>
+          <li>Read-only or write access modes</li>
+          <li>Visible connected apps and revocation</li>
         </ul>
       </div>
-      <div class="showcase-visual">
-        <div class="mock-tree">
-          <div class="mock-tree-item root">🏠 Team Workspace</div>
-          <div class="mock-tree-item l1">▶ 📁 Engineering</div>
-          <div class="mock-tree-item l2 active">📄 Architecture Overview</div>
-          <div class="mock-tree-item l2">📄 API Reference</div>
-          <div class="mock-tree-item l2">📄 Deployment Guide</div>
-          <div class="mock-tree-item l1">▼ 📁 Product</div>
-          <div class="mock-tree-item l2">📄 Roadmap 2026</div>
-          <div class="mock-tree-item l2">📄 Feature Specs</div>
-          <div class="mock-tree-item l1">▶ 📁 HR & Onboarding</div>
-        </div>
+      <div class="showcase-visual screenshot-frame">
+        <img
+          class="showcase-screenshot"
+          src="/screenshots/ai-agents.png"
+          alt="Pageden AI agents setup page with MCP connector URL and access mode controls"
+          loading="lazy"
+        />
       </div>
     </div>
   </div>
