@@ -11,9 +11,9 @@ import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
-import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
+import { applyDocumentWrite, buildHandoffPacket, documentContentWithStatus, metadataFromContent, promoteDocumentToCanonical, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX, type SearchDocumentsResult } from "../search/service.js";
-import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { extractDecisions, extractSections, findSection, implementationReadinessFor, taskPacketFor } from "../documents/handoff.js";
 import { addDecisionToContent, DecisionWriteError } from "../documents/decisions.js";
 import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
@@ -354,6 +354,23 @@ const toolDefinitions = [
     },
   },
   {
+    name: "pageden_finalize_plan",
+    description: "Safely finalize a multi-agent planning draft by verifying blockers, recording the accepted final decision, setting workflowStatus accepted, and promoting it to canonical.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        finalDecisionText: { type: "string", description: "Decision text for the final-plan accepted decision when it is not already present." },
+        reason: { type: "string", description: "Reason for the final-plan accepted decision when it is not already present." },
+        owner: { type: "string", description: "Human or agent label responsible for the final decision. Defaults to leadAgent or token name." },
+      },
+      required: ["baseVersion"],
+    },
+  },
+  {
     name: "pageden_append_to_document",
     description: "Append Markdown to a document using the latest version.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -684,6 +701,7 @@ const toolAnnotations: Record<string, McpToolAnnotations> = {
   pageden_import_markdown_tree: writeTool("Import Markdown tree", { destructive: true }),
   pageden_update_document: writeTool("Update document", { destructive: true }),
   pageden_mark_document_canonical: writeTool("Mark document canonical"),
+  pageden_finalize_plan: writeTool("Finalize planning document", { destructive: true }),
   pageden_append_to_document: writeTool("Append to document"),
   pageden_replace_section: writeTool("Replace document section", { destructive: true }),
   pageden_read_section: readOnlyTool("Read document section"),
@@ -880,6 +898,7 @@ async function callTool(
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_mark_document_canonical") data = await markDocumentCanonical(auth, args, request);
+  else if (name === "pageden_finalize_plan") data = await finalizePlanByMcp(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else if (name === "pageden_replace_section") data = await replaceSectionByMcp(auth, args, request);
   else if (name === "pageden_read_section") data = await readSection(auth, args);
@@ -1363,6 +1382,103 @@ async function addDecisionByMcp(auth: AuthContext, args: Record<string, unknown>
     updatedAt: outcome.updatedAt?.toISOString(),
     decision: added.decision,
     latestChangedSection: { anchor: added.sectionAnchor },
+  };
+}
+
+async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const baseVersion = stringParam(args, "baseVersion");
+  if (current.status !== "draft" && current.status !== "canonical") {
+    throw new Error(`Cannot finalize a ${current.status} document.`);
+  }
+
+  const comments = await prisma.documentComment.findMany({
+    where: { documentId: current.id, resolvedAt: null },
+    select: { id: true, body: true, sectionAnchor: true },
+    orderBy: { createdAt: "asc" },
+    take: 100,
+  });
+  const packet = taskPacketFor({
+    status: current.status,
+    supersededBy: current.supersededBy,
+    context: documentContext(current.content),
+    comments,
+  });
+  const blockers: string[] = [];
+  const openCommentCount = packet.openCommentsBySection.reduce((sum, group) => sum + group.count, 0);
+  if (packet.workflow?.workflow !== "multi-agent-planning") blockers.push("Document is not a multi-agent planning workflow.");
+  if (openCommentCount > 0) blockers.push(`${openCommentCount} unresolved comment${openCommentCount === 1 ? "" : "s"} remain.`);
+  if (packet.openQuestions.length > 0) blockers.push(`${packet.openQuestions.length} open question${packet.openQuestions.length === 1 ? "" : "s"} remain.`);
+  if (packet.acceptanceCriteria.length === 0) blockers.push("Acceptance criteria are required before finalization.");
+
+  const finalDecision = packet.decisions.find((decision) => decision.id === "final-plan");
+  if (finalDecision && finalDecision.status.toLowerCase() !== "accepted") {
+    blockers.push("Decision final-plan already exists but is not accepted.");
+  }
+  if (blockers.length > 0) {
+    const error: Error & { code?: string; data?: unknown } = new Error(`Plan is not ready to finalize: ${blockers.join(" ")}`);
+    error.code = "plan_not_ready";
+    error.data = { blockers };
+    throw error;
+  }
+
+  let nextContent = current.content;
+  let decision = finalDecision ?? null;
+  if (!decision) {
+    const owner = maybeString(args.owner) ?? packet.workflow?.leadAgent ?? auth.tokenName ?? "agent";
+    const added = addDecisionToContent(nextContent, {
+      id: "final-plan",
+      status: "accepted",
+      owner,
+      decision: maybeString(args.finalDecisionText) ?? "This plan is accepted as the current source of truth.",
+      reason: maybeString(args.reason) ?? "Review comments were resolved and remaining open questions were handled or deferred.",
+    });
+    nextContent = added.body;
+    decision = added.decision;
+  }
+  nextContent = documentContentWithStatus(contentWithPlanningWorkflowStatus(nextContent, "accepted"), "canonical");
+
+  const outcome = await applyDocumentWrite({
+    documentId: current.id,
+    auth,
+    baseVersion,
+    content: nextContent,
+    changeSource: "agent",
+    allowNonCanonical: current.status === "draft",
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      outcome.status === "conflict"
+        ? `Conflict. Current version is ${outcome.currentVersion}.`
+        : outcome.status ?? "Finalize plan failed.",
+    );
+  }
+  await writeAuditEvent({
+    workspaceId: current.workspaceId,
+    userId: auth.userId,
+    action: "document_plan_finalized_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version, decisionId: decision?.id ?? null },
+  });
+  return {
+    workspaceId: current.workspaceId,
+    documentId: outcome.documentId,
+    version: outcome.version,
+    checksum: outcome.checksum,
+    updatedAt: outcome.updatedAt?.toISOString(),
+    status: "canonical",
+    workflowStatus: "accepted",
+    decision,
+    blockers: [],
   };
 }
 
@@ -2048,36 +2164,6 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
   }
 }
 
-function documentContentWithStatus(content: string, status: "canonical" | "draft" | "superseded" | "archived"): string {
-  const statusLine = `status: ${status}`;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!match) return `---\n${statusLine}\n---\n\n${content}`;
-
-  const rawFrontmatter = match[1] ?? "";
-  const body = content.slice(match[0].length);
-  const lines = rawFrontmatter.split(/\r?\n/);
-  const kept: string[] = [];
-  let skippingKey: string | null = null;
-
-  for (const line of lines) {
-    const keyMatch = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (keyMatch) {
-      const key = keyMatch[1]!.toLowerCase();
-      skippingKey = key === "status" || key === "supersededby" ? key : null;
-      if (key === "status" || key === "supersededby") continue;
-    } else if (skippingKey && /^\s*-\s+/.test(line)) {
-      continue;
-    } else {
-      skippingKey = null;
-    }
-    kept.push(line);
-  }
-
-  const cleaned = kept.filter((line, index, arr) => line.trim() || arr[index - 1]?.trim() || arr[index + 1]?.trim());
-  cleaned.unshift(statusLine);
-  return `---\n${cleaned.join("\n").trim()}\n---\n\n${body.replace(/^\s+/, "")}`;
-}
-
 async function markDocumentCanonical(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "update");
   let documentId = maybeString(args.documentId);
@@ -2095,37 +2181,14 @@ async function markDocumentCanonical(auth: AuthContext, args: Record<string, unk
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
-    select: { id: true, workspaceId: true, currentVersionId: true, currentChecksum: true, updatedAt: true, status: true, supersededById: true },
+    select: { id: true, workspaceId: true },
   });
   if (!doc) throw new Error("Document not found.");
-  if (doc.status === "canonical" && doc.supersededById === null) {
-    return {
-      workspaceId: doc.workspaceId,
-      ok: true,
-      documentId: doc.id,
-      version: doc.currentVersionId ?? "",
-      checksum: doc.currentChecksum ?? "",
-      updatedAt: doc.updatedAt.toISOString(),
-      noOp: true,
-    };
-  }
 
-  let content = "";
-  if (doc.currentVersionId) {
-    const revision = await prisma.documentRevision.findUnique({
-      where: { id: doc.currentVersionId },
-      select: { storageKey: true },
-    });
-    if (revision) content = await readContent(revision.storageKey);
-  }
-
-  const outcome = await applyDocumentWrite({
+  const outcome = await promoteDocumentToCanonical({
     documentId: doc.id,
     auth,
-    baseVersion: doc.currentVersionId ?? "",
-    content: documentContentWithStatus(content, "canonical"),
     changeSource: "agent",
-    allowNonCanonical: true,
   });
   if (!outcome.ok) {
     throw new Error(
@@ -3021,6 +3084,32 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function maybeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function contentWithPlanningWorkflowStatus(content: string, workflowStatus: string): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) {
+    return `---${newline}workflow: multi-agent-planning${newline}workflowStatus: ${workflowStatus}${newline}---${newline}${newline}${content}`;
+  }
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const withWorkflow = upsertFrontmatterScalar(raw, "workflow", "multi-agent-planning");
+  const nextFrontmatter = upsertFrontmatterScalar(withWorkflow, "workflowStatus", workflowStatus);
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
+function upsertFrontmatterScalar(raw: string, key: string, value: string): string {
+  const lines = raw.split(/\r?\n/);
+  const index = lines.findIndex((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}:`));
+  const nextLine = `${key}: ${value}`;
+  if (index >= 0) {
+    lines[index] = nextLine;
+    return lines.join("\n").trimEnd();
+  }
+  return [...lines, nextLine].join("\n").trimEnd();
 }
 
 function booleanParam(value: unknown): boolean {

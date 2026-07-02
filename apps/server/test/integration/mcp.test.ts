@@ -625,6 +625,124 @@ describe("MCP agent access", () => {
     expect(packet.packet.activeClaim).toMatchObject({ note: "Reviewing plan round 0" });
   });
 
+  it("safely finalizes a multi-agent planning workflow only after blockers are clear", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/finalize-agent-plan.md",
+        title: "Finalize Agent Plan",
+        goal: "Finalize a reviewed plan safely.",
+        context: "Exercise the finalization guardrails.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    const openQuestionsCleared = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "open-questions",
+        content: "None.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    const criteriaUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "acceptance-criteria",
+        content: "- Finalization refuses unresolved comments.\n- Finalization records an accepted decision.\n",
+        baseVersion: openQuestionsCleared.version,
+        allowDraft: true,
+      }),
+    );
+    const comment = toolJson(
+      await tool(s.token, "pageden_add_section_comment", {
+        documentId: started.id,
+        sectionAnchor: "risks",
+        body: "Confirm no blocking comments remain before finalization.",
+      }),
+    );
+
+    const blocked = await tool(s.token, "pageden_finalize_plan", {
+      documentId: started.id,
+      baseVersion: criteriaUpdated.version,
+    });
+    expect(blocked.json().error.message).toMatch(/unresolved comment/i);
+
+    const resolved = toolJson(await tool(s.token, "pageden_resolve_comment", { commentId: comment.id }));
+    expect(resolved.resolvedAt).toBeTruthy();
+
+    const latest = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    const finalized = toolJson(
+      await tool(s.token, "pageden_finalize_plan", {
+        documentId: started.id,
+        baseVersion: latest.version,
+        owner: "agent-a",
+      }),
+    );
+    expect(finalized.status).toBe("canonical");
+    expect(finalized.workflowStatus).toBe("accepted");
+    expect(finalized.decision).toMatchObject({ id: "final-plan", status: "accepted" });
+
+    const canonicalRead = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id, canonicalOnly: true }));
+    expect(canonicalRead.status).toBe("canonical");
+    expect(canonicalRead.frontmatter.workflowStatus).toBe("accepted");
+    expect(canonicalRead.content).toContain("id: final-plan");
+    expect(canonicalRead.content).toContain("status: accepted");
+  });
+
+  it("refuses to finalize when final-plan exists but is not accepted", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const created = toolJson(
+      await tool(s.token, "pageden_upsert_document_by_path", {
+        workspaceId: s.ws.id,
+        path: "strategy/proposed-final-plan.md",
+        title: "Proposed Final Plan",
+        createFolders: true,
+        content: [
+          "---",
+          "status: draft",
+          "docType: plan",
+          "workflow: multi-agent-planning",
+          "workflowStatus: final-review",
+          "reviewRound: 1",
+          "leadAgent: agent-a",
+          "reviewAgent: agent-b",
+          "---",
+          "",
+          "# Proposed Final Plan",
+          "",
+          "## Open Questions",
+          "",
+          "## Decisions",
+          "",
+          ":::decision",
+          "id: final-plan",
+          "status: proposed",
+          "owner: agent-a",
+          "",
+          "decision: Proposed final plan.",
+          "reason: It has not been accepted yet.",
+          ":::",
+          "",
+          "## Acceptance Criteria",
+          "",
+          "- The final decision must be accepted.",
+          "",
+        ].join("\n"),
+      }),
+    );
+
+    const res = await tool(s.token, "pageden_finalize_plan", {
+      documentId: created.id,
+      baseVersion: created.version,
+    });
+    expect(res.json().error.message).toMatch(/final-plan already exists but is not accepted/i);
+  });
+
   it("does not allow allowDraft to edit superseded documents", async () => {
     const s = await agentToken(["search", "read", "create", "update"]);
     const created = toolJson(
