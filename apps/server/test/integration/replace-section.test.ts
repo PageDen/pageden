@@ -179,6 +179,114 @@ describe("POST /api/documents/:id/sections", () => {
     expect(fresh.json().content).toContain("All decisions captured.");
   });
 
+  it("adds a structured decision through the REST endpoint with duplicate-id validation", async () => {
+    const s = await baseScenario();
+    const draft = await makeDoc(
+      s.adminCookie,
+      s.ws.id,
+      s.folderId,
+      "---\nstatus: draft\nworkflow: multi-agent-planning\nworkflowStatus: final-review\nreviewRound: 1\n---\n\n# Draft Plan\n\n## Decisions\n",
+    );
+
+    const blocked = await req({
+      method: "POST",
+      url: `/api/documents/${draft.id}/decisions`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: draft.version,
+        id: "final-plan",
+        status: "accepted",
+        owner: "agent-a",
+        decision: "Use the reviewed plan.",
+        reason: "Comments are resolved.",
+      },
+    });
+    expect(blocked.statusCode).toBe(409);
+
+    const added = await req({
+      method: "POST",
+      url: `/api/documents/${draft.id}/decisions`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: draft.version,
+        allowDraft: true,
+        id: "final-plan",
+        status: "accepted",
+        owner: "agent-a",
+        decision: "Use the reviewed plan.",
+        reason: "Comments are resolved.",
+      },
+    });
+    expect(added.statusCode).toBe(200);
+    expect(added.json().decision.id).toBe("final-plan");
+    expect(added.json().decision.status).toBe("accepted");
+
+    const duplicate = await req({
+      method: "POST",
+      url: `/api/documents/${draft.id}/decisions`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: added.json().version,
+        allowDraft: true,
+        id: "final-plan",
+        status: "accepted",
+        owner: "agent-a",
+        decision: "Use the reviewed plan.",
+        reason: "Comments are resolved.",
+      },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json().error).toBe("duplicate_decision");
+
+    const fresh = await req({ method: "GET", url: `/api/documents/${draft.id}`, cookies: s.adminCookie });
+    expect(fresh.json().content).toContain(":::decision");
+    expect(fresh.json().content).toContain("id: final-plan");
+  });
+
+  it("adds a structured decision through the MCP tool pageden_add_decision", async () => {
+    const s = await baseScenario();
+    const doc = await makeDoc(s.adminCookie, s.ws.id, s.folderId, `${SAMPLE}\n## Decisions\n`);
+    const tokenRes = await req({
+      method: "POST",
+      url: "/api/tokens",
+      cookies: s.adminCookie,
+      payload: { name: "Editor", kind: "agent", workspaceId: s.ws.id, scopes: ["search", "read", "update"] },
+    });
+    expect(tokenRes.statusCode).toBe(201);
+    const token = tokenRes.json().token as string;
+
+    const res = await req({
+      method: "POST",
+      url: "/mcp",
+      headers: bearer(token),
+      payload: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "pageden_add_decision",
+          arguments: {
+            documentId: doc.id,
+            baseVersion: doc.version,
+            id: "storage-choice",
+            status: "accepted",
+            owner: "agent-a",
+            decision: "Keep decisions in structured Markdown blocks.",
+            reason: "Agents and the UI can parse the same source of truth.",
+          },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.json().result.content[0].text);
+    expect(body.documentId).toBe(doc.id);
+    expect(body.decision.id).toBe("storage-choice");
+    expect(body.latestChangedSection.anchor).toBe("decisions");
+
+    const fresh = await req({ method: "GET", url: `/api/documents/${doc.id}`, cookies: s.adminCookie });
+    expect(fresh.json().content).toContain("id: storage-choice");
+  });
+
   it("allows full-document web updates for drafts only when allowDraft is explicit", async () => {
     const s = await baseScenario();
     const draft = await makeDoc(

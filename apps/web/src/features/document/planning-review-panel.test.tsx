@@ -143,7 +143,6 @@ describe("PlanningReviewPanel", () => {
       id: "document-1",
       version: "version-2",
       checksum: "checksum-2",
-      revisionHash: null,
       updatedAt: "2026-07-02T08:05:00.000Z",
     });
 
@@ -169,5 +168,50 @@ describe("PlanningReviewPanel", () => {
 
     expect(await screen.findByText("Save or discard local edits before changing workflow state.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Request revision" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("adds an accepted final decision when review blockers are clear", async () => {
+    const readyPacket = {
+      ...packet,
+      packet: {
+        ...packet.packet,
+        recommendedAction: "human_review" as const,
+        openCommentsBySection: [],
+        openQuestions: [],
+        decisions: [],
+      },
+    };
+    vi.spyOn(api, "documentHandoff").mockResolvedValue(readyPacket);
+    const addDecision = vi.spyOn(api, "addDecision").mockResolvedValue({
+      id: "document-1",
+      version: "version-2",
+      checksum: "checksum-2",
+      updatedAt: "2026-07-02T08:05:00.000Z",
+      decision: {
+        id: "final-plan",
+        status: "accepted",
+        date: null,
+        owner: "agent-a",
+        replaces: null,
+        decision: "This plan is accepted as the current source of truth.",
+        reason: "Review comments were resolved and remaining open questions were handled or deferred.",
+      },
+    });
+
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add accepted final decision" }));
+
+    await waitFor(() => {
+      expect(addDecision).toHaveBeenCalledWith("document-1", {
+        baseVersion: "version-1",
+        id: "final-plan",
+        status: "accepted",
+        owner: "agent-a",
+        decision: "This plan is accepted as the current source of truth.",
+        reason: "Review comments were resolved and remaining open questions were handled or deferred.",
+        allowDraft: true,
+      });
+    });
   });
 });

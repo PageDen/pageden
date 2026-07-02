@@ -8,6 +8,7 @@ import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
 import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
 import { documentRelationships } from "./relationships.js";
+import { addDecisionToContent, DecisionWriteError } from "./decisions.js";
 import { replaceSection, suggestAnchors } from "./sections.js";
 import { documentStatsFor } from "./stats.js";
 import { documentDiffFor } from "./diff.js";
@@ -1057,6 +1058,85 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       return sendWriteOutcome(reply, outcome);
     },
   );
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      baseVersion?: string;
+      id?: string;
+      status?: string;
+      owner?: string;
+      decision?: string;
+      reason?: string;
+      replaces?: string | null;
+      allowDraft?: boolean;
+    };
+  }>("/api/documents/:id/decisions", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const baseVersion = request.body.baseVersion;
+    const fields: Record<string, string> = {};
+    if (!baseVersion) fields.baseVersion = "baseVersion is required.";
+    if (!request.body.id?.trim()) fields.id = "id is required.";
+    if (!request.body.status?.trim()) fields.status = "status is required.";
+    if (!request.body.owner?.trim()) fields.owner = "owner is required.";
+    if (!request.body.decision?.trim()) fields.decision = "decision is required.";
+    if (!request.body.reason?.trim()) fields.reason = "reason is required.";
+    if (Object.keys(fields).length > 0) return validationError(reply, fields);
+
+    const doc = await prisma.document.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, currentVersionId: true, status: true },
+    });
+    if (!doc) return notFound(reply, "Document not found.");
+    let body = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) body = await readContent(revision.storageKey);
+    }
+
+    let nextBody: string;
+    let decision;
+    try {
+      const added = addDecisionToContent(body, {
+        id: request.body.id!,
+        status: request.body.status!,
+        owner: request.body.owner!,
+        decision: request.body.decision!,
+        reason: request.body.reason!,
+        replaces: request.body.replaces,
+      });
+      nextBody = added.body;
+      decision = added.decision;
+    } catch (error) {
+      if (error instanceof DecisionWriteError && error.code === "duplicate_decision") {
+        return reply.code(409).send({ error: "duplicate_decision", message: error.message });
+      }
+      if (error instanceof DecisionWriteError) return validationError(reply, error.fields);
+      throw error;
+    }
+
+    const outcome = await applyDocumentWrite({
+      documentId: doc.id,
+      auth,
+      baseVersion: baseVersion!,
+      content: nextBody,
+      changeSource: "web_app",
+      allowNonCanonical: request.body.allowDraft === true && doc.status === "draft",
+    });
+    if (!outcome.ok) return sendWriteOutcome(reply, outcome);
+    return reply.send({
+      id: outcome.documentId,
+      version: outcome.version,
+      checksum: outcome.checksum,
+      updatedAt: outcome.updatedAt?.toISOString(),
+      noOp: outcome.noOp ?? false,
+      decision,
+    });
+  });
 
   // Push from the Obsidian plugin.
   app.post<{ Params: { id: string }; Body: { baseVersion?: string; checksum?: string; content?: string } }>(

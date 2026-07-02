@@ -561,6 +561,8 @@ export const writeResultSchema = z
   })
   .strict();
 
+export const decisionAddResponseSchema = writeResultSchema.extend({ decision: decisionSchema }).strict();
+
 export const documentRenameSchema = z.object({ id: z.string(), path: z.string() }).strict();
 export const documentMoveSchema = z.object({ id: z.string(), folderId: z.string(), path: z.string() }).strict();
 

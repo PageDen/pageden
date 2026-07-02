@@ -14,6 +14,7 @@ import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX, type SearchDocumentsResult } from "../search/service.js";
 import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { addDecisionToContent, DecisionWriteError } from "../documents/decisions.js";
 import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
 import { replaceSection, suggestAnchors } from "../documents/sections.js";
@@ -426,6 +427,27 @@ const toolDefinitions = [
     },
   },
   {
+    name: "pageden_add_decision",
+    description: "Append one structured `:::decision` block to a document's Decisions section with duplicate-id validation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+        baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        id: { type: "string", description: "Stable decision id, e.g. final-plan or auth-storage-choice." },
+        status: { type: "string", description: "Decision status, e.g. proposed, accepted, superseded." },
+        owner: { type: "string", description: "Human or agent label responsible for this decision." },
+        decision: { type: "string", description: "The actual decision made." },
+        reason: { type: "string", description: "Why this decision was made." },
+        replaces: { type: "string", description: "Optional decision id this supersedes." },
+        allowDraft: { type: "boolean", description: "Allow adding a decision to a status: draft document. Superseded and archived documents remain protected." },
+      },
+      required: ["baseVersion", "id", "status", "owner", "decision", "reason"],
+    },
+  },
+  {
     name: "pageden_document_relationships",
     description: "Typed related-document panel for a single document: who supersedes whom, outbound wikilink/markdown references, inbound backlinks, and any PR links parsed from frontmatter. Use when an agent needs to know what touches a doc beyond semantic similarity.",
     inputSchema: {
@@ -667,6 +689,7 @@ const toolAnnotations: Record<string, McpToolAnnotations> = {
   pageden_read_section: readOnlyTool("Read document section"),
   pageden_get_task_packet: readOnlyTool("Get task packet"),
   pageden_list_decisions: readOnlyTool("List decisions"),
+  pageden_add_decision: writeTool("Add decision", { destructive: true }),
   pageden_document_relationships: readOnlyTool("Show document relationships"),
   pageden_doc_stats: readOnlyTool("Show document stats"),
   pageden_diff: readOnlyTool("Show document diff"),
@@ -862,6 +885,7 @@ async function callTool(
   else if (name === "pageden_read_section") data = await readSection(auth, args);
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
+  else if (name === "pageden_add_decision") data = await addDecisionByMcp(auth, args, request);
   else if (name === "pageden_document_relationships") data = await documentRelationshipsHandler(auth, args);
   else if (name === "pageden_doc_stats") data = await docStatsHandler(auth, args);
   else if (name === "pageden_diff") data = await docDiffHandler(auth, args);
@@ -1275,6 +1299,70 @@ async function listDecisions(auth: AuthContext, args: Record<string, unknown>) {
     title: doc.title,
     path: doc.path,
     decisions,
+  };
+}
+
+async function addDecisionByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const baseVersion = stringParam(args, "baseVersion");
+  let added;
+  try {
+    added = addDecisionToContent(current.content, {
+      id: stringParam(args, "id"),
+      status: stringParam(args, "status"),
+      owner: stringParam(args, "owner"),
+      decision: stringParam(args, "decision"),
+      reason: stringParam(args, "reason"),
+      replaces: maybeString(args.replaces) ?? null,
+    });
+  } catch (error) {
+    if (error instanceof DecisionWriteError) {
+      const wrapped: Error & { code?: string; data?: unknown } = new Error(error.message);
+      wrapped.code = error.code;
+      wrapped.data = error.fields;
+      throw wrapped;
+    }
+    throw error;
+  }
+  const outcome = await applyDocumentWrite({
+    documentId: current.id,
+    auth,
+    baseVersion,
+    content: added.body,
+    changeSource: "agent",
+    allowNonCanonical: booleanParam(args.allowDraft) && current.status === "draft",
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      outcome.status === "conflict"
+        ? `Conflict. Current version is ${outcome.currentVersion}.`
+        : outcome.status ?? "Add decision failed.",
+    );
+  }
+  await writeAuditEvent({
+    workspaceId: current.workspaceId,
+    userId: auth.userId,
+    action: "document_decision_added_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version, decisionId: added.decision.id },
+  });
+  return {
+    workspaceId: current.workspaceId,
+    documentId: outcome.documentId,
+    version: outcome.version,
+    checksum: outcome.checksum,
+    updatedAt: outcome.updatedAt?.toISOString(),
+    decision: added.decision,
+    latestChangedSection: { anchor: added.sectionAnchor },
   };
 }
 

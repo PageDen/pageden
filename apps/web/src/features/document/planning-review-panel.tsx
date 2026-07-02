@@ -103,6 +103,7 @@ function PlanningReviewContent({
   const acceptedDecision = packet.decisions.find((decision) => decision.status.toLowerCase() === "accepted");
   const hasAcceptanceCriteria = packet.acceptanceCriteria.length > 0;
   const hasBlockingQuestions = packet.openQuestions.some((question) => /\b(blocking|blocked|must|before final)\b/i.test(question));
+  const readyForAcceptedDecision = openCommentCount === 0 && packet.openQuestions.length === 0 && hasAcceptanceCriteria;
   const readyToFinalize =
     packet.recommendedAction === "finalize" &&
     openCommentCount === 0 &&
@@ -133,12 +134,26 @@ function PlanningReviewContent({
     onSuccess: () => void refresh(),
   });
 
+  const addDecision = useMutation({
+    mutationFn: () =>
+      api.addDecision(documentId, {
+        baseVersion,
+        id: "final-plan",
+        status: "accepted",
+        owner: workflow.leadAgent ?? "human",
+        decision: "This plan is accepted as the current source of truth.",
+        reason: "Review comments were resolved and remaining open questions were handled or deferred.",
+        allowDraft: documentStatus === "draft",
+      }),
+    onSuccess: () => void refresh(),
+  });
+
   const finalize = useMutation({
     mutationFn: () => api.markDocumentCanonical(documentId),
     onSuccess: () => void refresh(),
   });
 
-  const actionDisabled = !canEdit || hasUnsavedChanges || transition.isPending || finalize.isPending;
+  const actionDisabled = !canEdit || hasUnsavedChanges || transition.isPending || addDecision.isPending || finalize.isPending;
   const actions = workflowActionsFor(currentStatus);
 
   return (
@@ -182,12 +197,17 @@ function PlanningReviewContent({
             disabled={actionDisabled}
             hasUnsavedChanges={hasUnsavedChanges}
             currentStatus={currentStatus}
+            hasAcceptedDecision={Boolean(acceptedDecision)}
+            readyForAcceptedDecision={readyForAcceptedDecision}
             readyToFinalize={readyToFinalize}
+            addingDecision={addDecision.isPending}
             finalizing={finalize.isPending}
             transitioning={transition.isPending}
             transitionError={transition.error}
+            addDecisionError={addDecision.error}
             finalizeError={finalize.error}
             onTransition={(status) => transition.mutate(status)}
+            onAddDecision={() => addDecision.mutate()}
             onFinalize={() => finalize.mutate()}
           />
         ) : null}
@@ -242,24 +262,34 @@ function WorkflowActions({
   disabled,
   hasUnsavedChanges,
   currentStatus,
+  hasAcceptedDecision,
+  readyForAcceptedDecision,
   readyToFinalize,
+  addingDecision,
   finalizing,
   transitioning,
   transitionError,
+  addDecisionError,
   finalizeError,
   onTransition,
+  onAddDecision,
   onFinalize,
 }: {
   actions: WorkflowStatus[];
   disabled: boolean;
   hasUnsavedChanges: boolean;
   currentStatus: WorkflowStatus | null;
+  hasAcceptedDecision: boolean;
+  readyForAcceptedDecision: boolean;
   readyToFinalize: boolean;
+  addingDecision: boolean;
   finalizing: boolean;
   transitioning: boolean;
   transitionError: unknown;
+  addDecisionError: unknown;
   finalizeError: unknown;
   onTransition: (status: WorkflowStatus) => void;
+  onAddDecision: () => void;
   onFinalize: () => void;
 }) {
   return (
@@ -279,6 +309,15 @@ function WorkflowActions({
         ))}
         <Button
           type="button"
+          variant="secondary"
+          className="h-8 justify-start px-2.5 text-xs"
+          disabled={disabled || hasAcceptedDecision || !readyForAcceptedDecision}
+          onClick={onAddDecision}
+        >
+          {addingDecision ? "Adding decision..." : "Add accepted final decision"}
+        </Button>
+        <Button
+          type="button"
           variant="primary"
           className="h-8 justify-start px-2.5 text-xs"
           disabled={disabled || !readyToFinalize}
@@ -290,6 +329,7 @@ function WorkflowActions({
       {hasUnsavedChanges ? <p className="text-xs text-amber-700 dark:text-amber-200">Save or discard local edits before changing workflow state.</p> : null}
       {transitioning ? <p className="text-xs text-slate-400">Updating workflow...</p> : null}
       {transitionError ? <p className="text-xs text-red-600">{crudErrorMessage(transitionError)}</p> : null}
+      {addDecisionError ? <p className="text-xs text-red-600">{crudErrorMessage(addDecisionError)}</p> : null}
       {finalizeError ? <p className="text-xs text-red-600">{crudErrorMessage(finalizeError)}</p> : null}
     </div>
   );

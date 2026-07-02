@@ -14,6 +14,7 @@ import {
   attachmentSchema,
   attachmentListSchema,
   documentCreateSchema,
+  decisionAddResponseSchema,
   documentMoveSchema,
   documentRenameSchema,
   documentWorkspaceTransferSchema,
@@ -424,6 +425,20 @@ export const api = {
     request("PUT", `/documents/${encodeURIComponent(id)}`, { body, schema: writeResultSchema }),
   markDocumentCanonical: (id: string) =>
     request("POST", `/documents/${encodeURIComponent(id)}/mark-canonical`, { schema: writeResultSchema }),
+  addDecision: (
+    id: string,
+    body: {
+      baseVersion: string;
+      id: string;
+      status: string;
+      owner: string;
+      decision: string;
+      reason: string;
+      replaces?: string | null;
+      allowDraft?: boolean;
+    },
+  ) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/decisions`, { body, schema: decisionAddResponseSchema }),
   restoreRevision: (id: string, revisionId: string) =>
     request("POST", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
       schema: writeResultSchema,
