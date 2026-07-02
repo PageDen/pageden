@@ -166,7 +166,11 @@ function PlanningReviewContent({
   });
 
   const finalize = useMutation({
-    mutationFn: () => api.markDocumentCanonical(documentId),
+    mutationFn: () =>
+      api.finalizePlan(documentId, {
+        baseVersion,
+        owner: workflow.leadAgent ?? undefined,
+      }),
     onSuccess: () => void refresh(),
   });
 
@@ -371,9 +375,31 @@ function WorkflowActions({
       {transitioning ? <p className="text-xs text-slate-400">Updating workflow...</p> : null}
       {transitionError ? <p className="text-xs text-red-600">{crudErrorMessage(transitionError)}</p> : null}
       {addDecisionError ? <p className="text-xs text-red-600">{crudErrorMessage(addDecisionError)}</p> : null}
-      {finalizeError ? <p className="text-xs text-red-600">{crudErrorMessage(finalizeError)}</p> : null}
+      {finalizeError ? <FinalizeError error={finalizeError} /> : null}
     </div>
   );
+}
+
+function FinalizeError({ error }: { error: unknown }) {
+  const blockers = planningFinalizeBlockers(error);
+  if (blockers.length === 0) return <p className="text-xs text-red-600">{crudErrorMessage(error)}</p>;
+  return (
+    <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-800 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-100">
+      <div className="font-semibold">{crudErrorMessage(error)}</div>
+      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+        {blockers.map((blocker) => (
+          <li key={blocker}>{blocker}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function planningFinalizeBlockers(error: unknown): string[] {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") return [];
+  const body = error.body as { error?: unknown; blockers?: unknown };
+  if (body.error !== "plan_not_ready" || !Array.isArray(body.blockers)) return [];
+  return body.blockers.filter((blocker): blocker is string => typeof blocker === "string" && blocker.trim().length > 0);
 }
 
 function LatestChanges({
@@ -475,6 +501,7 @@ function reviewActivityEvents(timeline: DocumentHistory["timeline"]): ReviewActi
     "document_section_replaced_by_agent",
     "document_decision_added_by_agent",
     "document_plan_finalized_by_agent",
+    "document_plan_finalized",
     "document_updated_by_agent",
   ]);
   const filtered = timeline.filter((item): item is Extract<TimelineItem, { type: "event" }> => item.type === "event" && actions.has(item.event.action));
@@ -525,6 +552,7 @@ function reviewActivityLabel(action: string, actor: string): string {
     document_section_replaced_by_agent: "Agent edited section",
     document_decision_added_by_agent: "Agent added decision",
     document_plan_finalized_by_agent: "Agent finalized plan",
+    document_plan_finalized: "Plan finalized",
     document_updated_by_agent: "Agent edited document",
   };
   return labels[action] ?? `${who} ${action.replace(/_/g, " ")}`;

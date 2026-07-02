@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { PlanningReviewPanel } from "./planning-review-panel";
 
 const savedContent = `---
@@ -311,6 +311,107 @@ describe("PlanningReviewPanel", () => {
         allowDraft: true,
       });
     });
+  });
+
+  it("finalizes through the safe planning endpoint", async () => {
+    const readyPacket = {
+      ...packet,
+      packet: {
+        ...packet.packet,
+        workflow: {
+          ...packet.packet.workflow,
+          workflowStatus: "accepted",
+        },
+        recommendedAction: "finalize" as const,
+        openCommentsBySection: [],
+        openQuestions: [],
+        decisions: [
+          {
+            id: "final-plan",
+            status: "accepted",
+            date: null,
+            owner: "agent-a",
+            replaces: null,
+            decision: "Accepted.",
+            reason: "Ready.",
+          },
+        ],
+      },
+    };
+    vi.spyOn(api, "documentHandoff").mockResolvedValue(readyPacket);
+    const finalize = vi.spyOn(api, "finalizePlan").mockResolvedValue({
+      workspaceId: "workspace-1",
+      documentId: "document-1",
+      version: "version-2",
+      checksum: "checksum-2",
+      updatedAt: "2026-07-02T08:05:00.000Z",
+      status: "canonical",
+      workflowStatus: "accepted",
+      decision: {
+        id: "final-plan",
+        status: "accepted",
+        date: null,
+        owner: "agent-a",
+        replaces: null,
+        decision: "Accepted.",
+        reason: "Ready.",
+      },
+      blockers: [],
+      approval: { required: false },
+    });
+
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Mark canonical" }));
+
+    await waitFor(() => {
+      expect(finalize).toHaveBeenCalledWith("document-1", {
+        baseVersion: "version-1",
+        owner: "agent-a",
+      });
+    });
+  });
+
+  it("renders server-side finalization blockers", async () => {
+    const readyPacket = {
+      ...packet,
+      packet: {
+        ...packet.packet,
+        workflow: {
+          ...packet.packet.workflow,
+          workflowStatus: "accepted",
+        },
+        recommendedAction: "finalize" as const,
+        openCommentsBySection: [],
+        openQuestions: [],
+        decisions: [
+          {
+            id: "final-plan",
+            status: "accepted",
+            date: null,
+            owner: "agent-a",
+            replaces: null,
+            decision: "Accepted.",
+            reason: "Ready.",
+          },
+        ],
+      },
+    };
+    vi.spyOn(api, "documentHandoff").mockResolvedValue(readyPacket);
+    vi.spyOn(api, "finalizePlan").mockRejectedValue(
+      new ApiError(409, {
+        error: "plan_not_ready",
+        message: "Plan is not ready to finalize.",
+        blockers: ["1 unresolved comment remains."],
+      }),
+    );
+
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Mark canonical" }));
+
+    expect(await screen.findByText("Plan is not ready to finalize.")).toBeTruthy();
+    expect(screen.getByText("1 unresolved comment remains.")).toBeTruthy();
   });
 
   it("does not show promotion controls after an accepted plan is canonical", async () => {

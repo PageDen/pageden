@@ -6,10 +6,10 @@ import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
-import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
+import { implementationReadinessFor, taskPacketFor, type Decision, type TaskPacket } from "./handoff.js";
 import { documentRelationships } from "./relationships.js";
 import { addDecisionToContent, DecisionWriteError } from "./decisions.js";
-import { replaceSection, suggestAnchors } from "./sections.js";
+import { findRange, replaceSection, sectionRanges, suggestAnchors } from "./sections.js";
 import { documentStatsFor } from "./stats.js";
 import { documentDiffFor } from "./diff.js";
 
@@ -236,6 +236,7 @@ const HISTORY_EVENT_ACTIONS = [
   "document_created_by_agent",
   "document_updated_by_agent",
   "document_appended_by_agent",
+  "document_plan_finalized",
   "document_revision_metadata_updated",
 ] as const;
 
@@ -478,6 +479,223 @@ export async function promoteDocumentToCanonical(opts: {
     changeSource: opts.changeSource,
     allowNonCanonical: true,
   });
+}
+
+type PlanningFinalizeResult =
+  | {
+      ok: true;
+      workspaceId: string;
+      documentId: string;
+      version: string;
+      checksum: string;
+      updatedAt: string;
+      status: "canonical";
+      workflowStatus: "accepted";
+      decision: Decision | null;
+      blockers: [];
+    }
+  | { ok: false; status: "not_found" | "forbidden" | "conflict"; currentVersion?: string }
+  | { ok: false; status: "plan_not_ready"; message: string; blockers: string[] };
+
+async function finalizePlanningDocumentForWeb(opts: {
+  documentId: string;
+  auth: AuthContext;
+  baseVersion: string;
+  finalDecisionText?: string;
+  owner?: string;
+  reason?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}): Promise<PlanningFinalizeResult> {
+  const doc = await prisma.document.findFirst({
+    where: { id: opts.documentId, deletedAt: null },
+    select: { id: true, workspaceId: true, currentVersionId: true, currentChecksum: true, updatedAt: true, status: true, supersededById: true },
+  });
+  if (!doc) return { ok: false, status: "not_found" };
+
+  const az = await authorizeDocumentRole(opts.auth, doc.id, "editor");
+  if (!az.ok) return az;
+  if ((doc.currentVersionId ?? "") !== opts.baseVersion) return { ok: false, status: "conflict", currentVersion: doc.currentVersionId ?? "" };
+  if (doc.status !== "draft" && doc.status !== "canonical") {
+    const message = `Cannot finalize a ${doc.status} document.`;
+    return { ok: false, status: "plan_not_ready", message, blockers: [message] };
+  }
+
+  let currentContent = "";
+  if (doc.currentVersionId) {
+    const revision = await prisma.documentRevision.findUnique({ where: { id: doc.currentVersionId }, select: { storageKey: true } });
+    if (revision) currentContent = await readContent(revision.storageKey);
+  }
+
+  let nextContent = currentContent;
+  if (opts.finalDecisionText && isPlanningSectionPlaceholder(nextContent, "final-plan")) {
+    nextContent = replaceSection(nextContent, "final-plan", `${opts.finalDecisionText.trim()}\n`)?.body ?? nextContent;
+  }
+
+  const comments = await prisma.documentComment.findMany({
+    where: { documentId: doc.id, resolvedAt: null },
+    select: { id: true, body: true, sectionAnchor: true },
+    orderBy: { createdAt: "asc" },
+    take: 100,
+  });
+  const packet = taskPacketFor({
+    status: doc.status,
+    supersededBy: null,
+    context: documentContext(nextContent),
+    comments,
+  });
+  const blockers = planningFinalizationBlockers(packet, nextContent);
+  if (blockers.length > 0) {
+    return { ok: false, status: "plan_not_ready", message: `Plan is not ready to finalize: ${blockers.join(" ")}`, blockers };
+  }
+
+  let decision = packet.decisions.find((item) => item.id === "final-plan") ?? null;
+  if (!decision) {
+    const added = addDecisionToContent(nextContent, {
+      id: "final-plan",
+      status: "accepted",
+      owner: opts.owner ?? packet.workflow?.leadAgent ?? "human",
+      decision: opts.finalDecisionText ?? "This plan is accepted as the current source of truth.",
+      reason: opts.reason ?? "Review comments were resolved and remaining open questions were handled or deferred.",
+    });
+    nextContent = added.body;
+    decision = added.decision;
+  }
+
+  const acceptedDraftContent = contentWithPlanningWorkflowStatus(nextContent, "accepted");
+  const outcome = await applyDocumentWrite({
+    documentId: doc.id,
+    auth: opts.auth,
+    baseVersion: opts.baseVersion,
+    content: documentContentWithStatus(acceptedDraftContent, "canonical"),
+    changeSource: "web_app",
+    allowNonCanonical: doc.status === "draft",
+  });
+  if (!outcome.ok) return planningWriteFailure(outcome, "Finalize plan failed.");
+  await writeAuditEvent({
+    workspaceId: doc.workspaceId,
+    userId: opts.auth.userId,
+    action: "document_plan_finalized",
+    targetType: "document",
+    targetId: doc.id,
+    ipAddress: opts.ipAddress,
+    userAgent: opts.userAgent,
+    metadata: { version: outcome.version, decisionId: decision?.id ?? null },
+  });
+  return planningFinalizeSuccess({
+    workspaceId: doc.workspaceId,
+    documentId: doc.id,
+    outcome,
+    decision,
+  });
+}
+
+function planningFinalizeSuccess(opts: {
+  workspaceId: string;
+  documentId: string;
+  outcome: WriteOutcome;
+  decision: Decision | null;
+}): PlanningFinalizeResult {
+  return {
+    ok: true,
+    workspaceId: opts.workspaceId,
+    documentId: opts.documentId,
+    version: opts.outcome.version ?? "",
+    checksum: opts.outcome.checksum ?? "",
+    updatedAt: opts.outcome.updatedAt?.toISOString() ?? new Date().toISOString(),
+    status: "canonical",
+    workflowStatus: "accepted",
+    decision: opts.decision,
+    blockers: [],
+  };
+}
+
+function planningWriteFailure(outcome: WriteOutcome, fallback: string): PlanningFinalizeResult {
+  if (outcome.status === "not_found") return { ok: false, status: "not_found" };
+  if (outcome.status === "forbidden") return { ok: false, status: "forbidden" };
+  if (outcome.status === "conflict") return { ok: false, status: "conflict", currentVersion: outcome.currentVersion };
+  const message = outcome.status ?? fallback;
+  return { ok: false, status: "plan_not_ready", message, blockers: [message] };
+}
+
+function planningFinalizationBlockers(packet: TaskPacket, content: string): string[] {
+  const blockers: string[] = [];
+  const openCommentCount = packet.openCommentsBySection.reduce((sum, group) => sum + group.count, 0);
+  if (packet.workflow?.workflow !== "multi-agent-planning") blockers.push("Document is not a multi-agent planning workflow.");
+  if (openCommentCount > 0) blockers.push(`${openCommentCount} unresolved comment${openCommentCount === 1 ? "" : "s"} remain.`);
+  if (packet.openQuestions.length > 0) blockers.push(`${packet.openQuestions.length} open question${packet.openQuestions.length === 1 ? "" : "s"} remain.`);
+  if (packet.acceptanceCriteria.length === 0) blockers.push("Acceptance criteria are required before finalization.");
+  for (const section of placeholderPlanningSections(content)) blockers.push(`${section} section still contains placeholder content.`);
+  const finalDecision = packet.decisions.find((decision) => decision.id === "final-plan");
+  if (finalDecision && finalDecision.status.toLowerCase() !== "accepted") blockers.push("Decision final-plan already exists but is not accepted.");
+  return blockers;
+}
+
+function contentWithPlanningWorkflowStatus(content: string, workflowStatus: string): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) {
+    return `---${newline}workflow: multi-agent-planning${newline}workflowStatus: ${workflowStatus}${newline}---${newline}${newline}${content}`;
+  }
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const withWorkflow = upsertFrontmatterScalar(raw, "workflow", "multi-agent-planning");
+  const nextFrontmatter = upsertFrontmatterScalar(withWorkflow, "workflowStatus", workflowStatus);
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
+function upsertFrontmatterScalar(raw: string, key: string, value: string): string {
+  const lines = raw.split(/\r?\n/);
+  const index = lines.findIndex((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}:`));
+  const nextLine = `${key}: ${value}`;
+  if (index >= 0) {
+    lines[index] = nextLine;
+    return lines.join("\n").trimEnd();
+  }
+  return [...lines, nextLine].join("\n").trimEnd();
+}
+
+const REQUIRED_PLANNING_SECTION_LABELS: Record<string, string> = {
+  assumptions: "Assumptions",
+  "proposed-plan": "Proposed Plan",
+  risks: "Risks",
+  "final-plan": "Final Plan",
+  "acceptance-criteria": "Acceptance Criteria",
+};
+
+function placeholderPlanningSections(content: string): string[] {
+  return Object.entries(REQUIRED_PLANNING_SECTION_LABELS)
+    .filter(([anchor]) => isPlanningSectionPlaceholder(content, anchor))
+    .map(([, label]) => label);
+}
+
+function isPlanningSectionPlaceholder(content: string, anchor: string): boolean {
+  const context = documentContext(content);
+  const body = context.body;
+  const lines = body.split("\n");
+  const ranges = sectionRanges(body);
+  const range = findRange(ranges, anchor);
+  if (!range) return true;
+  const nextPeerOrParent = ranges.find((candidate) => candidate.headingLine > range.headingLine && candidate.level <= range.level);
+  const sectionBody = lines.slice(range.contentStart, nextPeerOrParent?.headingLine ?? lines.length).join("\n");
+  return isPlaceholderOnly(sectionBody);
+}
+
+function isPlaceholderOnly(value: string): boolean {
+  const normalized = value
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^[-*+]\s+\[[ x]\]\s+/i, "")
+        .replace(/^[-*+]\s+/, "")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+    .join("\n");
+  return normalized === "" || normalized === "tbd" || normalized === "tbd." || normalized === "todo" || normalized === "todo.";
 }
 
 async function writeStatusTransitionAudit(
@@ -1058,6 +1276,44 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       return sendWriteOutcome(reply, outcome);
     },
   );
+
+  app.post<{
+    Params: { id: string };
+    Body: { baseVersion?: string; finalDecisionText?: string; owner?: string; reason?: string };
+  }>("/api/documents/:id/finalize-plan", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const baseVersion = request.body.baseVersion;
+    if (!baseVersion) return validationError(reply, { baseVersion: "baseVersion is required." });
+    const result = await finalizePlanningDocumentForWeb({
+      documentId: request.params.id,
+      auth,
+      baseVersion,
+      finalDecisionText: request.body.finalDecisionText?.trim() || undefined,
+      owner: request.body.owner?.trim() || undefined,
+      reason: request.body.reason?.trim() || undefined,
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"],
+    });
+    if (result.ok) {
+      return reply.send({
+        workspaceId: result.workspaceId,
+        documentId: result.documentId,
+        version: result.version,
+        checksum: result.checksum,
+        updatedAt: result.updatedAt,
+        status: result.status,
+        workflowStatus: result.workflowStatus,
+        decision: result.decision,
+        blockers: result.blockers,
+      });
+    }
+    if (result.status === "not_found") return notFound(reply, "Document not found.");
+    if (result.status === "forbidden") return forbidden(reply, "You do not have permission to edit this document.");
+    if (result.status === "conflict") return conflict(reply, result.currentVersion ?? "", "This document changed on the server after you downloaded it.");
+    const planError = result as Extract<PlanningFinalizeResult, { status: "plan_not_ready" }>;
+    return reply.code(409).send({ error: "plan_not_ready", message: planError.message, blockers: planError.blockers });
+  });
 
   app.post<{
     Params: { id: string };

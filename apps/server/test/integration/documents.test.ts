@@ -127,6 +127,147 @@ describe("documents — endpoints & validation", () => {
     expect(res.json().fields.checksum).toBeTruthy();
   });
 
+  it("promotes a draft document to canonical without reopening generic draft edits", async () => {
+    const s = await baseScenario();
+    const draft = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: s.version,
+        content: "---\nstatus: draft\naudience: engineers\n---\n\n# Runbook\n",
+      },
+    });
+    expect(draft.statusCode).toBe(200);
+    const blocked = await req({
+      method: "PUT",
+      url: `/api/documents/${s.docId}`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: draft.json().version, content: "---\nstatus: draft\n---\n\n# Still draft\n" },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().error).toBe("not_canonical");
+
+    const promoted = await req({
+      method: "POST",
+      url: `/api/documents/${s.docId}/mark-canonical`,
+      cookies: s.adminCookie,
+    });
+    expect(promoted.statusCode).toBe(200);
+    expect(promoted.json().version).not.toBe(draft.json().version);
+
+    const read = await req({ method: "GET", url: `/api/documents/${s.docId}`, cookies: s.adminCookie });
+    expect(read.json()).toMatchObject({ status: "canonical", supersededBy: null });
+    expect(read.json().content).toContain("status: canonical");
+    expect(read.json().content).toContain("audience: engineers");
+    expect(read.json().content).not.toContain("status: draft");
+
+    const events = await prisma.auditEvent.findMany({ where: { targetId: s.docId }, orderBy: { createdAt: "asc" } });
+    expect(events.map((event) => event.action)).toEqual(expect.arrayContaining(["document_marked_draft", "document_marked_canonical"]));
+  });
+
+  it("safely finalizes planning drafts through the web route", async () => {
+    const s = await baseScenario();
+    const created = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: {
+        workspaceId: s.ws.id,
+        folderId: s.folderId,
+        title: "Planning Draft",
+        slug: "planning-draft",
+        content: [
+          "---",
+          "status: draft",
+          "workflow: multi-agent-planning",
+          "workflowStatus: final-review",
+          "reviewRound: 1",
+          "leadAgent: Agent A",
+          "reviewAgent: Agent B",
+          "---",
+          "",
+          "# Planning Draft",
+          "",
+          "## Assumptions",
+          "",
+          "- Agents can coordinate through comments.",
+          "",
+          "## Proposed Plan",
+          "",
+          "- Build the safe finalization path.",
+          "",
+          "## Risks",
+          "",
+          "- Web promotion must not bypass blockers.",
+          "",
+          "## Final Plan",
+          "",
+          "- Use the server finalizer for browser promotion.",
+          "",
+          "## Acceptance Criteria",
+          "",
+          "- Browser finalization refuses unresolved comments.",
+          "- Browser finalization records accepted workflow status.",
+          "",
+          "## Decisions",
+          "",
+          ":::decision",
+          "id: final-plan",
+          "status: accepted",
+          "owner: Agent A",
+          "decision: Use the server finalizer for browser promotion.",
+          "reason: MCP and web must enforce the same blockers.",
+          ":::",
+        ].join("\n"),
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const comment = await req({
+      method: "POST",
+      url: `/api/documents/${created.json().id}/comments`,
+      cookies: s.adminCookie,
+      payload: { sectionAnchor: "risks", body: "Confirm blockers are enforced." },
+    });
+    expect(comment.statusCode).toBe(201);
+
+    const blocked = await req({
+      method: "POST",
+      url: `/api/documents/${created.json().id}/finalize-plan`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: created.json().version },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({
+      error: "plan_not_ready",
+      blockers: [expect.stringMatching(/unresolved comment/i)],
+    });
+
+    const resolved = await req({ method: "POST", url: `/api/comments/${comment.json().comment.id}/resolve`, cookies: s.adminCookie });
+    expect(resolved.statusCode).toBe(200);
+
+    const finalized = await req({
+      method: "POST",
+      url: `/api/documents/${created.json().id}/finalize-plan`,
+      cookies: s.adminCookie,
+      payload: { baseVersion: created.json().version },
+    });
+    expect(finalized.statusCode).toBe(200);
+    expect(finalized.json()).toMatchObject({
+      status: "canonical",
+      workflowStatus: "accepted",
+      blockers: [],
+      decision: { id: "final-plan", status: "accepted" },
+    });
+
+    const read = await req({ method: "GET", url: `/api/documents/${created.json().id}`, cookies: s.adminCookie });
+    expect(read.json()).toMatchObject({ status: "canonical" });
+    expect(read.json().content).toContain("workflowStatus: accepted");
+    expect(read.json().content).toContain("status: canonical");
+    await expect(prisma.auditEvent.findFirstOrThrow({ where: { targetId: created.json().id, action: "document_plan_finalized" } })).resolves.toBeTruthy();
+  });
+
   it("rename, move, soft-delete, and path reuse", async () => {
     const s = await baseScenario();
     const ren = await req({ method: "POST", url: `/api/documents/${s.docId}/rename`, cookies: s.adminCookie, payload: { slug: "runbook-2" } });

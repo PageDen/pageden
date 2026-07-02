@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z as zod, type z } from "zod";
 import {
   currentWorkspaceSchema,
   accountDeletionCodeSchema,
@@ -14,6 +14,7 @@ import {
   attachmentSchema,
   attachmentListSchema,
   documentCreateSchema,
+  decisionSchema,
   decisionAddResponseSchema,
   documentMoveSchema,
   documentRenameSchema,
@@ -69,6 +70,20 @@ import {
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
+const iso = zod.string();
+const planningFinalizeSchema = zod
+  .object({
+    workspaceId: zod.string(),
+    documentId: zod.string(),
+    version: zod.string(),
+    checksum: zod.string(),
+    updatedAt: iso,
+    status: zod.literal("canonical"),
+    workflowStatus: zod.literal("accepted"),
+    decision: decisionSchema.nullable(),
+    blockers: zod.array(zod.string()),
+  })
+  .strict();
 // Global 401 handler (wired by the router) so an expired session anywhere bounces to /login.
 let onUnauthorized: (() => void) | null = null;
 export function setOnUnauthorized(fn: () => void): void {
@@ -432,6 +447,8 @@ export const api = {
     request("PUT", `/documents/${encodeURIComponent(id)}`, { body, schema: writeResultSchema }),
   markDocumentCanonical: (id: string) =>
     request("POST", `/documents/${encodeURIComponent(id)}/mark-canonical`, { schema: writeResultSchema }),
+  finalizePlan: (id: string, body: { baseVersion: string; finalDecisionText?: string; owner?: string; reason?: string }) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/finalize-plan`, { body, schema: planningFinalizeSchema }),
   addDecision: (
     id: string,
     body: {
