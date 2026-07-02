@@ -1,13 +1,16 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, CircleDashed, GitPullRequestDraft, MessageSquare, RadioTower, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import type { z } from "zod";
 import type { handoffPacketSchema } from "@pageden/api-types";
-import { documentHandoffQuery } from "../../lib/queries";
+import { api, crudErrorMessage } from "../../lib/api";
+import { documentHandoffQuery, documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
+import { Button } from "../../components/ui/button";
 
 type Handoff = z.infer<typeof handoffPacketSchema>;
 type Packet = Handoff["packet"];
 type RecommendedAction = NonNullable<Packet["recommendedAction"]>;
+type WorkflowStatus = "drafting" | "review" | "revision" | "final-review" | "accepted" | "deferred";
 
 const actionLabel: Record<RecommendedAction, string> = {
   comment_only: "Comment only",
@@ -26,7 +29,25 @@ const workflowLabel: Record<string, string> = {
   deferred: "Deferred",
 };
 
-export function PlanningReviewPanel({ documentId, enabled }: { documentId: string; enabled: boolean }) {
+export function PlanningReviewPanel({
+  documentId,
+  workspaceId,
+  enabled,
+  canEdit,
+  content,
+  baseVersion,
+  documentStatus,
+  hasUnsavedChanges,
+}: {
+  documentId: string;
+  workspaceId: string;
+  enabled: boolean;
+  canEdit: boolean;
+  content: string;
+  baseVersion: string;
+  documentStatus: "canonical" | "draft" | "superseded" | "archived";
+  hasUnsavedChanges: boolean;
+}) {
   const handoff = useQuery({ ...documentHandoffQuery(documentId), enabled: enabled && documentId !== "" });
 
   if (!enabled) return null;
@@ -41,10 +62,40 @@ export function PlanningReviewPanel({ documentId, enabled }: { documentId: strin
     return null;
   }
 
-  return <PlanningReviewContent packet={handoff.data.packet} />;
+  return (
+    <PlanningReviewContent
+      packet={handoff.data.packet}
+      documentId={documentId}
+      workspaceId={workspaceId}
+      canEdit={canEdit}
+      content={content}
+      baseVersion={baseVersion}
+      documentStatus={documentStatus}
+      hasUnsavedChanges={hasUnsavedChanges}
+    />
+  );
 }
 
-function PlanningReviewContent({ packet }: { packet: Packet }) {
+function PlanningReviewContent({
+  packet,
+  documentId,
+  workspaceId,
+  canEdit,
+  content,
+  baseVersion,
+  documentStatus,
+  hasUnsavedChanges,
+}: {
+  packet: Packet;
+  documentId: string;
+  workspaceId: string;
+  canEdit: boolean;
+  content: string;
+  baseVersion: string;
+  documentStatus: "canonical" | "draft" | "superseded" | "archived";
+  hasUnsavedChanges: boolean;
+}) {
+  const queryClient = useQueryClient();
   const workflow = packet.workflow;
   if (!workflow) return null;
 
@@ -58,6 +109,37 @@ function PlanningReviewContent({ packet }: { packet: Packet }) {
     packet.openQuestions.length === 0 &&
     hasAcceptanceCriteria &&
     Boolean(acceptedDecision);
+  const currentStatus = workflow.workflowStatus as WorkflowStatus | null;
+
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: documentQuery(documentId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: documentHandoffQuery(documentId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: revisionsQuery(documentId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey }),
+    ]);
+  };
+
+  const transition = useMutation({
+    mutationFn: async (nextStatus: WorkflowStatus) => {
+      const nextRound = nextReviewRound(currentStatus, nextStatus, workflow.reviewRound);
+      const nextContent = updatePlanningWorkflowFrontmatter(content, nextStatus, nextRound);
+      return api.updateDocument(documentId, {
+        baseVersion,
+        content: nextContent,
+        allowDraft: documentStatus === "draft",
+      });
+    },
+    onSuccess: () => void refresh(),
+  });
+
+  const finalize = useMutation({
+    mutationFn: () => api.markDocumentCanonical(documentId),
+    onSuccess: () => void refresh(),
+  });
+
+  const actionDisabled = !canEdit || hasUnsavedChanges || transition.isPending || finalize.isPending;
+  const actions = workflowActionsFor(currentStatus);
 
   return (
     <PanelShell count={openCommentCount}>
@@ -94,11 +176,132 @@ function PlanningReviewContent({ packet }: { packet: Packet }) {
           readyToFinalize={readyToFinalize}
         />
 
+        {canEdit ? (
+          <WorkflowActions
+            actions={actions}
+            disabled={actionDisabled}
+            hasUnsavedChanges={hasUnsavedChanges}
+            currentStatus={currentStatus}
+            readyToFinalize={readyToFinalize}
+            finalizing={finalize.isPending}
+            transitioning={transition.isPending}
+            transitionError={transition.error}
+            finalizeError={finalize.error}
+            onTransition={(status) => transition.mutate(status)}
+            onFinalize={() => finalize.mutate()}
+          />
+        ) : null}
+
         <CommentGroups groups={packet.openCommentsBySection} />
         <DecisionSummary decisions={packet.decisions} />
       </div>
     </PanelShell>
   );
+}
+
+function workflowActionsFor(status: WorkflowStatus | null): WorkflowStatus[] {
+  if (status === "drafting") return ["review", "deferred"];
+  if (status === "review") return ["revision", "final-review", "deferred"];
+  if (status === "revision") return ["review", "final-review", "deferred"];
+  if (status === "final-review") return ["accepted", "revision", "deferred"];
+  if (status === "accepted") return ["revision"];
+  if (status === "deferred") return ["drafting"];
+  return ["review"];
+}
+
+function nextReviewRound(current: WorkflowStatus | null, next: WorkflowStatus, currentRound: number | null): number {
+  const round = currentRound ?? 0;
+  return next === "review" && current === "revision" ? round + 1 : round;
+}
+
+function updatePlanningWorkflowFrontmatter(content: string, workflowStatus: WorkflowStatus, reviewRound: number): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) return content;
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const nextFrontmatter = upsertFrontmatterLine(upsertFrontmatterLine(raw, "workflowStatus", workflowStatus), "reviewRound", String(reviewRound));
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
+function upsertFrontmatterLine(raw: string, key: string, value: string): string {
+  const lines = raw.split(/\r?\n/);
+  const index = lines.findIndex((line) => line.startsWith(`${key}:`));
+  const nextLine = `${key}: ${value}`;
+  if (index >= 0) {
+    lines[index] = nextLine;
+    return lines.join("\n").trimEnd();
+  }
+  return [...lines, nextLine].join("\n").trimEnd();
+}
+
+function WorkflowActions({
+  actions,
+  disabled,
+  hasUnsavedChanges,
+  currentStatus,
+  readyToFinalize,
+  finalizing,
+  transitioning,
+  transitionError,
+  finalizeError,
+  onTransition,
+  onFinalize,
+}: {
+  actions: WorkflowStatus[];
+  disabled: boolean;
+  hasUnsavedChanges: boolean;
+  currentStatus: WorkflowStatus | null;
+  readyToFinalize: boolean;
+  finalizing: boolean;
+  transitioning: boolean;
+  transitionError: unknown;
+  finalizeError: unknown;
+  onTransition: (status: WorkflowStatus) => void;
+  onFinalize: () => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="grid gap-1.5">
+        {actions.map((status) => (
+          <Button
+            key={status}
+            type="button"
+            variant={status === "accepted" ? "primary" : "secondary"}
+            className="h-8 justify-start px-2.5 text-xs"
+            disabled={disabled || status === currentStatus}
+            onClick={() => onTransition(status)}
+          >
+            {actionTextForStatus(status)}
+          </Button>
+        ))}
+        <Button
+          type="button"
+          variant="primary"
+          className="h-8 justify-start px-2.5 text-xs"
+          disabled={disabled || !readyToFinalize}
+          onClick={onFinalize}
+        >
+          {finalizing ? "Finalizing..." : "Mark canonical"}
+        </Button>
+      </div>
+      {hasUnsavedChanges ? <p className="text-xs text-amber-700 dark:text-amber-200">Save or discard local edits before changing workflow state.</p> : null}
+      {transitioning ? <p className="text-xs text-slate-400">Updating workflow...</p> : null}
+      {transitionError ? <p className="text-xs text-red-600">{crudErrorMessage(transitionError)}</p> : null}
+      {finalizeError ? <p className="text-xs text-red-600">{crudErrorMessage(finalizeError)}</p> : null}
+    </div>
+  );
+}
+
+function actionTextForStatus(status: WorkflowStatus): string {
+  if (status === "review") return "Send to review";
+  if (status === "revision") return "Request revision";
+  if (status === "final-review") return "Start final review";
+  if (status === "accepted") return "Accept plan";
+  if (status === "deferred") return "Defer plan";
+  return "Reopen drafting";
 }
 
 function PanelShell({ count, children }: { count: number | null; children: ReactNode }) {

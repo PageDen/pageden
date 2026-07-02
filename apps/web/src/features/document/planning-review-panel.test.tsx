@@ -1,10 +1,27 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../lib/api";
 import { PlanningReviewPanel } from "./planning-review-panel";
 
-function renderPanel(enabled = true) {
+const savedContent = `---
+status: draft
+docType: plan
+workflow: multi-agent-planning
+workflowStatus: review
+reviewRound: 2
+leadAgent: agent-a
+reviewAgent: agent-b
+---
+
+# Agent Plan
+
+## Goal
+
+Ship it.
+`;
+
+function renderPanel(options: { enabled?: boolean; hasUnsavedChanges?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -13,7 +30,16 @@ function renderPanel(enabled = true) {
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <PlanningReviewPanel documentId="document-1" enabled={enabled} />
+      <PlanningReviewPanel
+        documentId="document-1"
+        workspaceId="workspace-1"
+        enabled={options.enabled ?? true}
+        canEdit
+        content={savedContent}
+        baseVersion="version-1"
+        documentStatus="draft"
+        hasUnsavedChanges={options.hasUnsavedChanges ?? false}
+      />
     </QueryClientProvider>,
   );
 }
@@ -105,9 +131,43 @@ describe("PlanningReviewPanel", () => {
   it("does not fetch or render when disabled", () => {
     const handoff = vi.spyOn(api, "documentHandoff").mockResolvedValue(packet);
 
-    renderPanel(false);
+    renderPanel({ enabled: false });
 
     expect(screen.queryByText("Planning Review")).toBeNull();
     expect(handoff).not.toHaveBeenCalled();
+  });
+
+  it("updates workflow frontmatter with allowDraft for status transitions", async () => {
+    vi.spyOn(api, "documentHandoff").mockResolvedValue(packet);
+    const update = vi.spyOn(api, "updateDocument").mockResolvedValue({
+      id: "document-1",
+      version: "version-2",
+      checksum: "checksum-2",
+      revisionHash: null,
+      updatedAt: "2026-07-02T08:05:00.000Z",
+    });
+
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Request revision" }));
+
+    await waitFor(() => {
+      expect(update).toHaveBeenCalledWith("document-1", {
+        baseVersion: "version-1",
+        allowDraft: true,
+        content: expect.stringContaining("workflowStatus: revision"),
+      });
+    });
+    expect(update.mock.calls[0]?.[1].content).toContain("reviewRound: 2");
+    expect(update.mock.calls[0]?.[1].content).toContain("# Agent Plan");
+  });
+
+  it("disables workflow actions while local edits are unsaved", async () => {
+    vi.spyOn(api, "documentHandoff").mockResolvedValue(packet);
+
+    renderPanel({ hasUnsavedChanges: true });
+
+    expect(await screen.findByText("Save or discard local edits before changing workflow state.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Request revision" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

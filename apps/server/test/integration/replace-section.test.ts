@@ -178,4 +178,63 @@ describe("POST /api/documents/:id/sections", () => {
     const fresh = await req({ method: "GET", url: `/api/documents/${doc.id}`, cookies: s.adminCookie });
     expect(fresh.json().content).toContain("All decisions captured.");
   });
+
+  it("allows full-document web updates for drafts only when allowDraft is explicit", async () => {
+    const s = await baseScenario();
+    const draft = await makeDoc(
+      s.adminCookie,
+      s.ws.id,
+      s.folderId,
+      "---\nstatus: draft\nworkflow: multi-agent-planning\nworkflowStatus: review\nreviewRound: 1\n---\n\n# Draft Plan\n",
+    );
+
+    const blocked = await req({
+      method: "PUT",
+      url: `/api/documents/${draft.id}`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: draft.version,
+        content: "---\nstatus: draft\nworkflow: multi-agent-planning\nworkflowStatus: revision\nreviewRound: 1\n---\n\n# Draft Plan\n",
+      },
+    });
+    expect(blocked.statusCode).toBe(409);
+
+    const updated = await req({
+      method: "PUT",
+      url: `/api/documents/${draft.id}`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: draft.version,
+        allowDraft: true,
+        content: "---\nstatus: draft\nworkflow: multi-agent-planning\nworkflowStatus: revision\nreviewRound: 1\n---\n\n# Draft Plan\n",
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+
+    const supersededRes = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: {
+        workspaceId: s.ws.id,
+        folderId: s.folderId,
+        title: "Superseded Plan",
+        slug: "superseded-plan",
+        content: "---\nstatus: superseded\n---\n\n# Superseded Plan\n",
+      },
+    });
+    expect(supersededRes.statusCode).toBe(201);
+    const superseded = { id: supersededRes.json().id as string, version: supersededRes.json().version as string };
+    const rejected = await req({
+      method: "PUT",
+      url: `/api/documents/${superseded.id}`,
+      cookies: s.adminCookie,
+      payload: {
+        baseVersion: superseded.version,
+        allowDraft: true,
+        content: "---\nstatus: superseded\n---\n\n# Still Superseded\n",
+      },
+    });
+    expect(rejected.statusCode).toBe(409);
+  });
 });

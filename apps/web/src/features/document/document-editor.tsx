@@ -386,10 +386,16 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
         {!canEdit || preview || isPlanningWorkflow ? (
           <DocumentInsightsPanel
             content={previewContent}
+            documentContent={doc.content}
             readiness={doc.aiReadiness}
+            workspaceId={workspaceId}
             documentId={doc.id}
+            baseVersion={doc.version ?? ""}
+            documentStatus={doc.status}
             planningWorkflow={isPlanningWorkflow}
             showInsights={!canEdit || preview}
+            canEdit={canEdit}
+            hasUnsavedChanges={draft.dirty}
           />
         ) : null}
       </div>
@@ -603,21 +609,42 @@ function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
 
 function DocumentInsightsPanel({
   content,
+  documentContent,
   readiness,
+  workspaceId,
   documentId,
+  baseVersion,
+  documentStatus,
+  canEdit,
   planningWorkflow,
   showInsights,
+  hasUnsavedChanges,
 }: {
   content: string;
+  documentContent: string;
   readiness: Doc["aiReadiness"];
+  workspaceId: string;
   documentId: string;
+  baseVersion: string;
+  documentStatus: Doc["status"];
+  canEdit: boolean;
   planningWorkflow: boolean;
   showInsights: boolean;
+  hasUnsavedChanges: boolean;
 }) {
   return (
     <aside className="hidden w-64 flex-shrink-0 overflow-auto border-l border-slate-200 bg-slate-50 px-4 py-6 dark:border-slate-800 dark:bg-slate-950 lg:block">
       {showInsights ? <AiReadinessPanel readiness={readiness} /> : null}
-      <PlanningReviewPanel documentId={documentId} enabled={planningWorkflow} />
+      <PlanningReviewPanel
+        documentId={documentId}
+        workspaceId={workspaceId}
+        enabled={planningWorkflow}
+        canEdit={canEdit}
+        content={documentContent}
+        baseVersion={baseVersion}
+        documentStatus={documentStatus}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
       {showInsights ? (
         <div className="mt-7 border-t border-slate-200 pt-5 dark:border-slate-800">
           <TableOfContents content={content} embedded />

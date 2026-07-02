@@ -93,6 +93,36 @@ export async function metadataFromContent(
   return { status, supersededById };
 }
 
+export function documentContentWithStatus(content: string, status: DocumentStatus): string {
+  const statusLine = `status: ${status}`;
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return `---\n${statusLine}\n---\n\n${content}`;
+
+  const rawFrontmatter = match[1] ?? "";
+  const body = content.slice(match[0].length);
+  const lines = rawFrontmatter.split(/\r?\n/);
+  const kept: string[] = [];
+  let skippingKey: string | null = null;
+
+  for (const line of lines) {
+    const keyMatch = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (keyMatch) {
+      const key = keyMatch[1]!.toLowerCase();
+      skippingKey = key === "status" || key === "supersededby" ? key : null;
+      if (key === "status" || key === "supersededby") continue;
+    } else if (skippingKey && /^\s*-\s+/.test(line)) {
+      continue;
+    } else {
+      skippingKey = null;
+    }
+    kept.push(line);
+  }
+
+  const cleaned = kept.filter((line, index, arr) => line.trim() || arr[index - 1]?.trim() || arr[index + 1]?.trim());
+  cleaned.unshift(statusLine);
+  return `---\n${cleaned.join("\n").trim()}\n---\n\n${body.replace(/^\s+/, "")}`;
+}
+
 type RevisionListRow = {
   id: string;
   versionNumber: number;
@@ -395,6 +425,57 @@ export async function applyDocumentWrite(opts: {
       nextSupersededById: metadata.supersededById,
     });
     return { ok: true, documentId: doc.id, version: revision.id, checksum: sum, updatedAt: updated.updatedAt };
+  });
+}
+
+export async function promoteDocumentToCanonical(opts: {
+  documentId: string;
+  auth: AuthContext;
+  changeSource: ChangeSource;
+}): Promise<WriteOutcome> {
+  const doc = await prisma.document.findFirst({
+    where: { id: opts.documentId, deletedAt: null },
+    select: {
+      id: true,
+      currentVersionId: true,
+      currentChecksum: true,
+      updatedAt: true,
+      status: true,
+      supersededById: true,
+    },
+  });
+  if (!doc) return { ok: false, status: "not_found" };
+
+  const az = await authorizeDocumentRole(opts.auth, doc.id, "editor");
+  if (!az.ok) return az;
+
+  if (doc.status === "canonical" && doc.supersededById === null) {
+    return {
+      ok: true,
+      documentId: doc.id,
+      version: doc.currentVersionId ?? "",
+      checksum: doc.currentChecksum ?? "",
+      updatedAt: doc.updatedAt,
+      noOp: true,
+    };
+  }
+
+  let content = "";
+  if (doc.currentVersionId) {
+    const revision = await prisma.documentRevision.findUnique({
+      where: { id: doc.currentVersionId },
+      select: { storageKey: true },
+    });
+    if (revision) content = await readContent(revision.storageKey);
+  }
+
+  return applyDocumentWrite({
+    documentId: doc.id,
+    auth: opts.auth,
+    baseVersion: doc.currentVersionId ?? "",
+    content: documentContentWithStatus(content, "canonical"),
+    changeSource: opts.changeSource,
+    allowNonCanonical: true,
   });
 }
 
@@ -941,8 +1022,19 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     }
   });
 
+  app.post<{ Params: { id: string } }>("/api/documents/:id/mark-canonical", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const outcome = await promoteDocumentToCanonical({
+      documentId: request.params.id,
+      auth,
+      changeSource: "web_app",
+    });
+    return sendWriteOutcome(reply, outcome);
+  });
+
   // Update from the web app.
-  app.put<{ Params: { id: string }; Body: { baseVersion?: string; title?: string; content?: string } }>(
+  app.put<{ Params: { id: string }; Body: { baseVersion?: string; title?: string; content?: string; allowDraft?: boolean } }>(
     "/api/documents/:id",
     async (request, reply) => {
       const auth = await requireAuth(request);
@@ -950,7 +1042,9 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       const baseVersion = request.body.baseVersion;
       if (!baseVersion) return validationError(reply, { baseVersion: "baseVersion is required." });
       if (request.body.content === undefined) return validationError(reply, { content: "content is required." });
-
+      const current = request.body.allowDraft
+        ? await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { status: true } })
+        : null;
       const outcome = await applyDocumentWrite({
         documentId: request.params.id,
         auth,
@@ -958,6 +1052,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         content: request.body.content,
         title: request.body.title?.trim(),
         changeSource: "web_app",
+        allowNonCanonical: request.body.allowDraft === true && current?.status === "draft",
       });
       return sendWriteOutcome(reply, outcome);
     },

@@ -412,8 +412,18 @@ export const api = {
     request("GET", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}`, {
       schema: revisionDetailSchema,
     }),
-  updateDocument: (id: string, body: { baseVersion: string; content: string; title?: string }) =>
+  updateDocument: (
+    id: string,
+    body: {
+      baseVersion: string;
+      content: string;
+      title?: string;
+      allowDraft?: boolean;
+    },
+  ) =>
     request("PUT", `/documents/${encodeURIComponent(id)}`, { body, schema: writeResultSchema }),
+  markDocumentCanonical: (id: string) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/mark-canonical`, { schema: writeResultSchema }),
   restoreRevision: (id: string, revisionId: string) =>
     request("POST", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
       schema: writeResultSchema,
