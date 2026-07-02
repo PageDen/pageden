@@ -116,6 +116,59 @@ describe("GET /api/workspaces/:workspaceId/dashboard", () => {
     expect(body.supersededDocs[0].supersededBy.id).toBe(s.planId);
   });
 
+  it("surfaces active multi-agent planning documents with comments and claims", async () => {
+    const s = await withSomeActivity();
+    const created = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: {
+        workspaceId: s.ws.id,
+        folderId: s.folderId,
+        title: "Agent Planning Draft",
+        slug: "agent-planning-draft",
+        content:
+          "---\nstatus: draft\nworkflow: multi-agent-planning\nworkflowStatus: review\nreviewRound: 2\nleadAgent: Lead Agent\nreviewAgent: Review Agent\n---\n# Agent Planning Draft\n",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const documentId = created.json().id as string;
+
+    const comment = await req({
+      method: "POST",
+      url: `/api/documents/${documentId}/comments`,
+      cookies: s.adminCookie,
+      payload: { body: "Clarify rollout before final review.", sectionAnchor: "risks" },
+    });
+    expect(comment.statusCode).toBe(201);
+    const claim = await req({
+      method: "POST",
+      url: `/api/documents/${documentId}/claim`,
+      cookies: s.adminCookie,
+      payload: { ttlMinutes: 30, note: "Reviewing open comments" },
+    });
+    expect(claim.statusCode).toBe(201);
+
+    const res = await req({ method: "GET", url: `/api/workspaces/${s.ws.id}/dashboard`, cookies: s.adminCookie });
+    expect(res.statusCode).toBe(200);
+    const plan = res.json().activePlanning.find((entry: { id: string }) => entry.id === documentId);
+    expect(plan).toMatchObject({
+      id: documentId,
+      title: "Agent Planning Draft",
+      path: "engineering/agent-planning-draft.md",
+      status: "draft",
+      workflowStatus: "review",
+      reviewRound: 2,
+      leadAgent: "Lead Agent",
+      reviewAgent: "Review Agent",
+      openCommentCount: 1,
+      activeClaim: {
+        note: "Reviewing open comments",
+      },
+    });
+    expect(plan.activeClaim.expiresAt).toBeTruthy();
+  });
+
   it("404s for non-members", async () => {
     const s = await withSomeActivity();
     const stranger = await createUser("stranger@t.co", "S");

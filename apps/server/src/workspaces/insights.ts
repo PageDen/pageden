@@ -6,6 +6,8 @@ import { notFound, validationError } from "../errors.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { listActiveClaims } from "../documents/claims.js";
 import { openCommentCountByDocument } from "../documents/comments.js";
+import { documentContext } from "../ai-readiness.js";
+import { readContent } from "../storage.js";
 
 // Activity timeline + workspace dashboard. Both are derived from data we already
 // store (AuditEvent + Document + Folder), so we can ship them without a schema
@@ -33,6 +35,10 @@ const DOCUMENT_ACTIONS = new Set([
   "comment_deleted",
 ]);
 
+const ACTIVE_PLANNING_STATUSES = new Set(["drafting", "review", "revision", "final-review", "deferred"]);
+const ACTIVE_PLANNING_SCAN_LIMIT = 200;
+const ACTIVE_PLANNING_RESULT_LIMIT = 20;
+
 type ActorKind = "user" | "agent" | "system" | "obsidian_plugin" | "unknown";
 
 function actorFor(action: string, metadata: unknown, userId: string | null): ActorKind {
@@ -50,6 +56,18 @@ function actorFor(action: string, metadata: unknown, userId: string | null): Act
   }
   if (userId) return "user";
   return "system";
+}
+
+function frontmatterString(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0]?.trim() || null;
+  return value?.trim() || null;
+}
+
+function frontmatterNumber(value: string | string[] | undefined): number | null {
+  const raw = frontmatterString(value);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function assertWorkspaceMember(userId: string, workspaceId: string): Promise<boolean> {
@@ -141,7 +159,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
       const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
       const docs = await prisma.document.findMany({
         where: { workspaceId, deletedAt: null },
-        select: { id: true, folderId: true, title: true, path: true, status: true, updatedAt: true, supersededById: true },
+        select: { id: true, folderId: true, title: true, path: true, status: true, updatedAt: true, supersededById: true, currentVersionId: true },
       });
       const visibleDocs = docs.filter((doc) => resolver.documentRole({ id: doc.id, folderId: doc.folderId }) !== null);
       const statusCounts: Record<DocumentStatus, number> = { canonical: 0, draft: 0, superseded: 0, archived: 0 };
@@ -243,6 +261,51 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
       const openCommentCounts = await openCommentCountByDocument(visibleDocs.map((d) => d.id));
       const openComments = [...openCommentCounts.entries()].reduce((sum, [, count]) => sum + count, 0);
+      const activeClaimByDocument = new Map(activeClaims.map((claim) => [claim.documentId, claim]));
+
+      const activePlanningCandidates = [...visibleDocs]
+        .filter((doc) => doc.status !== "archived" && doc.currentVersionId)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+        .slice(0, ACTIVE_PLANNING_SCAN_LIMIT);
+      const revisionIds = activePlanningCandidates.map((doc) => doc.currentVersionId!).filter(Boolean);
+      const revisions = revisionIds.length
+        ? await prisma.documentRevision.findMany({
+            where: { id: { in: revisionIds } },
+            select: { id: true, storageKey: true },
+          })
+        : [];
+      const storageKeyByRevisionId = new Map(revisions.map((revision) => [revision.id, revision.storageKey]));
+      const activePlanning = [];
+      for (const doc of activePlanningCandidates) {
+        const storageKey = doc.currentVersionId ? storageKeyByRevisionId.get(doc.currentVersionId) : null;
+        if (!storageKey) continue;
+        const context = documentContext(await readContent(storageKey));
+        if (frontmatterString(context.frontmatter.workflow) !== "multi-agent-planning") continue;
+        const workflowStatus = frontmatterString(context.frontmatter.workflowStatus);
+        if (!workflowStatus || !ACTIVE_PLANNING_STATUSES.has(workflowStatus)) continue;
+        const claim = activeClaimByDocument.get(doc.id) ?? null;
+        activePlanning.push({
+          id: doc.id,
+          title: doc.title,
+          path: doc.path,
+          status: doc.status,
+          updatedAt: doc.updatedAt.toISOString(),
+          workflowStatus,
+          reviewRound: frontmatterNumber(context.frontmatter.reviewRound),
+          leadAgent: frontmatterString(context.frontmatter.leadAgent),
+          reviewAgent: frontmatterString(context.frontmatter.reviewAgent),
+          openCommentCount: openCommentCounts.get(doc.id) ?? 0,
+          activeClaim: claim
+            ? {
+                id: claim.id,
+                actorLabel: claim.actorLabel,
+                note: claim.note,
+                expiresAt: claim.expiresAt,
+              }
+            : null,
+        });
+        if (activePlanning.length >= ACTIVE_PLANNING_RESULT_LIMIT) break;
+      }
 
       return {
         workspaceId,
@@ -251,6 +314,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
         supersededDocs,
         recentChanges,
         recentActivity,
+        activePlanning,
         topFolders,
         activeClaims,
       };

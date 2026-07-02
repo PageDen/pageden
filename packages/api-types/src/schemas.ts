@@ -468,6 +468,22 @@ export const workspaceClaimsListSchema = z
   .object({ workspaceId: z.string(), claims: z.array(documentClaimWithDocSchema) })
   .strict();
 
+export const activePlanningDocSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    path: z.string(),
+    status: documentStatusSchema,
+    updatedAt: iso,
+    workflowStatus: z.string().nullable(),
+    reviewRound: z.number().nullable(),
+    leadAgent: z.string().nullable(),
+    reviewAgent: z.string().nullable(),
+    openCommentCount: z.number(),
+    activeClaim: taskPacketActiveClaimSchema.nullable(),
+  })
+  .strict();
+
 export const dashboardStatsSchema = z
   .object({
     workspaceId: z.string(),
@@ -504,6 +520,7 @@ export const dashboardStatsSchema = z
         .strict(),
     ),
     recentActivity: z.array(activityEventSchema),
+    activePlanning: z.array(activePlanningDocSchema),
     topFolders: z.array(
       z
         .object({
