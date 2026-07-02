@@ -83,6 +83,10 @@ const actorTone: Record<Event["actor"], string> = {
 export function ActivityRow({ event, workspaceId, compact }: { event: Event; workspaceId: string; compact?: boolean }) {
   const Icon = ICONS[event.action] ?? FileText;
   const verb = LABELS[event.action] ?? event.action;
+  const count =
+    event.metadata && typeof event.metadata === "object" && "count" in event.metadata && typeof event.metadata.count === "number"
+      ? event.metadata.count
+      : null;
   return (
     <li className={compact ? "flex items-center gap-2 py-1.5" : "flex items-start gap-3 py-3"}>
       <Icon size={compact ? 13 : 15} className={`mt-0.5 shrink-0 ${actorTone[event.actor]}`} aria-hidden="true" />
@@ -90,6 +94,7 @@ export function ActivityRow({ event, workspaceId, compact }: { event: Event; wor
         <p className="truncate text-sm text-slate-700 dark:text-slate-300">
           <span className={`font-medium capitalize ${actorTone[event.actor]}`}>{event.actor}</span>{" "}
           <span>{verb}</span>{" "}
+          {count && count > 1 ? <span className="text-slate-400">×{count}</span> : null}{" "}
           {event.targetId && event.documentTitle ? (
             event.documentTitle ? (
               <Link

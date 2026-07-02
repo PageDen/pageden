@@ -40,6 +40,27 @@ const ACTIVE_PLANNING_SCAN_LIMIT = 200;
 const ACTIVE_PLANNING_RESULT_LIMIT = 20;
 
 type ActorKind = "user" | "agent" | "system" | "obsidian_plugin" | "unknown";
+type ActivityEventDto = {
+  id: string;
+  workspaceId: string | null;
+  userId: string | null;
+  actor: ActorKind;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  documentTitle: string | null;
+  documentPath: string | null;
+  createdAt: string;
+  metadata: unknown;
+};
+
+const COALESCED_AGENT_ACTIONS = new Set(["document_updated_by_agent", "comment_added_by_agent", "comment_resolved_by_agent"]);
+const AGENT_STATUS_ACTIONS = new Set([
+  "document_marked_canonical_by_agent",
+  "document_marked_superseded_by_agent",
+  "document_marked_draft_by_agent",
+  "document_marked_archived_by_agent",
+]);
 
 function actorFor(action: string, metadata: unknown, userId: string | null): ActorKind {
   if (action.endsWith("_by_agent") || action === "mcp_tool_called") return "agent";
@@ -68,6 +89,86 @@ function frontmatterNumber(value: string | string[] | undefined): number | null 
   if (!raw) return null;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function metadataObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function coalesceKey(event: ActivityEventDto): string | null {
+  if (event.actor !== "agent" || !COALESCED_AGENT_ACTIONS.has(event.action)) return null;
+  const metadata = metadataObject(event.metadata);
+  const tokenId = typeof metadata.tokenId === "string" ? metadata.tokenId : event.userId ?? "";
+  return [event.action, event.targetId ?? "", tokenId].join(":");
+}
+
+function coalesceActivity(events: ActivityEventDto[]): ActivityEventDto[] {
+  const result: ActivityEventDto[] = [];
+  for (const event of events) {
+    const key = coalesceKey(event);
+    const previous = result[result.length - 1];
+    if (key && previous && coalesceKey(previous) === key) {
+      const previousMetadata = metadataObject(previous.metadata);
+      const eventMetadata = metadataObject(event.metadata);
+      const count = Number(previousMetadata.count ?? 1) + 1;
+      const eventIds = Array.isArray(previousMetadata.eventIds) ? previousMetadata.eventIds : [previous.id];
+      const versions = Array.isArray(previousMetadata.versions)
+        ? previousMetadata.versions
+        : typeof previousMetadata.version === "string"
+          ? [previousMetadata.version]
+          : [];
+      if (typeof eventMetadata.version === "string") versions.push(eventMetadata.version);
+      previous.metadata = {
+        ...previousMetadata,
+        count,
+        eventIds: [...eventIds, event.id],
+        ...(versions.length > 0 ? { versions: [...new Set(versions)] } : {}),
+      };
+      continue;
+    }
+    result.push(event);
+  }
+  return result.filter((event, index) => !isRedundantStatusUpdate(event, result[index + 1] ?? null));
+}
+
+function activityTokenId(event: ActivityEventDto): string | null {
+  const metadata = metadataObject(event.metadata);
+  return typeof metadata.tokenId === "string" ? metadata.tokenId : null;
+}
+
+function isRedundantStatusUpdate(event: ActivityEventDto, next: ActivityEventDto | null): boolean {
+  if (event.action !== "document_updated_by_agent" || !next || !AGENT_STATUS_ACTIONS.has(next.action)) return false;
+  if (event.targetId !== next.targetId) return false;
+  if (activityTokenId(event) !== activityTokenId(next)) return false;
+  return Math.abs(new Date(event.createdAt).getTime() - new Date(next.createdAt).getTime()) <= 10_000;
+}
+
+function activityDtoFor(
+  event: {
+    id: string;
+    workspaceId: string | null;
+    userId: string | null;
+    action: string;
+    targetType: string;
+    targetId: string | null;
+    createdAt: Date;
+    metadata: unknown;
+  },
+  doc: { id: string; title: string; path: string } | null,
+): ActivityEventDto {
+  return {
+    id: event.id,
+    workspaceId: event.workspaceId,
+    userId: event.userId,
+    actor: actorFor(event.action, event.metadata, event.userId),
+    action: event.action,
+    targetType: event.targetType,
+    targetId: doc?.id ?? event.targetId,
+    documentTitle: doc?.title ?? null,
+    documentPath: doc?.path ?? null,
+    createdAt: event.createdAt.toISOString(),
+    metadata: event.metadata ?? null,
+  };
 }
 
 async function assertWorkspaceMember(userId: string, workspaceId: string): Promise<boolean> {
@@ -122,26 +223,16 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
       return {
         workspaceId,
-        events: events
-          .map((event) => {
-            const docId = documentIdForEvent(event);
-            const doc = docId ? docById.get(docId) ?? null : null;
-            if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
-            return {
-              id: event.id,
-              workspaceId: event.workspaceId,
-              userId: event.userId,
-              actor: actorFor(event.action, event.metadata, event.userId),
-              action: event.action,
-              targetType: event.targetType,
-              targetId: doc?.id ?? event.targetId,
-              documentTitle: doc?.title ?? null,
-              documentPath: doc?.path ?? null,
-              createdAt: event.createdAt.toISOString(),
-              metadata: event.metadata ?? null,
-            };
-          })
-          .filter((event): event is NonNullable<typeof event> => event !== null),
+        events: coalesceActivity(
+          events
+            .map((event) => {
+              const docId = documentIdForEvent(event);
+              const doc = docId ? docById.get(docId) ?? null : null;
+              if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
+              return activityDtoFor(event, doc);
+            })
+            .filter((event): event is NonNullable<typeof event> => event !== null),
+        ).slice(0, limit),
         nextBefore: next ? next.createdAt.toISOString() : null,
       };
     },
@@ -215,7 +306,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
       const recentEvents = await prisma.auditEvent.findMany({
         where: { workspaceId, action: { in: [...DOCUMENT_ACTIONS] } },
         orderBy: { createdAt: "desc" },
-        take: 25,
+        take: 75,
       });
       const recentDocIds = new Set<string>();
       for (const event of recentEvents) {
@@ -230,27 +321,16 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
         : [];
       const recentById = new Map(recentDocs.map((doc) => [doc.id, doc]));
 
-      const recentActivity = recentEvents
-        .map((event) => {
-          const docId = documentIdForEvent(event);
-          const doc = docId ? recentById.get(docId) ?? null : null;
-          if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
-          return {
-            id: event.id,
-            workspaceId: event.workspaceId,
-            userId: event.userId,
-            actor: actorFor(event.action, event.metadata, event.userId),
-            action: event.action,
-            targetType: event.targetType,
-            targetId: doc?.id ?? event.targetId,
-            documentTitle: doc?.title ?? null,
-            documentPath: doc?.path ?? null,
-            createdAt: event.createdAt.toISOString(),
-            metadata: event.metadata ?? null,
-          };
-        })
-        .filter((event): event is NonNullable<typeof event> => event !== null)
-        .slice(0, 15);
+      const recentActivity = coalesceActivity(
+        recentEvents
+          .map((event) => {
+            const docId = documentIdForEvent(event);
+            const doc = docId ? recentById.get(docId) ?? null : null;
+            if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
+            return activityDtoFor(event, doc);
+          })
+          .filter((event): event is NonNullable<typeof event> => event !== null),
+      ).slice(0, 15);
 
       // Filter claims down to documents the caller can see; this prevents
       // surfacing a doc title through a claim row that the user has no
@@ -364,26 +444,16 @@ async function workspaceActivityImpl(
 
   return {
     workspaceId,
-    events: events
-      .map((event) => {
-        const docId = documentIdForEvent(event);
-        const doc = docId ? docById.get(docId) ?? null : null;
-        if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
-        return {
-          id: event.id,
-          workspaceId: event.workspaceId,
-          userId: event.userId,
-          actor: actorFor(event.action, event.metadata, event.userId),
-          action: event.action,
-          targetType: event.targetType,
-          targetId: doc?.id ?? event.targetId,
-          documentTitle: doc?.title ?? null,
-          documentPath: doc?.path ?? null,
-          createdAt: event.createdAt.toISOString(),
-          metadata: event.metadata ?? null,
-        };
-      })
-      .filter((event): event is NonNullable<typeof event> => event !== null),
+    events: coalesceActivity(
+      events
+        .map((event) => {
+          const docId = documentIdForEvent(event);
+          const doc = docId ? docById.get(docId) ?? null : null;
+          if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
+          return activityDtoFor(event, doc);
+        })
+        .filter((event): event is NonNullable<typeof event> => event !== null),
+    ).slice(0, opts.limit),
     nextBefore: next ? next.createdAt.toISOString() : null,
   };
 }
