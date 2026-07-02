@@ -21,7 +21,7 @@ reviewAgent: agent-b
 Ship it.
 `;
 
-function renderPanel(options: { enabled?: boolean; hasUnsavedChanges?: boolean } = {}) {
+function renderPanel(options: { enabled?: boolean; hasUnsavedChanges?: boolean; documentStatus?: "canonical" | "draft" | "superseded" | "archived" } = {}) {
   vi.spyOn(api, "documentHistory").mockResolvedValue(history);
   vi.spyOn(api, "documentDiff").mockResolvedValue(diff);
   const queryClient = new QueryClient({
@@ -39,7 +39,7 @@ function renderPanel(options: { enabled?: boolean; hasUnsavedChanges?: boolean }
         canEdit
         content={savedContent}
         baseVersion="version-1"
-        documentStatus="draft"
+        documentStatus={options.documentStatus ?? "draft"}
         hasUnsavedChanges={options.hasUnsavedChanges ?? false}
       />
     </QueryClientProvider>,
@@ -311,5 +311,43 @@ describe("PlanningReviewPanel", () => {
         allowDraft: true,
       });
     });
+  });
+
+  it("does not show promotion controls after an accepted plan is canonical", async () => {
+    const acceptedPacket = {
+      ...packet,
+      packet: {
+        ...packet.packet,
+        status: "canonical" as const,
+        workflow: {
+          ...packet.packet.workflow,
+          workflowStatus: "accepted",
+        },
+        recommendedAction: "finalize" as const,
+        openCommentsBySection: [],
+        openQuestions: [],
+        decisions: [
+          {
+            id: "final-plan",
+            status: "accepted",
+            date: null,
+            owner: "agent-a",
+            replaces: null,
+            decision: "Accepted.",
+            reason: "Ready.",
+          },
+        ],
+      },
+    };
+    vi.spyOn(api, "documentHandoff").mockResolvedValue(acceptedPacket);
+
+    renderPanel({ documentStatus: "canonical" });
+
+    expect(await screen.findByText("Canonical plan is accepted.")).toBeTruthy();
+    expect(screen.queryByText("Ready for canonical promotion.")).toBeNull();
+    expect(screen.queryByText("Finalize")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add accepted final decision" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark canonical" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Request revision" })).toBeTruthy();
   });
 });

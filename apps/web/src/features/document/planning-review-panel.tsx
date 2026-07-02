@@ -118,6 +118,7 @@ function PlanningReviewContent({
     hasAcceptanceCriteria &&
     Boolean(acceptedDecision);
   const currentStatus = workflow.workflowStatus as WorkflowStatus | null;
+  const canonicalAccepted = documentStatus === "canonical" && currentStatus === "accepted";
   const revisionEntries = useMemo(() => flattenRevisions(history.data?.revisions ?? []), [history.data?.revisions]);
   const latestRevision = revisionEntries[0] ?? null;
   const previousRevision = latestRevision ? revisionEntries.find((revision) => revision.versionNumber < latestRevision.versionNumber) ?? null : null;
@@ -182,7 +183,7 @@ function PlanningReviewContent({
           <Metric label="Reviewer" value={workflow.reviewAgent ?? "Unset"} />
         </div>
 
-        {packet.recommendedAction ? (
+        {packet.recommendedAction && !canonicalAccepted ? (
           <div className="rounded-md border border-orange-200 bg-orange-50 px-2.5 py-2 text-xs text-orange-900 dark:border-orange-400/30 dark:bg-orange-500/10 dark:text-orange-100">
             <div className="flex items-center gap-1.5 font-semibold">
               <RadioTower size={13} aria-hidden="true" />
@@ -206,6 +207,7 @@ function PlanningReviewContent({
           hasAcceptanceCriteria={hasAcceptanceCriteria}
           hasAcceptedDecision={Boolean(acceptedDecision)}
           readyToFinalize={readyToFinalize}
+          canonicalAccepted={canonicalAccepted}
         />
 
         {canEdit ? (
@@ -216,7 +218,8 @@ function PlanningReviewContent({
             currentStatus={currentStatus}
             hasAcceptedDecision={Boolean(acceptedDecision)}
             readyForAcceptedDecision={readyForAcceptedDecision}
-            readyToFinalize={readyToFinalize}
+            readyToFinalize={readyToFinalize && !canonicalAccepted}
+            showPromotionActions={!canonicalAccepted}
             addingDecision={addDecision.isPending}
             finalizing={finalize.isPending}
             transitioning={transition.isPending}
@@ -297,6 +300,7 @@ function WorkflowActions({
   hasAcceptedDecision,
   readyForAcceptedDecision,
   readyToFinalize,
+  showPromotionActions,
   addingDecision,
   finalizing,
   transitioning,
@@ -314,6 +318,7 @@ function WorkflowActions({
   hasAcceptedDecision: boolean;
   readyForAcceptedDecision: boolean;
   readyToFinalize: boolean;
+  showPromotionActions: boolean;
   addingDecision: boolean;
   finalizing: boolean;
   transitioning: boolean;
@@ -339,24 +344,28 @@ function WorkflowActions({
             {actionTextForStatus(status)}
           </Button>
         ))}
-        <Button
-          type="button"
-          variant="secondary"
-          className="h-8 justify-start px-2.5 text-xs"
-          disabled={disabled || hasAcceptedDecision || !readyForAcceptedDecision}
-          onClick={onAddDecision}
-        >
-          {addingDecision ? "Adding decision..." : "Add accepted final decision"}
-        </Button>
-        <Button
-          type="button"
-          variant="primary"
-          className="h-8 justify-start px-2.5 text-xs"
-          disabled={disabled || !readyToFinalize}
-          onClick={onFinalize}
-        >
-          {finalizing ? "Finalizing..." : "Mark canonical"}
-        </Button>
+        {showPromotionActions ? (
+          <>
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-8 justify-start px-2.5 text-xs"
+              disabled={disabled || hasAcceptedDecision || !readyForAcceptedDecision}
+              onClick={onAddDecision}
+            >
+              {addingDecision ? "Adding decision..." : "Add accepted final decision"}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              className="h-8 justify-start px-2.5 text-xs"
+              disabled={disabled || !readyToFinalize}
+              onClick={onFinalize}
+            >
+              {finalizing ? "Finalizing..." : "Mark canonical"}
+            </Button>
+          </>
+        ) : null}
       </div>
       {hasUnsavedChanges ? <p className="text-xs text-amber-700 dark:text-amber-200">Save or discard local edits before changing workflow state.</p> : null}
       {transitioning ? <p className="text-xs text-slate-400">Updating workflow...</p> : null}
@@ -552,6 +561,7 @@ function ReadinessChecklist({
   hasAcceptanceCriteria,
   hasAcceptedDecision,
   readyToFinalize,
+  canonicalAccepted,
 }: {
   openCommentCount: number;
   openQuestionCount: number;
@@ -559,16 +569,18 @@ function ReadinessChecklist({
   hasAcceptanceCriteria: boolean;
   hasAcceptedDecision: boolean;
   readyToFinalize: boolean;
+  canonicalAccepted: boolean;
 }) {
+  const ready = readyToFinalize || canonicalAccepted;
   return (
     <div className="space-y-1.5">
       <ChecklistItem ok={openCommentCount === 0} label={openCommentCount === 0 ? "No open comments" : `${openCommentCount} open comment${openCommentCount === 1 ? "" : "s"}`} />
       <ChecklistItem ok={openQuestionCount === 0 && !hasBlockingQuestions} label={openQuestionCount === 0 ? "No open questions" : `${openQuestionCount} open question${openQuestionCount === 1 ? "" : "s"}`} />
       <ChecklistItem ok={hasAcceptanceCriteria} label={hasAcceptanceCriteria ? "Acceptance criteria present" : "Missing acceptance criteria"} />
       <ChecklistItem ok={hasAcceptedDecision} label={hasAcceptedDecision ? "Accepted decision present" : "Missing accepted decision"} />
-      <div className={`mt-2 flex items-start gap-2 rounded-md px-2.5 py-2 text-xs ${readyToFinalize ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-100" : "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300"}`}>
+      <div className={`mt-2 flex items-start gap-2 rounded-md px-2.5 py-2 text-xs ${ready ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-100" : "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300"}`}>
         <ShieldCheck size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
-        <span>{readyToFinalize ? "Ready for canonical promotion." : "Not ready to finalize yet."}</span>
+        <span>{canonicalAccepted ? "Canonical plan is accepted." : readyToFinalize ? "Ready for canonical promotion." : "Not ready to finalize yet."}</span>
       </div>
     </div>
   );

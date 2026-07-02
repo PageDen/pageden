@@ -17,7 +17,7 @@ import { extractDecisions, extractSections, findSection, implementationReadiness
 import { addDecisionToContent, DecisionWriteError, type DecisionInput } from "../documents/decisions.js";
 import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
-import { replaceSection, suggestAnchors } from "../documents/sections.js";
+import { findRange, replaceSection, sectionRanges, suggestAnchors } from "../documents/sections.js";
 import { brokenLinkExplanation, lintWikilinks, rewriteWikilinks, type RewriteReplacement } from "../documents/wikilinks.js";
 import { documentStatsFor } from "../documents/stats.js";
 import { documentDiffFor } from "../documents/diff.js";
@@ -1446,6 +1446,11 @@ async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown
   if (current.status !== "draft" && current.status !== "canonical") {
     throw new Error(`Cannot finalize a ${current.status} document.`);
   }
+  let nextContent = current.content;
+  const finalDecisionText = maybeString(args.finalDecisionText);
+  if (finalDecisionText && isPlanningSectionPlaceholder(nextContent, "final-plan")) {
+    nextContent = replaceSection(nextContent, "final-plan", `${finalDecisionText.trim()}\n`)?.body ?? nextContent;
+  }
 
   const comments = await prisma.documentComment.findMany({
     where: { documentId: current.id, resolvedAt: null },
@@ -1456,7 +1461,7 @@ async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown
   const packet = taskPacketFor({
     status: current.status,
     supersededBy: current.supersededBy,
-    context: documentContext(current.content),
+    context: documentContext(nextContent),
     comments,
   });
   const blockers: string[] = [];
@@ -1465,6 +1470,9 @@ async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown
   if (openCommentCount > 0) blockers.push(`${openCommentCount} unresolved comment${openCommentCount === 1 ? "" : "s"} remain.`);
   if (packet.openQuestions.length > 0) blockers.push(`${packet.openQuestions.length} open question${packet.openQuestions.length === 1 ? "" : "s"} remain.`);
   if (packet.acceptanceCriteria.length === 0) blockers.push("Acceptance criteria are required before finalization.");
+  for (const section of placeholderPlanningSections(nextContent)) {
+    blockers.push(`${section} section still contains placeholder content.`);
+  }
 
   const finalDecision = packet.decisions.find((decision) => decision.id === "final-plan");
   if (finalDecision && finalDecision.status.toLowerCase() !== "accepted") {
@@ -1477,7 +1485,6 @@ async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown
     throw error;
   }
 
-  let nextContent = current.content;
   let decision = finalDecision ?? null;
   if (!decision) {
     const owner = maybeString(args.owner) ?? packet.workflow?.leadAgent ?? auth.tokenName ?? "agent";
@@ -1485,7 +1492,7 @@ async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown
       id: "final-plan",
       status: "accepted",
       owner,
-      decision: maybeString(args.finalDecisionText) ?? "This plan is accepted as the current source of truth.",
+      decision: finalDecisionText ?? "This plan is accepted as the current source of truth.",
       reason: maybeString(args.reason) ?? "Review comments were resolved and remaining open questions were handled or deferred.",
     });
     nextContent = added.body;
@@ -1560,6 +1567,11 @@ async function reviewPlanByMcp(auth: AuthContext, args: Record<string, unknown>,
   let nextContent = current.content;
   const changedSections: Array<{ anchor: string }> = [];
   const decisions: Decision[] = [];
+  const canUpdateDraft = auth.authType !== "token" || Boolean(auth.tokenScopes?.includes("update"));
+  if (canUpdateDraft) {
+    const nextRound = (packet.workflow.reviewRound ?? 0) + 1;
+    nextContent = contentWithPlanningReviewRound(nextContent, nextRound);
+  }
   if (mode === "comments_and_safe_edits") {
     for (const edit of sectionEdits) {
       const spliced = replaceSection(nextContent, edit.anchor, edit.content);
@@ -1645,6 +1657,7 @@ async function reviewPlanByMcp(auth: AuthContext, args: Record<string, unknown>,
     comments,
     changedSections,
     decisions,
+    reviewRound: canUpdateDraft ? (packet.workflow.reviewRound ?? 0) + 1 : packet.workflow.reviewRound,
     recommendedWorkflowStatus: comments.length > 0 ? "revision" : "final-review",
   };
 }
@@ -3340,6 +3353,21 @@ function contentWithPlanningWorkflowStatus(content: string, workflowStatus: stri
   return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
 }
 
+function contentWithPlanningReviewRound(content: string, reviewRound: number): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) {
+    return `---${newline}workflow: multi-agent-planning${newline}reviewRound: ${reviewRound}${newline}---${newline}${newline}${content}`;
+  }
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const withWorkflow = upsertFrontmatterScalar(raw, "workflow", "multi-agent-planning");
+  const nextFrontmatter = upsertFrontmatterScalar(withWorkflow, "reviewRound", String(reviewRound));
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
 function upsertFrontmatterScalar(raw: string, key: string, value: string): string {
   const lines = raw.split(/\r?\n/);
   const index = lines.findIndex((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}:`));
@@ -3349,6 +3377,45 @@ function upsertFrontmatterScalar(raw: string, key: string, value: string): strin
     return lines.join("\n").trimEnd();
   }
   return [...lines, nextLine].join("\n").trimEnd();
+}
+
+const REQUIRED_PLANNING_SECTION_LABELS: Record<string, string> = {
+  "assumptions": "Assumptions",
+  "proposed-plan": "Proposed Plan",
+  "risks": "Risks",
+  "final-plan": "Final Plan",
+  "acceptance-criteria": "Acceptance Criteria",
+};
+
+function placeholderPlanningSections(content: string): string[] {
+  return Object.entries(REQUIRED_PLANNING_SECTION_LABELS)
+    .filter(([anchor]) => isPlanningSectionPlaceholder(content, anchor))
+    .map(([, label]) => label);
+}
+
+function isPlanningSectionPlaceholder(content: string, anchor: string): boolean {
+  const context = documentContext(content);
+  const body = context.body;
+  const lines = body.split("\n");
+  const range = findRange(sectionRanges(body), anchor);
+  if (!range) return true;
+  const sectionBody = lines.slice(range.contentStart, range.contentEnd).join("\n");
+  return isPlaceholderOnly(sectionBody);
+}
+
+function isPlaceholderOnly(value: string): boolean {
+  const normalized = value
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^[-*+]\s+\[[ x]\]\s+/i, "")
+        .replace(/^[-*+]\s+/, "")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+    .join("\n");
+  return normalized === "" || normalized === "tbd" || normalized === "tbd." || normalized === "todo" || normalized === "todo.";
 }
 
 function booleanParam(value: unknown): boolean {

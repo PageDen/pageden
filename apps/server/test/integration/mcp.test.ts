@@ -641,12 +641,39 @@ describe("MCP agent access", () => {
         createFolders: true,
       }),
     );
+    const assumptionsUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "assumptions",
+        content: "- Review comments identify blockers before finalization.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    const planUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "proposed-plan",
+        content: "- Resolve comments.\n- Confirm acceptance criteria.\n- Finalize the accepted plan.\n",
+        baseVersion: assumptionsUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const risksUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "risks",
+        content: "- Open comments can block canonical promotion.\n",
+        baseVersion: planUpdated.version,
+        allowDraft: true,
+      }),
+    );
     const openQuestionsCleared = toolJson(
       await tool(s.token, "pageden_replace_section", {
         documentId: started.id,
         anchor: "open-questions",
         content: "None.\n",
-        baseVersion: started.version,
+        baseVersion: risksUpdated.version,
         allowDraft: true,
       }),
     );
@@ -656,6 +683,15 @@ describe("MCP agent access", () => {
         anchor: "acceptance-criteria",
         content: "- Finalization refuses unresolved comments.\n- Finalization records an accepted decision.\n",
         baseVersion: openQuestionsCleared.version,
+        allowDraft: true,
+      }),
+    );
+    const finalPlanUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "final-plan",
+        content: "Finalize the reviewed plan once blockers are resolved and acceptance criteria are satisfied.\n",
+        baseVersion: criteriaUpdated.version,
         allowDraft: true,
       }),
     );
@@ -669,7 +705,7 @@ describe("MCP agent access", () => {
 
     const blocked = await tool(s.token, "pageden_finalize_plan", {
       documentId: started.id,
-      baseVersion: criteriaUpdated.version,
+      baseVersion: finalPlanUpdated.version,
     });
     expect(blocked.json().error.message).toMatch(/unresolved comment/i);
 
@@ -782,10 +818,78 @@ describe("MCP agent access", () => {
     expect(reviewed.changedSections).toEqual([{ anchor: "proposed-plan" }]);
     expect(reviewed.decisions[0]).toMatchObject({ id: "deployment-window", status: "proposed" });
     expect(reviewed.comments[0].body).toContain("Applied wording");
+    expect(reviewed.reviewRound).toBe(1);
 
     const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    expect(read.frontmatter.reviewRound).toBe("1");
     expect(read.content).toContain("- Run the deployment checklist.");
     expect(read.content).toContain("id: deployment-window");
+  });
+
+  it("refuses to finalize while required planning sections are placeholders", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/placeholder-final-plan.md",
+        title: "Placeholder Final Plan",
+        goal: "Reject placeholder final content.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    const assumptionsUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "assumptions",
+        content: "- The placeholder guard runs before canonical promotion.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    const planUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "proposed-plan",
+        content: "- Fill every required section except Final Plan.\n",
+        baseVersion: assumptionsUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const risksUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "risks",
+        content: "- Placeholder final content must not be promoted.\n",
+        baseVersion: planUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const openQuestionsCleared = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "open-questions",
+        content: "None.\n",
+        baseVersion: risksUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const criteriaUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "acceptance-criteria",
+        content: "- Placeholder content blocks canonical promotion.\n",
+        baseVersion: openQuestionsCleared.version,
+        allowDraft: true,
+      }),
+    );
+
+    const blocked = await tool(s.token, "pageden_finalize_plan", {
+      documentId: started.id,
+      baseVersion: criteriaUpdated.version,
+    });
+    expect(blocked.json().error.message).toMatch(/Final Plan section still contains placeholder content/i);
   });
 
   it("refuses stale planning reviews before adding comments", async () => {
