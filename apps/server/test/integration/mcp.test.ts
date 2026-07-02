@@ -116,6 +116,7 @@ describe("MCP agent access", () => {
       destructiveHint: true,
       openWorldHint: false,
     });
+    expect(annotationsByName.get("pageden_review_plan")).toMatchObject({ title: "Review planning document", readOnlyHint: false, destructiveHint: false });
 
     const search = await tool(s.token, "pageden_search", { workspaceId: s.ws.id, query: "Runbook" });
     expect(search.statusCode).toBe(200);
@@ -692,6 +693,131 @@ describe("MCP agent access", () => {
     expect(canonicalRead.frontmatter.workflowStatus).toBe("accepted");
     expect(canonicalRead.content).toContain("id: final-plan");
     expect(canonicalRead.content).toContain("status: accepted");
+  });
+
+  it("submits comments-only planning reviews without update scope", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/review-comments-only.md",
+        title: "Review Comments Only",
+        goal: "Let reviewers comment without editing.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    const tokenRes = await req({
+      method: "POST",
+      url: "/api/tokens",
+      cookies: s.adminCookie,
+      payload: { name: "Reviewer", kind: "agent", workspaceId: s.ws.id, scopes: ["search", "read", "create"] },
+    });
+    expect(tokenRes.statusCode).toBe(201);
+    const reviewerToken = tokenRes.json().token as string;
+
+    const reviewed = toolJson(
+      await tool(reviewerToken, "pageden_review_plan", {
+        documentId: started.id,
+        baseVersion: started.version,
+        summary: "The plan is readable but needs rollback detail.",
+        strengths: ["The goal is clear."],
+        risks: ["Rollback path is not described."],
+        blockingQuestions: ["Who approves production rollout?"],
+      }),
+    );
+    expect(reviewed.version).toBe(started.version);
+    expect(reviewed.comments).toHaveLength(4);
+    expect(reviewed.changedSections).toEqual([]);
+    expect(reviewed.recommendedWorkflowStatus).toBe("revision");
+
+    const comments = toolJson(await tool(s.token, "pageden_list_comments", { documentId: started.id }));
+    expect(comments.comments.map((comment: { body: string }) => comment.body)).toEqual(
+      expect.arrayContaining([
+        "Review summary: The plan is readable but needs rollback detail.",
+        "Strength: The goal is clear.",
+        "Risk: Rollback path is not described.",
+        "Blocking question: Who approves production rollout?",
+      ]),
+    );
+  });
+
+  it("applies safe section edits and proposed decisions through planning reviews", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/review-safe-edits.md",
+        title: "Review Safe Edits",
+        goal: "Allow low-risk reviewer edits.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+
+    const reviewed = toolJson(
+      await tool(s.token, "pageden_review_plan", {
+        documentId: started.id,
+        baseVersion: started.version,
+        mode: "comments_and_safe_edits",
+        summary: "Applied wording and proposed a deployment decision.",
+        suggestedSectionEdits: [
+          {
+            anchor: "proposed-plan",
+            content: "- Prepare the migration.\n- Run the deployment checklist.\n",
+          },
+        ],
+        decisionRecommendations: [
+          {
+            id: "deployment-window",
+            decision: "Use a weekday deployment window.",
+            reason: "Support coverage is highest during weekdays.",
+          },
+        ],
+      }),
+    );
+    expect(reviewed.version).not.toBe(started.version);
+    expect(reviewed.changedSections).toEqual([{ anchor: "proposed-plan" }]);
+    expect(reviewed.decisions[0]).toMatchObject({ id: "deployment-window", status: "proposed" });
+    expect(reviewed.comments[0].body).toContain("Applied wording");
+
+    const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    expect(read.content).toContain("- Run the deployment checklist.");
+    expect(read.content).toContain("id: deployment-window");
+  });
+
+  it("refuses stale planning reviews before adding comments", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/review-stale.md",
+        title: "Review Stale",
+        goal: "Reject stale review submissions.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    await tool(s.token, "pageden_replace_section", {
+      documentId: started.id,
+      anchor: "proposed-plan",
+      content: "- Move the version forward.\n",
+      baseVersion: started.version,
+      allowDraft: true,
+    });
+
+    const stale = await tool(s.token, "pageden_review_plan", {
+      documentId: started.id,
+      baseVersion: started.version,
+      summary: "This should not be written.",
+    });
+    expect(stale.json().error.message).toMatch(/Conflict/);
+
+    const comments = toolJson(await tool(s.token, "pageden_list_comments", { documentId: started.id }));
+    expect(comments.comments).toEqual([]);
   });
 
   it("refuses to finalize when final-plan exists but is not accepted", async () => {

@@ -13,8 +13,8 @@ import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
 import { applyDocumentWrite, buildHandoffPacket, documentContentWithStatus, metadataFromContent, promoteDocumentToCanonical, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX, type SearchDocumentsResult } from "../search/service.js";
-import { extractDecisions, extractSections, findSection, implementationReadinessFor, taskPacketFor } from "../documents/handoff.js";
-import { addDecisionToContent, DecisionWriteError } from "../documents/decisions.js";
+import { extractDecisions, extractSections, findSection, implementationReadinessFor, taskPacketFor, type Decision } from "../documents/handoff.js";
+import { addDecisionToContent, DecisionWriteError, type DecisionInput } from "../documents/decisions.js";
 import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
 import { replaceSection, suggestAnchors } from "../documents/sections.js";
@@ -371,6 +371,53 @@ const toolDefinitions = [
     },
   },
   {
+    name: "pageden_review_plan",
+    description: "Submit structured review feedback for a multi-agent planning document. Adds comments by default and only applies safe section edits or proposed decisions when mode is comments_and_safe_edits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        baseVersion: { type: "string", description: "DocumentRevision id the reviewer inspected; checked before comments or edits are written." },
+        summary: { type: "string", description: "Overall review summary." },
+        strengths: { type: "array", items: { type: "string" }, description: "Positive findings to add as review-note comments." },
+        risks: { type: "array", items: { type: "string" }, description: "Risks or concerns to add as comments on the Risks section." },
+        blockingQuestions: { type: "array", items: { type: "string" }, description: "Blocking questions to add as comments on the Open Questions section." },
+        suggestedSectionEdits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              anchor: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["anchor", "content"],
+          },
+          description: "Safe section replacements to apply only in comments_and_safe_edits mode.",
+        },
+        decisionRecommendations: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              status: { type: "string" },
+              owner: { type: "string" },
+              decision: { type: "string" },
+              reason: { type: "string" },
+              replaces: { type: "string" },
+            },
+            required: ["id", "decision", "reason"],
+          },
+          description: "Proposed decisions to add only in comments_and_safe_edits mode.",
+        },
+        mode: { type: "string", enum: ["comments_only", "comments_and_safe_edits"], description: "Defaults to comments_only." },
+      },
+      required: ["baseVersion"],
+    },
+  },
+  {
     name: "pageden_append_to_document",
     description: "Append Markdown to a document using the latest version.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -702,6 +749,7 @@ const toolAnnotations: Record<string, McpToolAnnotations> = {
   pageden_update_document: writeTool("Update document", { destructive: true }),
   pageden_mark_document_canonical: writeTool("Mark document canonical"),
   pageden_finalize_plan: writeTool("Finalize planning document", { destructive: true }),
+  pageden_review_plan: writeTool("Review planning document"),
   pageden_append_to_document: writeTool("Append to document"),
   pageden_replace_section: writeTool("Replace document section", { destructive: true }),
   pageden_read_section: readOnlyTool("Read document section"),
@@ -899,6 +947,7 @@ async function callTool(
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_mark_document_canonical") data = await markDocumentCanonical(auth, args, request);
   else if (name === "pageden_finalize_plan") data = await finalizePlanByMcp(auth, args, request);
+  else if (name === "pageden_review_plan") data = await reviewPlanByMcp(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else if (name === "pageden_replace_section") data = await replaceSectionByMcp(auth, args, request);
   else if (name === "pageden_read_section") data = await readSection(auth, args);
@@ -1479,6 +1528,124 @@ async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown
     workflowStatus: "accepted",
     decision,
     blockers: [],
+  };
+}
+
+async function reviewPlanByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "create");
+  const mode = parseReviewMode(args.mode);
+  if (mode === "comments_and_safe_edits") requireTokenScope(auth, "update");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const baseVersion = stringParam(args, "baseVersion");
+  if (current.version !== baseVersion) throw new Error(`Conflict. Current version is ${current.version ?? ""}.`);
+  const context = documentContext(current.content);
+  const packet = taskPacketFor({ status: current.status, supersededBy: current.supersededBy, context, comments: [] });
+  if (packet.workflow?.workflow !== "multi-agent-planning") throw new Error("Document is not a multi-agent planning workflow.");
+
+  const commentsToAdd = reviewCommentsFromArgs(args);
+  const sectionEdits = parseSuggestedSectionEdits(args.suggestedSectionEdits);
+  const decisionInputs = parseDecisionRecommendations(args.decisionRecommendations, auth.tokenName ?? "agent");
+  if (mode === "comments_only" && (sectionEdits.length > 0 || decisionInputs.length > 0)) {
+    throw new Error("suggestedSectionEdits and decisionRecommendations require mode comments_and_safe_edits.");
+  }
+  if (commentsToAdd.length === 0 && sectionEdits.length === 0 && decisionInputs.length === 0) {
+    throw new Error("Review must include summary, strengths, risks, blockingQuestions, suggestedSectionEdits, or decisionRecommendations.");
+  }
+
+  let nextContent = current.content;
+  const changedSections: Array<{ anchor: string }> = [];
+  const decisions: Decision[] = [];
+  if (mode === "comments_and_safe_edits") {
+    for (const edit of sectionEdits) {
+      const spliced = replaceSection(nextContent, edit.anchor, edit.content);
+      if (!spliced) {
+        const error: Error & { code?: string; data?: unknown } = new Error("anchor_not_found");
+        error.code = "anchor_not_found";
+        error.data = { anchor: edit.anchor, suggested: suggestAnchors(nextContent, edit.anchor) };
+        throw error;
+      }
+      nextContent = spliced.body;
+      changedSections.push({ anchor: spliced.anchor });
+    }
+    for (const input of decisionInputs) {
+      try {
+        const added = addDecisionToContent(nextContent, input);
+        nextContent = added.body;
+        decisions.push(added.decision);
+      } catch (error) {
+        if (error instanceof DecisionWriteError) {
+          const wrapped: Error & { code?: string; data?: unknown } = new Error(error.message);
+          wrapped.code = error.code;
+          wrapped.data = error.fields;
+          throw wrapped;
+        }
+        throw error;
+      }
+    }
+  }
+
+  let writeResult: { version: string | null; checksum: string | null } = { version: current.version, checksum: current.checksum };
+  if (nextContent !== current.content) {
+    const outcome = await applyDocumentWrite({
+      documentId: current.id,
+      auth,
+      baseVersion,
+      content: nextContent,
+      changeSource: "agent",
+      allowNonCanonical: current.status === "draft",
+    });
+    if (!outcome.ok) {
+      throw new Error(
+        outcome.status === "conflict"
+          ? `Conflict. Current version is ${outcome.currentVersion}.`
+          : outcome.status ?? "Review plan failed.",
+      );
+    }
+    writeResult = { version: outcome.version ?? null, checksum: outcome.checksum ?? null };
+  }
+
+  const comments = [];
+  for (const input of commentsToAdd) {
+    const result = await createComment(auth, current.id, input);
+    if (result.status === "not_found") throw new Error("Document not found.");
+    if (result.status === "validation") throw new Error(result.message);
+    comments.push(result.comment);
+  }
+
+  await writeAuditEvent({
+    workspaceId: current.workspaceId,
+    userId: auth.userId,
+    action: "document_plan_reviewed_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: {
+      tokenId: auth.tokenId,
+      tokenName: auth.tokenName,
+      version: writeResult.version,
+      mode,
+      commentCount: comments.length,
+      changedSectionCount: changedSections.length,
+      decisionCount: decisions.length,
+    },
+  });
+
+  return {
+    workspaceId: current.workspaceId,
+    documentId: current.id,
+    version: writeResult.version,
+    checksum: writeResult.checksum,
+    mode,
+    comments,
+    changedSections,
+    decisions,
+    recommendedWorkflowStatus: comments.length > 0 ? "revision" : "final-review",
   };
 }
 
@@ -3084,6 +3251,78 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function maybeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+type ReviewMode = "comments_only" | "comments_and_safe_edits";
+type ReviewCommentInput = { body: string; sectionAnchor: string | null };
+
+function parseReviewMode(value: unknown): ReviewMode {
+  if (value === undefined || value === null || value === "") return "comments_only";
+  if (value === "comments_only" || value === "comments_and_safe_edits") return value;
+  throw new Error("mode must be comments_only or comments_and_safe_edits.");
+}
+
+function reviewCommentsFromArgs(args: Record<string, unknown>): ReviewCommentInput[] {
+  const comments: ReviewCommentInput[] = [];
+  const summary = maybeString(args.summary);
+  if (summary) comments.push({ sectionAnchor: "agent-review-notes", body: `Review summary: ${summary}` });
+  for (const strength of stringArrayParam(args.strengths, "strengths")) {
+    comments.push({ sectionAnchor: "agent-review-notes", body: `Strength: ${strength}` });
+  }
+  for (const risk of stringArrayParam(args.risks, "risks")) {
+    comments.push({ sectionAnchor: "risks", body: `Risk: ${risk}` });
+  }
+  for (const question of stringArrayParam(args.blockingQuestions, "blockingQuestions")) {
+    comments.push({ sectionAnchor: "open-questions", body: `Blocking question: ${question}` });
+  }
+  return comments;
+}
+
+function parseSuggestedSectionEdits(value: unknown): Array<{ anchor: string; content: string }> {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("suggestedSectionEdits must be an array.");
+  if (value.length > 20) throw new Error("suggestedSectionEdits is limited to 20 items.");
+  return value.map((item, index) => {
+    const record = asRecord(item);
+    const anchor = maybeString(record.anchor);
+    const content = typeof record.content === "string" ? record.content : undefined;
+    if (!anchor) throw new Error(`suggestedSectionEdits[${index}].anchor is required.`);
+    if (content === undefined || !content.trim()) throw new Error(`suggestedSectionEdits[${index}].content is required.`);
+    return { anchor, content };
+  });
+}
+
+function parseDecisionRecommendations(value: unknown, defaultOwner: string): DecisionInput[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("decisionRecommendations must be an array.");
+  if (value.length > 20) throw new Error("decisionRecommendations is limited to 20 items.");
+  return value.map((item, index) => {
+    const record = asRecord(item);
+    const id = maybeString(record.id);
+    const decision = maybeString(record.decision);
+    const reason = maybeString(record.reason);
+    if (!id) throw new Error(`decisionRecommendations[${index}].id is required.`);
+    if (!decision) throw new Error(`decisionRecommendations[${index}].decision is required.`);
+    if (!reason) throw new Error(`decisionRecommendations[${index}].reason is required.`);
+    return {
+      id,
+      status: maybeString(record.status) ?? "proposed",
+      owner: maybeString(record.owner) ?? defaultOwner,
+      decision,
+      reason,
+      replaces: maybeString(record.replaces) ?? null,
+    };
+  });
+}
+
+function stringArrayParam(value: unknown, name: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array of strings.`);
+  if (value.length > 50) throw new Error(`${name} is limited to 50 items.`);
+  return value.map((item, index) => {
+    if (typeof item !== "string" || !item.trim()) throw new Error(`${name}[${index}] must be a non-empty string.`);
+    return item.trim();
+  });
 }
 
 function contentWithPlanningWorkflowStatus(content: string, workflowStatus: string): string {
