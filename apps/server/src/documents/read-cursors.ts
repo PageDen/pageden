@@ -47,6 +47,8 @@ export interface UnreadDoc {
   updatedAt: Date;
   lastReadAt: Date | null;
   lastReadVersion: string | null;
+  unreadCommentCount: number;
+  latestUnreadCommentAt: Date | null;
 }
 
 // Return docs in this workspace whose currentVersionId differs from the
@@ -74,7 +76,28 @@ export async function unreadDocuments(
   const result: UnreadDoc[] = [];
   for (const doc of docs) {
     const cursor = cursorByDoc.get(doc.id) ?? null;
-    if (cursor && cursor.lastReadVersion === doc.currentVersionId) continue;
+    let unreadCommentCount = 0;
+    let latestUnreadCommentAt: Date | null = null;
+    if (cursor?.lastReadAt) {
+      const unreadCommentWhere = {
+        documentId: doc.id,
+        createdAt: { gt: cursor.lastReadAt },
+        ...(auth.tokenId
+          ? { NOT: { authorTokenId: auth.tokenId } }
+          : { NOT: { authorUserId: auth.userId, authorTokenId: null } }),
+      };
+      const [count, latest] = await Promise.all([
+        prisma.documentComment.count({ where: unreadCommentWhere }),
+        prisma.documentComment.findFirst({
+          where: unreadCommentWhere,
+          select: { createdAt: true },
+          orderBy: { createdAt: "desc" },
+        }),
+      ]);
+      unreadCommentCount = count;
+      latestUnreadCommentAt = latest?.createdAt ?? null;
+    }
+    if (cursor && cursor.lastReadVersion === doc.currentVersionId && unreadCommentCount === 0) continue;
     result.push({
       id: doc.id,
       folderId: doc.folderId,
@@ -85,7 +108,13 @@ export async function unreadDocuments(
       updatedAt: doc.updatedAt,
       lastReadAt: cursor?.lastReadAt ?? null,
       lastReadVersion: cursor?.lastReadVersion ?? null,
+      unreadCommentCount,
+      latestUnreadCommentAt,
     });
   }
-  return result.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  return result.sort((a, b) => {
+    const aLatest = Math.max(a.updatedAt.getTime(), a.latestUnreadCommentAt?.getTime() ?? 0);
+    const bLatest = Math.max(b.updatedAt.getTime(), b.latestUnreadCommentAt?.getTime() ?? 0);
+    return bLatest - aLatest;
+  });
 }

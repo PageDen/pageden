@@ -57,6 +57,8 @@ interface CommentRow {
   body: string;
   resolvedAt: Date | null;
   resolvedById: string | null;
+  resolvedByTokenId: string | null;
+  resolvedByLabel: string | null;
   createdAt: Date;
   updatedAt: Date;
   mentions?: Array<{ userId: string }>;
@@ -74,6 +76,8 @@ function toCommentDto(row: CommentRow) {
     authorLabel: row.authorLabel,
     resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : null,
     resolvedById: row.resolvedById,
+    resolvedByTokenId: row.resolvedByTokenId,
+    resolvedByLabel: row.resolvedByLabel,
     mentionedUserIds: row.mentions?.map((mention) => mention.userId) ?? [],
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -296,7 +300,12 @@ export async function resolveCommentRecord(
   }
   const updated = await prisma.documentComment.update({
     where: { id: comment.id },
-    data: { resolvedAt: new Date(), resolvedById: auth.userId },
+    data: {
+      resolvedAt: new Date(),
+      resolvedById: auth.userId,
+      resolvedByTokenId: auth.tokenId ?? null,
+      resolvedByLabel: clip(authorLabelFor(auth, null), MAX_LABEL),
+    },
   });
   await writeAuditEvent({
     workspaceId: comment.workspaceId,
@@ -304,7 +313,7 @@ export async function resolveCommentRecord(
     action: auth.tokenKind === "agent" ? "comment_resolved_by_agent" : "comment_resolved",
     targetType: "document_comment",
     targetId: comment.id,
-    metadata: { documentId: comment.documentId, tokenId: auth.tokenId },
+    metadata: { documentId: comment.documentId, tokenId: auth.tokenId, resolverLabel: clip(authorLabelFor(auth, null), MAX_LABEL) },
   });
   return { status: "ok", comment: toCommentDto(updated) };
 }

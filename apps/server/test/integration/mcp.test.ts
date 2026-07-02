@@ -708,9 +708,22 @@ describe("MCP agent access", () => {
       baseVersion: finalPlanUpdated.version,
     });
     expect(blocked.json().error.message).toMatch(/unresolved comment/i);
+    expect(blocked.json().error.data).toMatchObject({
+      code: "plan_not_ready",
+      blockers: [expect.stringMatching(/unresolved comment/i)],
+    });
 
     const resolved = toolJson(await tool(s.token, "pageden_resolve_comment", { commentId: comment.id }));
     expect(resolved.resolvedAt).toBeTruthy();
+    expect(resolved).toMatchObject({
+      resolvedByTokenId: s.tokenId,
+      resolvedByLabel: "Codex agent (agent)",
+    });
+    const resolvedComments = toolJson(await tool(s.token, "pageden_list_comments", { documentId: started.id, includeResolved: true }));
+    expect(resolvedComments.comments.find((row: { id: string }) => row.id === comment.id)).toMatchObject({
+      resolvedByTokenId: s.tokenId,
+      resolvedByLabel: "Codex agent (agent)",
+    });
 
     const latest = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
     const finalized = toolJson(
@@ -752,6 +765,7 @@ describe("MCP agent access", () => {
     });
     expect(tokenRes.statusCode).toBe(201);
     const reviewerToken = tokenRes.json().token as string;
+    await tool(s.token, "pageden_read_document", { documentId: started.id });
 
     const reviewed = toolJson(
       await tool(reviewerToken, "pageden_review_plan", {
@@ -775,6 +789,17 @@ describe("MCP agent access", () => {
         "Strength: The goal is clear.",
         "Risk: Rollback path is not described.",
         "Blocking question: Who approves production rollout?",
+      ]),
+    );
+    const unread = toolJson(await tool(s.token, "pageden_my_unread", { workspaceId: s.ws.id }));
+    expect(unread.documents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: started.id,
+          version: started.version,
+          lastReadVersion: started.version,
+          unreadCommentCount: 4,
+        }),
       ]),
     );
   });

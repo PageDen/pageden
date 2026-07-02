@@ -280,6 +280,8 @@ model DocumentComment {
   body          String
   resolvedAt    DateTime?
   resolvedById  String?
+  resolvedByTokenId String?
+  resolvedByLabel String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -287,6 +289,7 @@ model DocumentComment {
   authorUser    User?     @relation("DocumentCommentAuthor", fields: [authorUserId], references: [id])
   authorToken   ApiToken? @relation("DocumentCommentAuthorToken", fields: [authorTokenId], references: [id])
   resolvedBy    User?     @relation("DocumentCommentResolver", fields: [resolvedById], references: [id])
+  resolvedByToken ApiToken? @relation("DocumentCommentResolverToken", fields: [resolvedByTokenId], references: [id])
   mentions      DocumentCommentMention[]
 
   @@index([documentId, resolvedAt])
@@ -420,6 +423,7 @@ model ApiToken {
   createdAt        DateTime          @default(now())
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   authoredComments DocumentComment[] @relation("DocumentCommentAuthorToken")
+  resolvedComments DocumentComment[] @relation("DocumentCommentResolverToken")
   readCursors      TokenReadCursor[]
   claims           DocumentClaim[]
 

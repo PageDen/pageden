@@ -916,7 +916,7 @@ async function handleJsonRpc(
     }
     return rpcError(id, -32601, `Unsupported method: ${msg.method}`);
   } catch (error) {
-    return rpcError(id, -32000, error instanceof Error ? error.message : "MCP tool failed.");
+    return rpcError(id, -32000, error instanceof Error ? error.message : "MCP tool failed.", rpcErrorData(error));
   }
 }
 
@@ -1877,6 +1877,8 @@ async function myUnreadForWorkspace(auth: AuthContext, workspaceId: string, limi
       updatedAt: doc.updatedAt.toISOString(),
       lastReadAt: doc.lastReadAt ? doc.lastReadAt.toISOString() : null,
       lastReadVersion: doc.lastReadVersion,
+      unreadCommentCount: doc.unreadCommentCount,
+      latestUnreadCommentAt: doc.latestUnreadCommentAt ? doc.latestUnreadCommentAt.toISOString() : null,
     }));
 }
 
@@ -3254,8 +3256,18 @@ function rpcResult(id: JsonRpcRequest["id"], result: unknown) {
   return { jsonrpc: "2.0", id, result };
 }
 
-function rpcError(id: JsonRpcRequest["id"], code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
+function rpcError(id: JsonRpcRequest["id"], code: number, message: string, data?: unknown) {
+  return { jsonrpc: "2.0", id, error: data === undefined ? { code, message } : { code, message, data } };
+}
+
+function rpcErrorData(error: unknown): unknown {
+  if (!(error instanceof Error)) return undefined;
+  const coded = error as Error & { code?: unknown; data?: unknown };
+  if (typeof coded.code !== "string" && coded.data === undefined) return undefined;
+  if (coded.data && typeof coded.data === "object" && !Array.isArray(coded.data)) {
+    return { code: coded.code, ...(coded.data as Record<string, unknown>) };
+  }
+  return { code: coded.code, details: coded.data };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
