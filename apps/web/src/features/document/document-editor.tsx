@@ -14,6 +14,7 @@ import { documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
 import { useDocumentDraft } from "../../lib/draft";
 import { Button } from "../../components/ui/button";
 import { RichMarkdownEditor } from "./rich-markdown-editor";
+import { PlanningReviewPanel } from "./planning-review-panel";
 import { PermissionsDialog } from "../permissions/permissions-dialog";
 import { isAllowedEmbedSrc } from "./media";
 import { TableOfContents, headingId } from "./table-of-contents";
@@ -50,6 +51,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     enabled: preview || !canEdit,
   });
   const parsedPreview = useMemo(() => parseFrontmatter(canEdit ? draft.content : doc.content), [canEdit, doc.content, draft.content]);
+  const isPlanningWorkflow = parsedPreview.attributes.workflow === "multi-agent-planning";
   const decisionRender = useMemo(
     () => renderDecisionBlocks(parsedPreview.body, { decisionsOnly }),
     [parsedPreview.body, decisionsOnly],
@@ -381,7 +383,15 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             <RichMarkdownEditor documentId={doc.id} value={draft.content} onChange={draft.setContent} live={liveConfig} />
           )}
         </div>
-        {!canEdit || preview ? <DocumentInsightsPanel content={previewContent} readiness={doc.aiReadiness} /> : null}
+        {!canEdit || preview || isPlanningWorkflow ? (
+          <DocumentInsightsPanel
+            content={previewContent}
+            readiness={doc.aiReadiness}
+            documentId={doc.id}
+            planningWorkflow={isPlanningWorkflow}
+            showInsights={!canEdit || preview}
+          />
+        ) : null}
       </div>
       {shareOpen ? (
         <PermissionsDialog
@@ -591,13 +601,28 @@ function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
   );
 }
 
-function DocumentInsightsPanel({ content, readiness }: { content: string; readiness: Doc["aiReadiness"] }) {
+function DocumentInsightsPanel({
+  content,
+  readiness,
+  documentId,
+  planningWorkflow,
+  showInsights,
+}: {
+  content: string;
+  readiness: Doc["aiReadiness"];
+  documentId: string;
+  planningWorkflow: boolean;
+  showInsights: boolean;
+}) {
   return (
     <aside className="hidden w-64 flex-shrink-0 overflow-auto border-l border-slate-200 bg-slate-50 px-4 py-6 dark:border-slate-800 dark:bg-slate-950 lg:block">
-      <AiReadinessPanel readiness={readiness} />
-      <div className="mt-7 border-t border-slate-200 pt-5 dark:border-slate-800">
-        <TableOfContents content={content} embedded />
-      </div>
+      {showInsights ? <AiReadinessPanel readiness={readiness} /> : null}
+      <PlanningReviewPanel documentId={documentId} enabled={planningWorkflow} />
+      {showInsights ? (
+        <div className="mt-7 border-t border-slate-200 pt-5 dark:border-slate-800">
+          <TableOfContents content={content} embedded />
+        </div>
+      ) : null}
     </aside>
   );
 }

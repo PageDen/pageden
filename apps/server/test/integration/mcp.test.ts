@@ -543,6 +543,112 @@ describe("MCP agent access", () => {
     expect(toolJson(importedAgain).totals.skippedDocuments).toBe(2);
   });
 
+  it("starts a multi-agent planning workflow and allows explicit draft section edits", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/example-agent-plan.md",
+        title: "Example Agent Plan",
+        goal: "Draft and review the first implementation plan.",
+        context: "Use comments for uncertainty and edits for accepted revisions.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    expect(started.action).toBe("created");
+    expect(started.workflow).toBe("multi-agent-planning");
+    expect(started.workflowStatus).toBe("drafting");
+
+    const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    expect(read.status).toBe("draft");
+    expect(read.frontmatter.workflow).toBe("multi-agent-planning");
+    expect(read.frontmatter.workflowStatus).toBe("drafting");
+    expect(read.content).toContain("## Proposed Plan");
+    expect(read.content).toContain(":::decision");
+
+    const blocked = await tool(s.token, "pageden_replace_section", {
+      documentId: started.id,
+      anchor: "proposed-plan",
+      content: "- Ship the planning template.\n",
+      baseVersion: started.version,
+    });
+    expect(blocked.json().error.message).toMatch(/not_canonical|not canonical/i);
+
+    const replaced = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "proposed-plan",
+        content: "- Ship the planning template.\n- Ask the reviewer for comments.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    expect(replaced.latestChangedSection.anchor).toBe("proposed-plan");
+
+    const comment = toolJson(
+      await tool(s.token, "pageden_add_section_comment", {
+        documentId: started.id,
+        sectionAnchor: "risks",
+        body: "Clarify the rollback plan before final review.",
+      }),
+    );
+    expect(comment.documentId).toBe(started.id);
+
+    const claimed = toolJson(
+      await tool(s.token, "pageden_claim_document", {
+        documentId: started.id,
+        note: "Reviewing plan round 0",
+        ttlMinutes: 10,
+      }),
+    );
+    expect(claimed.active).toBe(true);
+
+    const packet = toolJson(await tool(s.token, "pageden_get_task_packet", { documentId: started.id }));
+    expect(packet.packet.workflow).toMatchObject({
+      workflow: "multi-agent-planning",
+      workflowStatus: "drafting",
+      reviewRound: 0,
+      leadAgent: "agent-a",
+      reviewAgent: "agent-b",
+    });
+    expect(packet.packet.recommendedAction).toBe("safe_edit");
+    expect(packet.packet.openCommentsBySection).toEqual([
+      {
+        sectionAnchor: "risks",
+        count: 1,
+        comments: [{ id: comment.id, body: "Clarify the rollback plan before final review." }],
+      },
+    ]);
+    expect(packet.packet.activeClaim).toMatchObject({ note: "Reviewing plan round 0" });
+  });
+
+  it("does not allow allowDraft to edit superseded documents", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const created = toolJson(
+      await tool(s.token, "pageden_upsert_document_by_path", {
+        workspaceId: s.ws.id,
+        path: "strategy/superseded-plan.md",
+        title: "Superseded Plan",
+        createFolders: true,
+        content: "---\nstatus: superseded\n---\n\n# Superseded Plan\n\n## Notes\n\nOld text.\n",
+      }),
+    );
+    const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: created.id }));
+    expect(read.status).toBe("superseded");
+
+    const rejected = await tool(s.token, "pageden_replace_section", {
+      documentId: created.id,
+      anchor: "notes",
+      content: "Should not write.\n",
+      baseVersion: created.version,
+      allowDraft: true,
+    });
+    expect(rejected.json().error.message).toMatch(/not_canonical|not canonical/i);
+  });
+
   it("reports JSON-RPC errors for unknown tools, bad resources, and wrong workspaces", async () => {
     const s = await agentToken(["search", "read"]);
 

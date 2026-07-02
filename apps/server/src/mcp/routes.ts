@@ -275,8 +275,27 @@ const toolDefinitions = [
         content: { type: "string" },
         createFolders: { type: "boolean", description: "Create missing folders along the path." },
         baseVersion: { type: "string", description: "Optional conflict guard when updating an existing document." },
+        allowDraft: { type: "boolean", description: "Allow updating a status: draft document. Superseded and archived documents remain protected." },
       },
       required: ["path", "title", "content"],
+    },
+  },
+  {
+    name: "pageden_start_planning_workflow",
+    description: "Create a draft multi-agent planning document from Pageden's standard review-loop template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        path: { type: "string", description: "Markdown path such as strategy/example-agent-plan.md." },
+        title: { type: "string" },
+        goal: { type: "string" },
+        context: { type: "string" },
+        leadAgentLabel: { type: "string" },
+        reviewAgentLabel: { type: "string" },
+        createFolders: { type: "boolean", description: "Create missing folders along the path." },
+      },
+      required: ["path", "title", "goal"],
     },
   },
   {
@@ -316,6 +335,7 @@ const toolDefinitions = [
         baseVersion: { type: "string" },
         content: { type: "string" },
         title: { type: "string" },
+        allowDraft: { type: "boolean", description: "Allow replacing status: draft documents. Superseded and archived documents remain protected." },
       },
       required: ["documentId", "baseVersion", "content"],
     },
@@ -358,6 +378,7 @@ const toolDefinitions = [
         anchor: { type: "string", description: "Heading anchor (e.g. 'acceptance-criteria') or human-readable heading text." },
         content: { type: "string", description: "New Markdown body for that section. Heading line is preserved by the server." },
         baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        allowDraft: { type: "boolean", description: "Allow replacing a section in a status: draft document. Superseded and archived documents remain protected." },
         mode: { type: "string", enum: ["strict", "lenient"], description: "Reserved for future per-section drift detection. Today both behave the same as the global baseVersion check." },
       },
       required: ["anchor", "content", "baseVersion"],
@@ -637,6 +658,7 @@ const toolAnnotations: Record<string, McpToolAnnotations> = {
   pageden_request_attachment_upload: writeTool("Request attachment upload URL"),
   pageden_create_folder: writeTool("Create folder"),
   pageden_upsert_document_by_path: writeTool("Upsert document by path", { destructive: true }),
+  pageden_start_planning_workflow: writeTool("Start planning workflow"),
   pageden_import_markdown_tree: writeTool("Import Markdown tree", { destructive: true }),
   pageden_update_document: writeTool("Update document", { destructive: true }),
   pageden_mark_document_canonical: writeTool("Mark document canonical"),
@@ -831,6 +853,7 @@ async function callTool(
   else if (name === "pageden_request_attachment_upload") data = await requestAttachmentUpload(auth, args, request);
   else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
   else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
+  else if (name === "pageden_start_planning_workflow") data = await startPlanningWorkflow(auth, args, request);
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_mark_document_canonical") data = await markDocumentCanonical(auth, args, request);
@@ -2192,6 +2215,7 @@ async function upsertDocumentByPath(auth: AuthContext, args: Record<string, unkn
   const content = stringParamAllowEmpty(args, "content");
   const createFolders = args.createFolders === true;
   const baseVersion = maybeString(args.baseVersion);
+  const allowDraft = booleanParam(args.allowDraft);
   return upsertDocumentAtPath({
     auth,
     workspaceId,
@@ -2200,8 +2224,40 @@ async function upsertDocumentByPath(auth: AuthContext, args: Record<string, unkn
     createFolders,
     mode: "upsert",
     baseVersion,
+    allowDraft,
     request,
   });
+}
+
+async function startPlanningWorkflow(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const path = stringParam(args, "path");
+  const title = stringParam(args, "title").trim();
+  const goal = stringParam(args, "goal").trim();
+  const context = maybeString(args.context) ?? "";
+  const leadAgentLabel = maybeString(args.leadAgentLabel) ?? auth.tokenName ?? "lead-agent";
+  const reviewAgentLabel = maybeString(args.reviewAgentLabel) ?? "review-agent";
+  const parsed = parseMarkdownPath(path, title);
+  const content = planningWorkflowTemplate({ title, goal, context, leadAgentLabel, reviewAgentLabel });
+  const result = await upsertDocumentAtPath({
+    auth,
+    workspaceId,
+    parsed,
+    content,
+    createFolders: args.createFolders === true,
+    mode: "create_only",
+    request,
+  });
+  return {
+    ...result,
+    workflow: "multi-agent-planning",
+    workflowStatus: result.action === "created" ? "drafting" : null,
+    reviewRound: result.action === "created" ? 0 : null,
+    suggestedNextCall:
+      result.action === "created"
+        ? "pageden_claim_document with note 'Drafting initial plan', then pageden_replace_section with allowDraft=true as the plan develops."
+        : "Read the existing document and continue the current workflow state.",
+  };
 }
 
 async function importMarkdownTree(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
@@ -2241,6 +2297,7 @@ async function importMarkdownTree(auth: AuthContext, args: Record<string, unknow
         content: file.content,
         createFolders: true,
         mode,
+        allowDraft: false,
         request,
       });
       if (result.action === "created") report.createdDocuments.push(result.path);
@@ -2279,6 +2336,7 @@ async function upsertDocumentAtPath({
   createFolders,
   mode,
   baseVersion,
+  allowDraft = false,
   request,
 }: {
   auth: AuthContext;
@@ -2288,11 +2346,12 @@ async function upsertDocumentAtPath({
   createFolders: boolean;
   mode: UpsertMode;
   baseVersion?: string;
+  allowDraft?: boolean;
   request: FastifyRequest;
 }) {
   const existing = await prisma.document.findFirst({
     where: { workspaceId, path: parsed.documentPath, deletedAt: null },
-    select: { id: true, title: true, path: true, currentVersionId: true, currentChecksum: true },
+    select: { id: true, title: true, path: true, currentVersionId: true, currentChecksum: true, status: true },
   });
   const sum = computeChecksum(content);
 
@@ -2321,6 +2380,7 @@ async function upsertDocumentAtPath({
       content,
       title: parsed.documentTitle,
       changeSource: "agent",
+      allowNonCanonical: allowDraft && existing.status === "draft",
     });
     if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
     await writeAuditEvent({
@@ -2398,9 +2458,16 @@ async function upsertDocumentAtPath({
       const revision = await tx.documentRevision.create({
         data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent", contributorIds: [auth.userId] },
       });
+      const metadata = await metadataFromContent(tx, workspaceId, content, doc.id);
       const updated = await tx.document.update({
         where: { id: doc.id },
-        data: { currentVersionId: revision.id, currentChecksum: sum, searchText: searchTextFor(content) },
+        data: {
+          currentVersionId: revision.id,
+          currentChecksum: sum,
+          searchText: searchTextFor(content),
+          status: metadata.status,
+          supersededById: metadata.supersededById,
+        },
       });
       await writeAuditEvent(
         {
@@ -2610,6 +2677,105 @@ function slugifyImportPath(value: string): string {
   return slug || "untitled";
 }
 
+function planningWorkflowTemplate({
+  title,
+  goal,
+  context,
+  leadAgentLabel,
+  reviewAgentLabel,
+}: {
+  title: string;
+  goal: string;
+  context: string;
+  leadAgentLabel: string;
+  reviewAgentLabel: string;
+}) {
+  const cleanTitle = stripNul(title.trim() || "Multi-Agent Plan");
+  const cleanGoal = stripNul(goal.trim());
+  const cleanContext = stripNul(context.trim());
+  return [
+    "---",
+    "status: draft",
+    "docType: plan",
+    "workflow: multi-agent-planning",
+    "workflowStatus: drafting",
+    "reviewRound: 0",
+    `leadAgent: ${yamlScalar(leadAgentLabel)}`,
+    `reviewAgent: ${yamlScalar(reviewAgentLabel)}`,
+    "---",
+    "",
+    `# ${cleanTitle}`,
+    "",
+    "## Goal",
+    "",
+    cleanGoal,
+    "",
+    "## Context",
+    "",
+    cleanContext || "TBD.",
+    "",
+    "## Assumptions",
+    "",
+    "- TBD.",
+    "",
+    "## Proposed Plan",
+    "",
+    "- TBD.",
+    "",
+    "## Risks",
+    "",
+    "- TBD.",
+    "",
+    "## Open Questions",
+    "",
+    "- TBD.",
+    "",
+    "## Agent Review Notes",
+    "",
+    "- Awaiting initial review.",
+    "",
+    "## Decisions",
+    "",
+    ":::decision",
+    "id: plan-status",
+    "status: proposed",
+    `owner: ${decisionScalar(leadAgentLabel)}`,
+    "",
+    "decision: Initial plan drafted; awaiting review.",
+    "reason: The reviewer has not completed review yet.",
+    ":::",
+    "",
+    "## Final Plan",
+    "",
+    "TBD.",
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- TBD.",
+    "",
+    "## Next Steps",
+    "",
+    "- Claim the document and complete the proposed plan.",
+    "- Move workflowStatus to review when ready for reviewer comments.",
+    "",
+  ].join("\n");
+}
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(stripNul(value.trim() || "agent"));
+}
+
+function decisionScalar(value: string): string {
+  return stripNul(value.trim() || "agent").replace(/\s+/g, " ").slice(0, 120);
+}
+
+async function documentStatusForDraftWrite(auth: AuthContext, documentId: string) {
+  const doc = await prisma.document.findFirst({ where: { id: documentId, deletedAt: null }, select: { workspaceId: true, status: true } });
+  if (!doc) throw new Error("Document not found.");
+  if (auth.tokenWorkspaceId && auth.tokenWorkspaceId !== doc.workspaceId) throw new Error("This agent token is bound to another workspace.");
+  return doc.status;
+}
+
 function stripNul(value: string): string {
   // eslint-disable-next-line no-control-regex -- Postgres text/jsonb reject NUL bytes.
   return value.replace(/\u0000/g, "");
@@ -2622,7 +2788,16 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
   const content = stringParam(args, "content");
   const title = maybeString(args.title)?.trim();
   await assertTokenOwnsDocument(auth, documentId);
-  const outcome = await applyDocumentWrite({ documentId, auth, baseVersion, content, title, changeSource: "agent" });
+  const currentStatus = await documentStatusForDraftWrite(auth, documentId);
+  const outcome = await applyDocumentWrite({
+    documentId,
+    auth,
+    baseVersion,
+    content,
+    title,
+    changeSource: "agent",
+    allowNonCanonical: booleanParam(args.allowDraft) && currentStatus === "draft",
+  });
   if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
   const updateWorkspaceId = await workspaceIdForDocument(documentId);
   await writeAuditEvent({
@@ -2702,6 +2877,7 @@ async function replaceSectionByMcp(auth: AuthContext, args: Record<string, unkno
     baseVersion,
     content: spliced.body,
     changeSource: "agent",
+    allowNonCanonical: booleanParam(args.allowDraft) && current.status === "draft",
   });
   if (!outcome.ok) {
     throw new Error(
@@ -2757,6 +2933,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function maybeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function booleanParam(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1";
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {

@@ -344,11 +344,42 @@ export const decisionSchema = z
   })
   .strict();
 
+export const planningWorkflowSchema = z
+  .object({
+    workflow: z.string(),
+    workflowStatus: z.string().nullable(),
+    reviewRound: z.number().nullable(),
+    leadAgent: z.string().nullable(),
+    reviewAgent: z.string().nullable(),
+  })
+  .strict();
+
+export const taskPacketCommentGroupSchema = z
+  .object({
+    sectionAnchor: z.string().nullable(),
+    count: z.number(),
+    comments: z.array(z.object({ id: z.string().optional(), body: z.string() }).strict()),
+  })
+  .strict();
+
+export const taskPacketActiveClaimSchema = z
+  .object({
+    id: z.string(),
+    actorLabel: z.string().nullable(),
+    note: z.string().nullable(),
+    expiresAt: iso,
+  })
+  .strict();
+
 export const taskPacketSchema = z
   .object({
     summary: z.string(),
     status: documentStatusSchema,
     supersededBy: documentRefSchema.nullable(),
+    workflow: planningWorkflowSchema.nullable(),
+    recommendedAction: z.enum(["comment_only", "revise", "safe_edit", "finalize", "human_review"]).nullable(),
+    openCommentsBySection: z.array(taskPacketCommentGroupSchema),
+    activeClaim: taskPacketActiveClaimSchema.nullable().optional(),
     currentPhase: z.string().nullable(),
     nextSteps: z.array(z.string()),
     acceptanceCriteria: z.array(z.string()),

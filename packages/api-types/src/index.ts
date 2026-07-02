@@ -130,6 +130,25 @@ export interface TaskPacket {
   summary: string;
   status: DocumentStatus;
   supersededBy: DocumentRef | null;
+  workflow: {
+    workflow: string;
+    workflowStatus: string | null;
+    reviewRound: number | null;
+    leadAgent: string | null;
+    reviewAgent: string | null;
+  } | null;
+  recommendedAction: "comment_only" | "revise" | "safe_edit" | "finalize" | "human_review" | null;
+  openCommentsBySection: Array<{
+    sectionAnchor: string | null;
+    count: number;
+    comments: Array<{ id?: string; body: string }>;
+  }>;
+  activeClaim?: {
+    id: string;
+    actorLabel: string | null;
+    note: string | null;
+    expiresAt: string;
+  } | null;
   currentPhase: string | null;
   nextSteps: string[];
   acceptanceCriteria: string[];

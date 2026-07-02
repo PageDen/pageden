@@ -994,7 +994,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   // baseVersion model so this is just a thin wrapper around applyDocumentWrite.
   app.post<{
     Params: { id: string };
-    Body: { anchor?: string; content?: string; baseVersion?: string; mode?: string };
+    Body: { anchor?: string; content?: string; baseVersion?: string; mode?: string; allowDraft?: boolean };
   }>(
     "/api/documents/:id/sections",
     { config: { rateLimit: { max: Number(process.env.SECTION_WRITE_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
@@ -1047,6 +1047,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       baseVersion: baseVersion!,
       content: spliced.body,
       changeSource: "agent",
+      allowNonCanonical: request.body.allowDraft === true && doc.status === "draft",
     });
     if (outcome.ok) {
       return reply.send({
@@ -1557,11 +1558,24 @@ export async function buildHandoffPacket(
     orderBy: { createdAt: "asc" },
     take: 50,
   });
+  const activeClaim = await prisma.documentClaim.findFirst({
+    where: { documentId: doc.id, releasedAt: null, expiresAt: { gt: new Date() } },
+    select: { id: true, actorLabel: true, note: true, expiresAt: true },
+    orderBy: { expiresAt: "asc" },
+  });
   const supersededBy =
     doc.supersededBy && !doc.supersededBy.deletedAt
       ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
       : null;
   const packet = taskPacketFor({ status: doc.status, supersededBy, context, comments });
+  packet.activeClaim = activeClaim
+    ? {
+        id: activeClaim.id,
+        actorLabel: activeClaim.actorLabel,
+        note: activeClaim.note,
+        expiresAt: activeClaim.expiresAt.toISOString(),
+      }
+    : null;
   return {
     status: "ok",
     value: {
