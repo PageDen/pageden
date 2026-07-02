@@ -671,6 +671,18 @@ export const revisionDetailSchema = z
   })
   .strict();
 
+export const documentDiffSchema = z
+  .object({
+    documentId: z.string(),
+    fromVersion: z.string(),
+    toVersion: z.string(),
+    unified: z.string(),
+    added: z.number(),
+    removed: z.number(),
+    unchanged: z.number(),
+  })
+  .strict();
+
 // Folders
 export const folderCreateSchema = z.object({ id: z.string(), path: z.string() }).strict();
 export const folderRenameSchema = z.object({ id: z.string(), path: z.string() }).strict();

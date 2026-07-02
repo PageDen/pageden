@@ -56,6 +56,7 @@ import {
   authConfigSchema,
   publicCurrentWorkspaceSchema,
   documentHistorySchema,
+  documentDiffSchema,
   revisionDetailSchema,
   revisionsSchema,
   treeSchema,
@@ -409,6 +410,12 @@ export const api = {
     request("GET", `/documents/${encodeURIComponent(id)}/revisions`, { schema: revisionsSchema }),
   documentHistory: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/history`, { schema: documentHistorySchema }),
+  documentDiff: (id: string, fromVersion: string, toVersion: string) =>
+    request(
+      "GET",
+      `/documents/${encodeURIComponent(id)}/diff?fromVersion=${encodeURIComponent(fromVersion)}&toVersion=${encodeURIComponent(toVersion)}`,
+      { schema: documentDiffSchema },
+    ),
   revisionDetail: (id: string, revisionId: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}`, {
       schema: revisionDetailSchema,

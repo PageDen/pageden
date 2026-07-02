@@ -81,6 +81,12 @@ export const revisionsQuery = (id: string) =>
 export const documentHistoryQuery = (id: string) =>
   queryOptions({ queryKey: ["history", id], queryFn: () => api.documentHistory(id) });
 
+export const documentDiffQuery = (id: string, fromVersion: string, toVersion: string) =>
+  queryOptions({
+    queryKey: ["document", id, "diff", fromVersion, toVersion],
+    queryFn: () => api.documentDiff(id, fromVersion, toVersion),
+  });
+
 export const revisionDetailQuery = (id: string, revisionId: string) =>
   queryOptions({
     queryKey: ["revision", id, revisionId],

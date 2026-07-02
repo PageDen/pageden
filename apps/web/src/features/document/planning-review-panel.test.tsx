@@ -22,6 +22,8 @@ Ship it.
 `;
 
 function renderPanel(options: { enabled?: boolean; hasUnsavedChanges?: boolean } = {}) {
+  vi.spyOn(api, "documentHistory").mockResolvedValue(history);
+  vi.spyOn(api, "documentDiff").mockResolvedValue(diff);
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -102,6 +104,70 @@ const packet = {
   },
 };
 
+const history = {
+  revisions: [
+    {
+      id: "version-2",
+      versionNumber: 2,
+      checksum: "checksum-2",
+      createdBy: "user-1",
+      createdAt: "2026-07-02T08:05:00.000Z",
+      changeSource: "agent" as const,
+      message: null,
+      contributorIds: ["user-1"],
+      isPinned: false,
+      label: null,
+      groupId: "version-2",
+      groupCount: 1,
+      groupStartVersionNumber: 2,
+      groupEndVersionNumber: 2,
+      collapsedRevisions: [],
+    },
+    {
+      id: "version-1",
+      versionNumber: 1,
+      checksum: "checksum-1",
+      createdBy: "user-1",
+      createdAt: "2026-07-02T08:00:00.000Z",
+      changeSource: "web_app" as const,
+      message: null,
+      contributorIds: ["user-1"],
+      isPinned: false,
+      label: null,
+      groupId: "version-1",
+      groupCount: 1,
+      groupStartVersionNumber: 1,
+      groupEndVersionNumber: 1,
+      collapsedRevisions: [],
+    },
+  ],
+  timeline: [
+    {
+      type: "event" as const,
+      id: "event-1",
+      createdAt: "2026-07-02T08:06:00.000Z",
+      event: {
+        action: "document_plan_reviewed_by_agent",
+        actor: "agent" as const,
+        userId: "user-1",
+        targetType: "document",
+        targetId: "document-1",
+        metadata: null,
+      },
+    },
+  ],
+};
+
+const diff = {
+  documentId: "document-1",
+  fromVersion: "version-1",
+  toVersion: "version-2",
+  unified: "--- a/document-1@version-1\n+++ b/document-1@version-2\n Goal\n-Old step\n+Added step",
+  added: 1,
+  removed: 1,
+  unchanged: 1,
+};
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -126,6 +192,10 @@ describe("PlanningReviewPanel", () => {
     expect(screen.getByText("proposed")).toBeTruthy();
     expect(screen.getByText("plan-status")).toBeTruthy();
     expect(screen.getByText("Not ready to finalize yet.")).toBeTruthy();
+    expect(await screen.findByText("Latest changes")).toBeTruthy();
+    expect(await screen.findByText("Added step")).toBeTruthy();
+    expect(screen.getByText("Review activity")).toBeTruthy();
+    expect(screen.getByText("Agent submitted planning review")).toBeTruthy();
   });
 
   it("does not fetch or render when disabled", () => {

@@ -1,16 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, CircleDashed, GitPullRequestDraft, MessageSquare, RadioTower, ShieldCheck } from "lucide-react";
-import type { ReactNode } from "react";
+import { Activity, AlertTriangle, CheckCircle2, CircleDashed, FileDiff, GitPullRequestDraft, MessageSquare, RadioTower, ShieldCheck } from "lucide-react";
+import { useMemo, type ReactNode } from "react";
 import type { z } from "zod";
 import type { handoffPacketSchema } from "@pageden/api-types";
 import { api, crudErrorMessage } from "../../lib/api";
-import { documentHandoffQuery, documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
+import { documentDiffQuery, documentHandoffQuery, documentHistoryQuery, documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
+import { formatDateTime } from "../../lib/format";
 import { Button } from "../../components/ui/button";
 
 type Handoff = z.infer<typeof handoffPacketSchema>;
 type Packet = Handoff["packet"];
 type RecommendedAction = NonNullable<Packet["recommendedAction"]>;
 type WorkflowStatus = "drafting" | "review" | "revision" | "final-review" | "accepted" | "deferred";
+type DocumentHistory = Awaited<ReturnType<typeof api.documentHistory>>;
+type RevisionEntry = DocumentHistory["revisions"][number] | DocumentHistory["revisions"][number]["collapsedRevisions"][number];
+type TimelineItem = DocumentHistory["timeline"][number];
+type DocumentDiff = Awaited<ReturnType<typeof api.documentDiff>>;
 
 const actionLabel: Record<RecommendedAction, string> = {
   comment_only: "Comment only",
@@ -96,6 +101,7 @@ function PlanningReviewContent({
   hasUnsavedChanges: boolean;
 }) {
   const queryClient = useQueryClient();
+  const history = useQuery({ ...documentHistoryQuery(documentId), enabled: documentId !== "" });
   const workflow = packet.workflow;
   if (!workflow) return null;
 
@@ -111,11 +117,20 @@ function PlanningReviewContent({
     hasAcceptanceCriteria &&
     Boolean(acceptedDecision);
   const currentStatus = workflow.workflowStatus as WorkflowStatus | null;
+  const revisionEntries = useMemo(() => flattenRevisions(history.data?.revisions ?? []), [history.data?.revisions]);
+  const latestRevision = revisionEntries[0] ?? null;
+  const previousRevision = latestRevision ? revisionEntries.find((revision) => revision.versionNumber < latestRevision.versionNumber) ?? null : null;
+  const latestDiff = useQuery({
+    ...documentDiffQuery(documentId, previousRevision?.id ?? "", latestRevision?.id ?? ""),
+    enabled: documentId !== "" && Boolean(previousRevision?.id && latestRevision?.id),
+  });
+  const reviewEvents = useMemo(() => reviewActivityEvents(history.data?.timeline ?? []), [history.data?.timeline]);
 
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: documentQuery(documentId).queryKey }),
       queryClient.invalidateQueries({ queryKey: documentHandoffQuery(documentId).queryKey }),
+      queryClient.invalidateQueries({ queryKey: documentHistoryQuery(documentId).queryKey }),
       queryClient.invalidateQueries({ queryKey: revisionsQuery(documentId).queryKey }),
       queryClient.invalidateQueries({ queryKey: treeQuery(workspaceId).queryKey }),
     ]);
@@ -172,6 +187,7 @@ function PlanningReviewContent({
               <RadioTower size={13} aria-hidden="true" />
               {actionLabel[packet.recommendedAction]}
             </div>
+            <div className="mt-1 leading-5">{actionDescription(packet.recommendedAction)}</div>
           </div>
         ) : null}
 
@@ -212,6 +228,13 @@ function PlanningReviewContent({
           />
         ) : null}
 
+        <LatestChanges
+          loading={history.isLoading || latestDiff.isLoading}
+          diff={latestDiff.data}
+          latestVersionNumber={latestRevision?.versionNumber ?? null}
+          previousVersionNumber={previousRevision?.versionNumber ?? null}
+        />
+        <ReviewActivity events={reviewEvents} loading={history.isLoading} />
         <CommentGroups groups={packet.openCommentsBySection} />
         <DecisionSummary decisions={packet.decisions} />
       </div>
@@ -232,6 +255,14 @@ function workflowActionsFor(status: WorkflowStatus | null): WorkflowStatus[] {
 function nextReviewRound(current: WorkflowStatus | null, next: WorkflowStatus, currentRound: number | null): number {
   const round = currentRound ?? 0;
   return next === "review" && current === "revision" ? round + 1 : round;
+}
+
+function actionDescription(action: RecommendedAction): string {
+  if (action === "comment_only") return "Reviewer should leave feedback without broad edits.";
+  if (action === "revise") return "Author should address open review comments.";
+  if (action === "safe_edit") return "Low-risk edits are allowed with version protection.";
+  if (action === "finalize") return "Accepted plan can be promoted when final checks pass.";
+  return "Human review is needed before the next workflow step.";
 }
 
 function updatePlanningWorkflowFrontmatter(content: string, workflowStatus: WorkflowStatus, reviewRound: number): string {
@@ -335,6 +366,76 @@ function WorkflowActions({
   );
 }
 
+function LatestChanges({
+  loading,
+  diff,
+  latestVersionNumber,
+  previousVersionNumber,
+}: {
+  loading: boolean;
+  diff: DocumentDiff | undefined;
+  latestVersionNumber: number | null;
+  previousVersionNumber: number | null;
+}) {
+  if (!loading && (!diff || latestVersionNumber === null || previousVersionNumber === null)) {
+    return <p className="text-xs italic text-slate-400 dark:text-slate-500">No revision comparison yet.</p>;
+  }
+  const lines = diff ? diffPreviewLines(diff.unified) : [];
+  return (
+    <div>
+      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <FileDiff size={13} aria-hidden="true" />
+        Latest changes
+      </h3>
+      <div className="rounded-md bg-white text-xs ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
+        {loading ? (
+          <div className="px-2.5 py-2 text-slate-400">Loading changes...</div>
+        ) : diff ? (
+          <>
+            <div className="border-b border-slate-200 px-2.5 py-2 text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              Version {previousVersionNumber} to {latestVersionNumber}: +{diff.added} / -{diff.removed}
+            </div>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words py-1 font-mono text-[11px] leading-5">
+              {lines.map((line, index) => (
+                <div key={`${line.kind}-${index}`} className={planningDiffLineClass(line.kind)}>
+                  <span className="mr-2 inline-block w-3 select-none text-slate-400">{line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " "}</span>
+                  <span>{line.text || " "}</span>
+                </div>
+              ))}
+            </pre>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ReviewActivity({ events, loading }: { events: TimelineItem[]; loading: boolean }) {
+  if (loading) return <p className="text-xs text-slate-400">Loading review activity...</p>;
+  if (events.length === 0) {
+    return <p className="text-xs italic text-slate-400 dark:text-slate-500">No recent review activity.</p>;
+  }
+  return (
+    <div>
+      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <Activity size={13} aria-hidden="true" />
+        Review activity
+      </h3>
+      <ul className="space-y-1.5">
+        {events.slice(0, 4).map((item) => {
+          if (item.type !== "event") return null;
+          return (
+            <li key={item.id} className="rounded-md bg-white px-2.5 py-2 text-xs ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
+              <div className="font-medium text-slate-700 dark:text-slate-200">{reviewActivityLabel(item.event.action, item.event.actor)}</div>
+              <div className="mt-0.5 text-[11px] text-slate-400">{formatDateTime(item.createdAt)}</div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function actionTextForStatus(status: WorkflowStatus): string {
   if (status === "review") return "Send to review";
   if (status === "revision") return "Request revision";
@@ -342,6 +443,62 @@ function actionTextForStatus(status: WorkflowStatus): string {
   if (status === "accepted") return "Accept plan";
   if (status === "deferred") return "Defer plan";
   return "Reopen drafting";
+}
+
+function flattenRevisions(revisions: DocumentHistory["revisions"]): RevisionEntry[] {
+  const out: RevisionEntry[] = [];
+  for (const revision of revisions) {
+    out.push(revision);
+    out.push(...revision.collapsedRevisions);
+  }
+  return out.sort((a, b) => b.versionNumber - a.versionNumber);
+}
+
+function reviewActivityEvents(timeline: DocumentHistory["timeline"]): TimelineItem[] {
+  const actions = new Set([
+    "comment_added_by_agent",
+    "comment_resolved_by_agent",
+    "document_plan_reviewed_by_agent",
+    "document_section_replaced_by_agent",
+    "document_decision_added_by_agent",
+    "document_plan_finalized_by_agent",
+    "document_updated_by_agent",
+  ]);
+  return timeline.filter((item) => item.type === "event" && actions.has(item.event.action)).slice(0, 4);
+}
+
+type PlanningDiffLine = { kind: "same" | "add" | "remove"; text: string };
+
+function diffPreviewLines(unified: string): PlanningDiffLine[] {
+  return unified
+    .split("\n")
+    .slice(2)
+    .filter((line) => line.startsWith("+") || line.startsWith("-"))
+    .slice(0, 12)
+    .map((line) => ({
+      kind: line.startsWith("+") ? "add" : "remove",
+      text: line.slice(1),
+    }));
+}
+
+function planningDiffLineClass(kind: PlanningDiffLine["kind"]): string {
+  if (kind === "add") return "bg-emerald-50 px-2.5 py-0.5 text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100";
+  if (kind === "remove") return "bg-red-50 px-2.5 py-0.5 text-red-900 line-through dark:bg-red-500/10 dark:text-red-100";
+  return "px-2.5 py-0.5 text-slate-700 dark:text-slate-200";
+}
+
+function reviewActivityLabel(action: string, actor: string): string {
+  const who = actor === "agent" ? "Agent" : actor === "system" ? "System" : actor === "obsidian_plugin" ? "Obsidian" : "User";
+  const labels: Record<string, string> = {
+    comment_added_by_agent: "Agent added review comment",
+    comment_resolved_by_agent: "Agent resolved review comment",
+    document_plan_reviewed_by_agent: "Agent submitted planning review",
+    document_section_replaced_by_agent: "Agent edited section",
+    document_decision_added_by_agent: "Agent added decision",
+    document_plan_finalized_by_agent: "Agent finalized plan",
+    document_updated_by_agent: "Agent edited document",
+  };
+  return labels[action] ?? `${who} ${action.replace(/_/g, " ")}`;
 }
 
 function PanelShell({ count, children }: { count: number | null; children: ReactNode }) {
