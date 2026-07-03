@@ -206,6 +206,10 @@ describe("MCP agent access", () => {
     expect(firstRead.content).toBe("");
     expect(firstRead.body).toBeUndefined();
 
+    const scopeSection = toolJson(await tool(s.token, "pageden_read_section", { documentId: created.id, anchor: "scope" }));
+    expect(scopeSection.section).toMatchObject({ heading: "Scope", anchor: "scope" });
+    expect(scopeSection.section.content).toContain("Old text");
+
     await tool(s.token, "pageden_update_document", {
       documentId: created.id,
       baseVersion: created.version,

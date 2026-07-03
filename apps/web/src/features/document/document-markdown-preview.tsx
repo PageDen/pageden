@@ -10,7 +10,7 @@ import type { z } from "zod";
 import type { attachmentListSchema, treeSchema } from "@pageden/api-types";
 import { api } from "../../lib/api";
 import { treeQuery } from "../../lib/queries";
-import { headingId } from "./table-of-contents";
+import { createHeadingIdGenerator } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
 import { relatedDocLinksForValue, resolveWikiLinks } from "./obsidian-links";
@@ -44,6 +44,7 @@ export function DocumentMarkdownPreview({
     [decisionRender.body, tree.data, workspaceId],
   );
   const attachmentUrls = useMemo(() => buildAttachmentUrlMap(attachments.data), [attachments.data]);
+  const headingIdFor = createHeadingIdGenerator();
 
   return (
     <article className={["pageden-document-view prose prose-slate max-w-none break-words text-[16px] leading-8 dark:prose-invert sm:text-[15px] sm:leading-7", className].filter(Boolean).join(" ")}>
@@ -74,12 +75,12 @@ export function DocumentMarkdownPreview({
               <table {...props}>{children}</table>
             </div>
           ),
-          h1: ({ children, ...props }) => <h1 {...props} id={headingId(markdownText(children))}>{children}</h1>,
-          h2: ({ children, ...props }) => <h2 {...props} id={headingId(markdownText(children))}>{children}</h2>,
-          h3: ({ children, ...props }) => <h3 {...props} id={headingId(markdownText(children))}>{children}</h3>,
-          h4: ({ children, ...props }) => <h4 {...props} id={headingId(markdownText(children))}>{children}</h4>,
-          h5: ({ children, ...props }) => <h5 {...props} id={headingId(markdownText(children))}>{children}</h5>,
-          h6: ({ children, ...props }) => <h6 {...props} id={headingId(markdownText(children))}>{children}</h6>,
+          h1: ({ children, ...props }) => <h1 {...props} id={headingIdFor(markdownText(children))}>{children}</h1>,
+          h2: ({ children, ...props }) => <h2 {...props} id={headingIdFor(markdownText(children))}>{children}</h2>,
+          h3: ({ children, ...props }) => <h3 {...props} id={headingIdFor(markdownText(children))}>{children}</h3>,
+          h4: ({ children, ...props }) => <h4 {...props} id={headingIdFor(markdownText(children))}>{children}</h4>,
+          h5: ({ children, ...props }) => <h5 {...props} id={headingIdFor(markdownText(children))}>{children}</h5>,
+          h6: ({ children, ...props }) => <h6 {...props} id={headingIdFor(markdownText(children))}>{children}</h6>,
           iframe: ({ src, ...props }) =>
             src && isAllowedEmbedSrc(src) ? (
               <span className="block aspect-video w-full max-w-2xl overflow-hidden rounded">

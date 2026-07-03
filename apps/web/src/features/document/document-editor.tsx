@@ -17,7 +17,7 @@ import { RichMarkdownEditor } from "./rich-markdown-editor";
 import { PlanningReviewPanel } from "./planning-review-panel";
 import { PermissionsDialog } from "../permissions/permissions-dialog";
 import { isAllowedEmbedSrc } from "./media";
-import { TableOfContents, headingId } from "./table-of-contents";
+import { TableOfContents, createHeadingIdGenerator } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
 import { documentDeepLink, documentReadablePath, documentReviewNote, workspaceRelativePath } from "../../lib/document-links";
@@ -62,6 +62,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     [decisionRender.body, tree.data, workspaceId],
   );
   const attachmentUrls = useMemo(() => buildAttachmentUrlMap(attachments.data), [attachments.data]);
+  const headingIdFor = createHeadingIdGenerator();
   const liveConfig = useMemo(
     () =>
       live && canEdit
@@ -361,12 +362,12 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                         <table {...props}>{children}</table>
                       </div>
                     ),
-                    h1: ({ children, ...props }) => <h1 {...props} id={headingId(markdownText(children))}>{children}</h1>,
-                    h2: ({ children, ...props }) => <h2 {...props} id={headingId(markdownText(children))}>{children}</h2>,
-                    h3: ({ children, ...props }) => <h3 {...props} id={headingId(markdownText(children))}>{children}</h3>,
-                    h4: ({ children, ...props }) => <h4 {...props} id={headingId(markdownText(children))}>{children}</h4>,
-                    h5: ({ children, ...props }) => <h5 {...props} id={headingId(markdownText(children))}>{children}</h5>,
-                    h6: ({ children, ...props }) => <h6 {...props} id={headingId(markdownText(children))}>{children}</h6>,
+                    h1: ({ children, ...props }) => <h1 {...props} id={headingIdFor(markdownText(children))}>{children}</h1>,
+                    h2: ({ children, ...props }) => <h2 {...props} id={headingIdFor(markdownText(children))}>{children}</h2>,
+                    h3: ({ children, ...props }) => <h3 {...props} id={headingIdFor(markdownText(children))}>{children}</h3>,
+                    h4: ({ children, ...props }) => <h4 {...props} id={headingIdFor(markdownText(children))}>{children}</h4>,
+                    h5: ({ children, ...props }) => <h5 {...props} id={headingIdFor(markdownText(children))}>{children}</h5>,
+                    h6: ({ children, ...props }) => <h6 {...props} id={headingIdFor(markdownText(children))}>{children}</h6>,
                     iframe: ({ src, ...props }) =>
                       src && isAllowedEmbedSrc(src) ? (
                         <span className="block aspect-video w-full max-w-2xl overflow-hidden rounded">

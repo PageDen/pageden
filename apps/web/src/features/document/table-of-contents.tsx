@@ -46,6 +46,7 @@ export function extractHeadings(markdown: string): Heading[] {
   const lines = markdown.split("\n");
   let inFence = false;
   let fenceMarker: string | null = null;
+  const idForHeading = createHeadingIdGenerator();
 
   for (const line of lines) {
     const fence = detectFenceMarker(line);
@@ -64,7 +65,7 @@ export function extractHeadings(markdown: string): Heading[] {
 
     const heading = parseMarkdownHeading(line);
     if (!heading) continue;
-    headings.push({ level: heading.level, text: heading.text, id: headingId(heading.text) });
+    headings.push({ level: heading.level, text: heading.text, id: idForHeading(heading.text) });
   }
 
   return headings;
@@ -123,10 +124,21 @@ function stripTrailingAtxClosing(s: string): string {
 }
 
 export function headingId(text: string): string {
-  return text
+  const id = text
     .toLowerCase()
     .replace(/[^\w\s-]/g, "")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
+  return id || "section";
+}
+
+export function createHeadingIdGenerator(): (text: string) => string {
+  const counts = new Map<string, number>();
+  return (text: string) => {
+    const base = headingId(text);
+    const next = (counts.get(base) ?? 0) + 1;
+    counts.set(base, next);
+    return next === 1 ? base : `${base}-${next}`;
+  };
 }

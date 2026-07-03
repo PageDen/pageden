@@ -462,8 +462,11 @@ const toolDefinitions = [
           type: "string",
           description: "Heading anchor (e.g. \"acceptance-criteria\") or human-readable heading text.",
         },
+        anchor: {
+          type: "string",
+          description: "Alias for heading. Prefer this when targeting a known heading anchor.",
+        },
       },
-      required: ["heading"],
     },
   },
   {
@@ -1321,7 +1324,8 @@ function anchorForMcp(value: string): string {
 }
 
 async function readSection(auth: AuthContext, args: Record<string, unknown>) {
-  const heading = stringParam(args, "heading");
+  const heading = maybeString(args.heading) ?? maybeString(args.anchor);
+  if (!heading) throw new Error("heading or anchor is required.");
   // Reuse the same auth/lookup logic as readDocument so permission checks and
   // workspace-binding behave identically; we then narrow the response to the
   // requested section so an agent loads one chunk instead of the whole doc.
