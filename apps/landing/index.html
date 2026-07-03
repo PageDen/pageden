@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pageden - Knowledge base, public manuals, and AI-ready docs</title>
-  <meta name="description" content="Pageden is a Markdown knowledge base for teams, public manuals, Obsidian sync, approvals, signatures, and permissioned AI agent access." />
-  <meta property="og:title" content="Pageden - Knowledge base, public manuals, and AI-ready docs" />
-  <meta property="og:description" content="Create internal docs, publish public manuals, sync Obsidian, approve policies, and connect AI agents from one workspace." />
+  <title>Pageden - Markdown knowledge base for agent-reviewed plans</title>
+  <meta name="description" content="Pageden is a Markdown-native knowledge base where your agent drafts plans, your team reviews them, and accepted decisions become trusted team knowledge. Sync Obsidian and connect Claude, Codex, or any MCP agent." />
+  <meta property="og:title" content="Pageden - Markdown knowledge base for agent-reviewed plans" />
+  <meta property="og:description" content="Your agent drafts the plan. Your team reviews it. Pageden keeps it canonical with Markdown, comments, history, Obsidian sync, and MCP access." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://pageden.app" />
   <link rel="icon" href="https://raw.githubusercontent.com/PageDen/pageden/main/apps/web/public/favicon.svg" />
@@ -218,6 +218,21 @@
     }
     .int-logo:hover { opacity: 1; }
 
+    /* ── SOURCE OF TRUTH ── */
+    .truth-section { padding: 80px 24px; background: #fff; }
+    .truth-inner {
+      max-width: 1000px; margin: 0 auto;
+      display: grid; grid-template-columns: 1.1fr .9fr; gap: 56px; align-items: start;
+    }
+    .truth-copy .section-sub { max-width: 620px; }
+    .truth-points { display: grid; gap: 14px; }
+    .truth-point {
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px 20px; background: var(--gray-light);
+    }
+    .truth-point strong { display: block; color: var(--navy); font-size: 15px; margin-bottom: 4px; }
+    .truth-point span { display: block; color: var(--gray); font-size: 14px; line-height: 1.55; }
+
     /* ── FEATURES ── */
     .features { padding: 96px 24px; }
     .section-tag {
@@ -388,6 +403,7 @@
       .nav-links { display: none; }
       .features-grid { grid-template-columns: 1fr; }
       .showcase-row { grid-template-columns: 1fr; }
+      .truth-inner { grid-template-columns: 1fr; }
       .showcase-row.flip .showcase-text { order: 0; }
       .showcase-row.flip .showcase-visual { order: 0; }
       .bento-grid { grid-template-columns: repeat(2, 1fr); }
@@ -418,31 +434,30 @@
       <a href="#how-it-works" class="nav-link">How it works</a>
       <a href="https://docs.pageden.app/" class="nav-link">Docs</a>
       <a href="https://github.com/PageDen/pageden" class="nav-link" target="_blank">GitHub</a>
-      <a href="https://go.pageden.app/register" class="nav-cta">Get started free</a>
+      <a href="https://go.pageden.app/register" class="nav-cta">Start free</a>
     </div>
   </div>
 </nav>
 
 <!-- HERO -->
 <section class="hero">
-  <div class="badge"><span class="badge-dot"></span> Docs for teams · Manuals for customers · Context for AI</div>
-  <h1>One place for internal docs,<br /><span>public manuals, and AI</span>.</h1>
-  <p class="hero-sub">Pageden turns Markdown into a shared workspace your team can edit, approve, publish, sync from Obsidian, and connect to Claude, Codex, or any MCP-compatible agent.</p>
+  <div class="badge"><span class="badge-dot"></span> Agent drafts · Human review · Canonical decisions</div>
+  <h1>Your agent drafts the plan.<br />Your team reviews it.<br /><span>Pageden keeps it canonical.</span></h1>
+  <p class="hero-sub">Your AI keeps making decisions from scattered chats and stale docs. Pageden gives agents and teammates one Markdown workspace to draft plans, review changes, preserve history, and promote accepted decisions into trusted team knowledge.</p>
   <div class="hero-actions">
     <a href="https://go.pageden.app/register" class="btn-primary">
-      Get started free →
+      Start free →
     </a>
-    <a href="https://github.com/PageDen/pageden" class="btn-outline" target="_blank">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/></svg>
-      View on GitHub
+    <a href="#how-it-works" class="btn-outline">
+      See the workflow
     </a>
   </div>
   <div class="hero-trust">
-    <span class="trust-item">✓ Free to get started</span>
+    <span class="trust-item">✓ Human in the loop</span>
     <span class="trust-sep">·</span>
-    <span class="trust-item">✓ Public manuals with custom domains</span>
+    <span class="trust-item">✓ Markdown-native</span>
     <span class="trust-sep">·</span>
-    <span class="trust-item">✓ Self-hostable core</span>
+    <span class="trust-item">✓ Works with Claude, Codex, and MCP</span>
   </div>
 </section>
 
@@ -460,7 +475,7 @@
         <img
           class="app-screenshot"
           src="/screenshots/workspace-document.png"
-          alt="Pageden workspace showing a folder tree, document page, comments, and AI readiness panel"
+          alt="Pageden workspace showing a canonical planning document, comments, history, and AI readiness panel"
           loading="eager"
         />
       </div>
@@ -472,26 +487,43 @@
 <div class="social">
   <div class="social-inner">
     <div class="social-item">
-      <div class="social-num">Cloud</div>
-      <div class="social-label">Managed workspaces</div>
+      <div class="social-num">Drafts</div>
+      <div class="social-label">Agent-created plans</div>
     </div>
     <div class="social-sep"></div>
     <div class="social-item">
-      <div class="social-num">Manuals</div>
-      <div class="social-label">Public folders and docs</div>
+      <div class="social-num">Review</div>
+      <div class="social-label">Human and agent comments</div>
     </div>
     <div class="social-sep"></div>
     <div class="social-item">
-      <div class="social-num">Approvals</div>
-      <div class="social-label">Reviewed and signed docs</div>
+      <div class="social-num">Revisions</div>
+      <div class="social-label">Version-safe updates</div>
     </div>
     <div class="social-sep"></div>
     <div class="social-item">
-      <div class="social-num">MCP</div>
-      <div class="social-label">Permissioned agent access</div>
+      <div class="social-num">Canonical</div>
+      <div class="social-label">Approved source of truth</div>
     </div>
   </div>
 </div>
+
+<!-- SOURCE OF TRUTH -->
+<section class="truth-section">
+  <div class="truth-inner">
+    <div class="truth-copy">
+      <div class="section-tag">Source of truth</div>
+      <h2 class="section-h2">Planning is the wedge. Trusted knowledge is the system.</h2>
+      <p class="section-sub">Agent chats are temporary. Team decisions need a durable home. Pageden turns useful plans, reviews, and decisions into Markdown knowledge with permissions, comments, history, citations, and canonical status, so humans and agents know what to trust next time.</p>
+    </div>
+    <div class="truth-points">
+      <div class="truth-point"><strong>Plans become durable documents</strong><span>Keep agent work out of throwaway chat threads and inside a workspace your team can revisit.</span></div>
+      <div class="truth-point"><strong>Reviews stay attached to the source</strong><span>Comments, decisions, and revisions live with the plan instead of scattering across tools.</span></div>
+      <div class="truth-point"><strong>Accepted work becomes canonical</strong><span>Promote the final plan into trusted team knowledge for the next teammate or agent.</span></div>
+      <div class="truth-point"><strong>Markdown keeps it portable</strong><span>Sync Obsidian, preserve readable files, and avoid trapping your source of truth in a silo.</span></div>
+    </div>
+  </div>
+</section>
 
 <!-- INTEGRATIONS -->
 <div class="integrations">
@@ -523,39 +555,39 @@
   <div class="container">
     <div class="features-header">
       <div class="section-tag">Features</div>
-      <h2 class="section-h2">Built for teams that need docs to do real work</h2>
-      <p class="section-sub">Write private knowledge, publish customer-facing manuals, review controlled documents, and give AI agents the same source of truth.</p>
+      <h2 class="section-h2">Built for teams that plan with agents and keep the record</h2>
+      <p class="section-sub">Give your agent a governed place to draft, your reviewers a durable place to comment, and your team a trusted record of what was decided.</p>
     </div>
     <div class="features-grid">
       <div class="feature-card">
-        <div class="feature-icon">📚</div>
-        <div class="feature-name">Public manuals</div>
-        <div class="feature-desc">Share a document or an entire folder as a public manual with search, tree navigation, mobile-friendly reading, and revocable links.</div>
+        <div class="feature-icon">🤖</div>
+        <div class="feature-name">Agent-drafted plans</div>
+        <div class="feature-desc">Let Claude, Codex, or another MCP agent create and update planning documents inside a governed workspace.</div>
       </div>
       <div class="feature-card">
-        <div class="feature-icon">🌐</div>
-        <div class="feature-name">Custom domains</div>
-        <div class="feature-desc">Put manuals on your own domain while Pageden handles the workspace, share controls, and publishing workflow.</div>
+        <div class="feature-icon">💬</div>
+        <div class="feature-name">Anchored review comments</div>
+        <div class="feature-desc">Reviewers can leave comments tied to the plan instead of losing feedback in chat threads.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📅</div>
+        <div class="feature-name">Version-safe revisions</div>
+        <div class="feature-desc">Track every change, compare revisions, and keep agent edits from silently overwriting the wrong version.</div>
       </div>
       <div class="feature-card">
         <div class="feature-icon">✅</div>
-        <div class="feature-name">Approvals and signatures</div>
-        <div class="feature-desc">Request reviewer approval, track decisions, and show prepared-by and approved-by signature footers on controlled documents.</div>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🤖</div>
-        <div class="feature-name">AI agent access</div>
-        <div class="feature-desc">Connect Claude, Codex, and other MCP clients with controlled read/write access, OAuth on cloud, and revocation when access changes.</div>
+        <div class="feature-name">Canonical decisions</div>
+        <div class="feature-desc">Promote accepted plans into the source of truth so agents and teammates know what to trust.</div>
       </div>
       <div class="feature-card">
         <div class="feature-icon">🔗</div>
-        <div class="feature-name">Obsidian sync and import</div>
-        <div class="feature-desc">Bring an existing vault into Pageden, keep Markdown links and attachments, and use device login or tokens for the Obsidian plugin.</div>
+        <div class="feature-name">Obsidian to team truth</div>
+        <div class="feature-desc">Bring Markdown thinking from Obsidian into a shared workspace when it needs team review.</div>
       </div>
       <div class="feature-card">
         <div class="feature-icon">🔒</div>
-        <div class="feature-name">Admin controls</div>
-        <div class="feature-desc">Manage workspace members, permissions, public sharing, document details, activity history, and agent access from one place.</div>
+        <div class="feature-name">Governed agent access</div>
+        <div class="feature-desc">Control what agents can read or write, with connected apps and revocation visible to admins.</div>
       </div>
     </div>
   </div>
@@ -564,67 +596,67 @@
 <!-- FEATURE SHOWCASE -->
 <div class="showcase">
   <div class="showcase-inner">
-    <!-- Row 1: Editor -->
+    <!-- Row 1: Draft -->
     <div class="showcase-row">
       <div class="showcase-text">
-        <div class="showcase-tag">Workspace</div>
-        <h3 class="showcase-h3">Write, organize, review, and publish from one workspace</h3>
-        <p class="showcase-p">Keep folders, pages, comments, attachments, revision history, approvals, and AI readiness next to the document instead of scattered across tools.</p>
+        <div class="showcase-tag">Draft</div>
+        <h3 class="showcase-h3">Your agent drafts the plan in Markdown</h3>
+        <p class="showcase-p">Ask an agent to turn context, constraints, and existing docs into a structured planning document instead of another disposable chat thread.</p>
         <ul class="showcase-list">
-          <li>Markdown-native document editing</li>
-          <li>Comments, attachments, history, and metadata</li>
-          <li>Approval status and AI readiness in context</li>
+          <li>Agent-written Markdown plans</li>
+          <li>Workspace context and cited source material</li>
+          <li>Durable document, not temporary chat</li>
         </ul>
       </div>
       <div class="showcase-visual screenshot-frame">
         <img
           class="showcase-screenshot"
           src="/screenshots/document-editor.png"
-          alt="Pageden document page with document actions, content, comments, attachments, and AI readiness panels"
+          alt="Pageden document page showing an agent-drafted planning document with comments and AI readiness"
           loading="lazy"
         />
       </div>
     </div>
 
-    <!-- Row 2: Search (flipped) -->
+    <!-- Row 2: Review (flipped) -->
     <div class="showcase-row flip">
       <div class="showcase-text">
-        <div class="showcase-tag">Search</div>
-        <h3 class="showcase-h3">Find the right document fast</h3>
-        <p class="showcase-p">Search across the workspace, navigate folders, and keep public manuals easy to browse for readers who should not need an account.</p>
+        <div class="showcase-tag">Review</div>
+        <h3 class="showcase-h3">Your team reviews with comments attached to the source</h3>
+        <p class="showcase-p">A teammate or second agent can inspect the plan, leave anchored comments, and keep decisions connected to the document they affect.</p>
         <ul class="showcase-list">
-          <li>Instant full-text search</li>
-          <li>Folder tree navigation</li>
-          <li>Public-reader experience for shared manuals</li>
+          <li>Comments tied to the plan</li>
+          <li>Human + agent review loops</li>
+          <li>Decisions attached to the document</li>
         </ul>
       </div>
       <div class="showcase-visual screenshot-frame">
         <img
           class="showcase-screenshot"
-          src="/screenshots/search-results.png"
-          alt="Pageden sidebar search showing a matching document result"
+          src="/screenshots/workspace-document.png"
+          alt="Pageden workspace showing a document with review comments and source-of-truth metadata"
           loading="lazy"
         />
       </div>
     </div>
 
-    <!-- Row 3: AI agents -->
+    <!-- Row 3: Promote -->
     <div class="showcase-row">
       <div class="showcase-text">
-        <div class="showcase-tag">AI agents</div>
-        <h3 class="showcase-h3">Connect agents with permissioned access</h3>
-        <p class="showcase-p">Give Claude, Codex, and other MCP clients a controlled path into your workspace. Cloud workspaces use OAuth; self-hosted installs can use the token-based agent setup.</p>
+        <div class="showcase-tag">Canonical</div>
+        <h3 class="showcase-h3">Revise, audit, and promote the accepted plan</h3>
+        <p class="showcase-p">Resolve comments, inspect the revision history, and promote the accepted version into canonical team knowledge that agents and teammates can trust later.</p>
         <ul class="showcase-list">
-          <li>OAuth connector URL on Pageden Cloud</li>
-          <li>Read-only or write access modes</li>
-          <li>Visible connected apps and revocation</li>
+          <li>Version history and activity trail</li>
+          <li>Conflict-aware or auditable updates</li>
+          <li>Canonical source-of-truth status</li>
         </ul>
       </div>
       <div class="showcase-visual screenshot-frame">
         <img
           class="showcase-screenshot"
           src="/screenshots/ai-agents.png"
-          alt="Pageden AI agents setup page with MCP connector URL and access mode controls"
+          alt="Pageden AI agents setup page with governed MCP access controls"
           loading="lazy"
         />
       </div>
@@ -636,18 +668,18 @@
 <div class="bento-section">
   <div class="bento-header container">
     <div class="section-tag">Everything included</div>
-    <h2 class="section-h2">Everything your team needs</h2>
-    <p class="section-sub">A private knowledge base, a public manual system, and an AI context layer in the same product.</p>
+    <h2 class="section-h2">Everything behind the planning workflow</h2>
+    <p class="section-sub">The planning wedge sits on top of a portable Markdown knowledge base with review, history, permissions, Obsidian sync, and publishing when you need it.</p>
   </div>
   <div class="bento-grid container">
-    <div class="bento-card"><div class="bento-icon">📚</div><div class="bento-name">Public manuals</div><div class="bento-desc">Publish selected documents or folders with search and tree navigation for external readers.</div></div>
-    <div class="bento-card"><div class="bento-icon">🌐</div><div class="bento-name">Custom domains <span class="bento-badge">Cloud</span></div><div class="bento-desc">Serve public manuals from your own hostname while keeping authoring inside Pageden.</div></div>
-    <div class="bento-card"><div class="bento-icon">✅</div><div class="bento-name">Approvals <span class="bento-badge">Cloud</span></div><div class="bento-desc">Route documents to reviewers and keep approval decisions attached to the exact revision.</div></div>
-    <div class="bento-card"><div class="bento-icon">✍️</div><div class="bento-name">Signature footers <span class="bento-badge">Cloud</span></div><div class="bento-desc">Show prepared-by and approved-by signatures in preview, print, PDF, and Markdown export.</div></div>
-    <div class="bento-card"><div class="bento-icon">🤖</div><div class="bento-name">MCP server built-in</div><div class="bento-desc">Expose your knowledge base to Claude, Codex, or any MCP-compatible agent with controlled access.</div></div>
-    <div class="bento-card"><div class="bento-icon">🔗</div><div class="bento-name">Obsidian sync</div><div class="bento-desc">Import and sync vault content with folders, Markdown links, and attachments intact.</div></div>
-    <div class="bento-card"><div class="bento-icon">📅</div><div class="bento-name">Version history</div><div class="bento-desc">Track changes, preview old revisions, and understand what changed before restoring.</div></div>
+    <div class="bento-card"><div class="bento-icon">🤖</div><div class="bento-name">Multi-agent planning</div><div class="bento-desc">Give agents one governed place to draft plans and work from shared context.</div></div>
+    <div class="bento-card"><div class="bento-icon">💬</div><div class="bento-name">Comments and review</div><div class="bento-desc">Keep human and agent feedback attached to the exact document under discussion.</div></div>
+    <div class="bento-card"><div class="bento-icon">📅</div><div class="bento-name">Audit-ready revision history</div><div class="bento-desc">Track changes, preview old revisions, and understand what changed before restoring.</div></div>
+    <div class="bento-card"><div class="bento-icon">✅</div><div class="bento-name">Canonical source status</div><div class="bento-desc">Promote accepted work so teammates and agents know which document to trust.</div></div>
     <div class="bento-card"><div class="bento-icon">🔒</div><div class="bento-name">Permissions and audit</div><div class="bento-desc">Control who can read, edit, publish, approve, or connect tools to a workspace.</div></div>
+    <div class="bento-card"><div class="bento-icon">🔌</div><div class="bento-name">Governed agent access</div><div class="bento-desc">Expose your knowledge base to Claude, Codex, or any MCP-compatible agent with controlled access.</div></div>
+    <div class="bento-card"><div class="bento-icon">🔗</div><div class="bento-name">Obsidian sync</div><div class="bento-desc">Import and sync vault content with folders, Markdown links, and attachments intact.</div></div>
+    <div class="bento-card"><div class="bento-icon">📚</div><div class="bento-name">Public manuals and domains</div><div class="bento-desc">Publish selected documents or folders for external readers, with custom domains on Pageden Cloud.</div></div>
     <div class="bento-card"><div class="bento-icon">🌙</div><div class="bento-name">Self-hostable core</div><div class="bento-desc">Run the core Markdown workspace yourself, or use Pageden Cloud for managed hosting and cloud-only workflows.</div></div>
   </div>
 </div>
@@ -657,24 +689,24 @@
   <div class="container">
     <div class="how-header">
       <div class="section-tag">How it works</div>
-      <h2 class="section-h2">From draft to shared knowledge</h2>
-      <p class="section-sub">Start with a workspace, then decide what stays private, what needs review, and what should become a public manual.</p>
+      <h2 class="section-h2">From agent draft to canonical plan</h2>
+      <p class="section-sub">Start with an agent-generated plan, review it with your team, and turn the accepted version into trusted Markdown knowledge.</p>
     </div>
     <div class="how-steps">
       <div class="how-step">
         <div class="how-num">1</div>
-        <div class="how-step-title">Create or import docs</div>
-        <div class="how-step-desc">Write in the web editor or import an Obsidian vault so existing Markdown becomes searchable and editable in Pageden.</div>
+        <div class="how-step-title">Your agent drafts</div>
+        <div class="how-step-desc">Ask your agent to create a plan in Pageden from your team context, docs, and constraints.</div>
       </div>
       <div class="how-step">
         <div class="how-num">2</div>
-        <div class="how-step-title">Review and control access</div>
-        <div class="how-step-desc">Use permissions, comments, revisions, approvals, and signatures to keep important documents controlled.</div>
+        <div class="how-step-title">Your team reviews</div>
+        <div class="how-step-desc">A teammate or second agent reviews the plan with anchored comments and proposed changes.</div>
       </div>
       <div class="how-step">
         <div class="how-num">3</div>
-        <div class="how-step-title">Publish or connect</div>
-        <div class="how-step-desc">Share folders as public manuals, attach a custom domain on cloud, or connect AI agents to the same approved knowledge base.</div>
+        <div class="how-step-title">The decision becomes canonical</div>
+        <div class="how-step-desc">Resolve feedback, inspect the revision history, and promote the accepted plan as the source everyone can return to.</div>
       </div>
     </div>
   </div>
@@ -683,10 +715,10 @@
 <!-- CTA BANNER -->
 <section class="cta-section">
   <div class="container">
-    <h2>One source of truth —<br />private, public, and AI-ready.</h2>
-    <p>Start with a team knowledge base. Publish manuals, approve policies, sync Obsidian, and connect AI agents when you are ready.</p>
+    <h2>Give your agent somewhere<br />better than chat to plan.</h2>
+    <p>Start with an agent-drafted plan, review it with your team, and keep the accepted version as canonical Markdown knowledge.</p>
     <div class="cta-buttons">
-      <a href="https://go.pageden.app/register" class="btn-white">Get started free →</a>
+      <a href="https://go.pageden.app/register" class="btn-white">Start free →</a>
       <a href="https://github.com/PageDen/pageden" class="btn-ghost" target="_blank">View on GitHub</a>
     </div>
   </div>
@@ -698,7 +730,7 @@
     <div class="footer-top">
       <div class="footer-brand">
         <img src="https://raw.githubusercontent.com/PageDen/pageden/main/apps/web/public/logo-footer.png" alt="Pageden" class="footer-logo" />
-        <p>The shared Markdown knowledge base for internal docs, public manuals, approvals, Obsidian, and AI agents.</p>
+        <p>The Markdown workspace where agents draft plans, teams review decisions, and accepted knowledge becomes canonical.</p>
       </div>
       <div class="footer-col">
         <h4>Product</h4>
