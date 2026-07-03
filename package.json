@@ -13,6 +13,7 @@
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
+    "e2e:real-agents": "pnpm --filter @pageden/web e2e:real-agents",
     "db:generate": "pnpm --filter @pageden/server db:generate",
     "db:migrate": "pnpm --filter @pageden/server db:migrate",
     "db:migrate:dev": "pnpm --filter @pageden/server db:migrate:dev",

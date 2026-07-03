@@ -13,6 +13,18 @@ Set `API_PROXY_TARGET` to point the dev proxy elsewhere. The client base URL is
 `VITE_API_BASE_URL` (defaults to `/api`, same-origin via the proxy, so the `pm_session`
 cookie stays first-party).
 
+## Manual E2E
+
+Run the real two-agent planning workflow when validating MCP planning readiness:
+
+```bash
+pnpm e2e:real-agents
+```
+
+The test creates two separate agent tokens, drives the MCP planning review flow,
+checks unread handoff and browser review UI, finalizes the plan, and writes
+review/final screenshots to Playwright's test output directory.
+
 ## What's here (PR 1 — scaffold + auth)
 
 - Typed `api-client` (`src/lib/api.ts`) with `credentials: include`, a structured `ApiError`,
