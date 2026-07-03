@@ -191,14 +191,18 @@
       background: var(--navy); padding: 36px 24px;
     }
     .social-inner {
-      max-width: 800px; margin: 0 auto;
-      display: flex; align-items: center; justify-content: center;
-      gap: 48px; flex-wrap: wrap;
+      max-width: 980px; margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
-    .social-item { text-align: center; }
+    .social-item {
+      min-width: 0;
+      padding: 0 28px;
+      text-align: center;
+    }
+    .social-item:not(:first-child) { border-left: 1px solid #ffffff20; }
     .social-num { font-size: 28px; font-weight: 800; color: #fff; }
     .social-label { font-size: 13px; color: #6b7280; margin-top: 2px; }
-    .social-sep { width: 1px; height: 40px; background: #ffffff20; }
 
     /* ── INTEGRATIONS ── */
     .integrations { background: var(--gray-light); padding: 40px 24px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
@@ -412,8 +416,11 @@
       .browser-body { height: 280px; }
       .browser-body.screenshot-body { height: auto; }
       .app-sidebar { width: 160px; }
-      .social-inner { gap: 28px; }
-      .social-sep { display: none; }
+      .social-inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .social-item { padding: 18px 16px; }
+      .social-item:not(:first-child) { border-left: 0; }
+      .social-item:nth-child(even) { border-left: 1px solid #ffffff20; }
+      .social-item:nth-child(n+3) { border-top: 1px solid #ffffff20; }
     }
     @media (max-width: 480px) {
       .bento-grid { grid-template-columns: 1fr; }
@@ -490,17 +497,14 @@
       <div class="social-num">Drafts</div>
       <div class="social-label">Agent-created plans</div>
     </div>
-    <div class="social-sep"></div>
     <div class="social-item">
       <div class="social-num">Review</div>
       <div class="social-label">Human and agent comments</div>
     </div>
-    <div class="social-sep"></div>
     <div class="social-item">
       <div class="social-num">Revisions</div>
       <div class="social-label">Version-safe updates</div>
     </div>
-    <div class="social-sep"></div>
     <div class="social-item">
       <div class="social-num">Canonical</div>
       <div class="social-label">Approved source of truth</div>
