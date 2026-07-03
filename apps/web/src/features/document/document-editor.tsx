@@ -190,9 +190,9 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
   return (
     <article className="flex min-h-full flex-col bg-white lg:h-screen">
       <header className="border-b border-slate-200 px-4 py-4 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-[920px] flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-          <div className="min-w-0 pt-0.5">
-            <h1 className="break-words text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:truncate">{doc.title}</h1>
+        <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between 2xl:gap-6">
+          <div className="min-w-0 pt-0.5 2xl:flex-1">
+            <h1 className="break-words text-2xl font-semibold leading-tight tracking-tight text-slate-950">{doc.title}</h1>
             <p className="mt-1 truncate text-xs text-slate-400">{doc.path}</p>
             <p className="mt-0.5 text-xs text-slate-400">
               {doc.updatedByName ? <span className="font-medium text-slate-500">{doc.updatedByName}</span> : null}
@@ -200,7 +200,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
               {timeAgo(doc.updatedAt)}
             </p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 2xl:justify-end">
             <span className="inline-flex">
               <AiReadinessBadge readiness={doc.aiReadiness} />
             </span>
