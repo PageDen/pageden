@@ -826,7 +826,7 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/mcp", async (request, reply) => {
-    const auth = await authenticate(request);
+    const auth = await authenticate(request, { preferBearer: true });
     if (auth) {
       return reply.send({
         ok: true,
@@ -839,7 +839,8 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/mcp", async (request, reply) => {
-    const auth = await requireAuth(request);
+    const auth = await authenticate(request, { preferBearer: true });
+    if (!auth) return mcpAuthenticationRequired(request, reply);
     const body = request.body;
     if (Array.isArray(body)) {
       const responses = await Promise.all(body.map((entry) => handleJsonRpc(entry, auth, request)));

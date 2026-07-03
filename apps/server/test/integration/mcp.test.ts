@@ -765,20 +765,43 @@ describe("MCP agent access", () => {
     });
     expect(tokenRes.statusCode).toBe(201);
     const reviewerToken = tokenRes.json().token as string;
+    const reviewerTokenId = tokenRes.json().id as string;
     await tool(s.token, "pageden_read_document", { documentId: started.id });
 
     const reviewed = toolJson(
-      await tool(reviewerToken, "pageden_review_plan", {
-        documentId: started.id,
-        baseVersion: started.version,
-        summary: "The plan is readable but needs rollback detail.",
-        strengths: ["The goal is clear."],
-        risks: ["Rollback path is not described."],
-        blockingQuestions: ["Who approves production rollout?"],
+      await req({
+        method: "POST",
+        url: "/mcp",
+        headers: bearer(reviewerToken),
+        cookies: s.adminCookie,
+        payload: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "pageden_review_plan",
+            arguments: {
+              documentId: started.id,
+              baseVersion: started.version,
+              summary: "The plan is readable but needs rollback detail.",
+              strengths: ["The goal is clear."],
+              risks: ["Rollback path is not described."],
+              blockingQuestions: ["Who approves production rollout?"],
+            },
+          },
+        },
       }),
     );
     expect(reviewed.version).toBe(started.version);
     expect(reviewed.comments).toHaveLength(4);
+    expect(reviewed.comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authorTokenId: reviewerTokenId,
+          authorLabel: "Reviewer (agent)",
+        }),
+      ]),
+    );
     expect(reviewed.changedSections).toEqual([]);
     expect(reviewed.recommendedWorkflowStatus).toBe("revision");
 

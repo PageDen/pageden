@@ -48,20 +48,7 @@ function bearerToken(request: FastifyRequest): string | null {
   return token.length > 0 ? token : null;
 }
 
-export async function authenticate(request: FastifyRequest): Promise<AuthContext | null> {
-  const opened = openSession(request.cookies[SESSION_COOKIE], env.sessionSecret);
-  if (opened) {
-    const user = await prisma.user.findUnique({
-      where: { id: opened.userId },
-      select: { id: true, sessionVersion: true },
-    });
-    // A valid-but-stale cookie (password changed/reset bumped sessionVersion) is rejected.
-    return user && user.sessionVersion === opened.v ? { userId: user.id, authType: "session" } : null;
-  }
-
-  const rawToken = bearerToken(request);
-  if (!rawToken) return null;
-
+async function authenticateBearerToken(request: FastifyRequest, rawToken: string): Promise<AuthContext | null> {
   const tokenHash = hashToken(rawToken, env.tokenHashSecret);
   const token = await prisma.apiToken.findUnique({
     where: { tokenHash },
@@ -124,6 +111,22 @@ export async function authenticate(request: FastifyRequest): Promise<AuthContext
     tokenScopes: token.scopes,
     tokenWorkspaceId: token.workspaceId,
   };
+}
+
+export async function authenticate(request: FastifyRequest, opts: { preferBearer?: boolean } = {}): Promise<AuthContext | null> {
+  const rawToken = bearerToken(request);
+  if (opts.preferBearer && rawToken) return authenticateBearerToken(request, rawToken);
+  const opened = openSession(request.cookies[SESSION_COOKIE], env.sessionSecret);
+  if (opened) {
+    const user = await prisma.user.findUnique({
+      where: { id: opened.userId },
+      select: { id: true, sessionVersion: true },
+    });
+    // A valid-but-stale cookie (password changed/reset bumped sessionVersion) is rejected.
+    return user && user.sessionVersion === opened.v ? { userId: user.id, authType: "session" } : null;
+  }
+
+  return rawToken ? authenticateBearerToken(request, rawToken) : null;
 }
 
 function shouldTrackAgentTokenUsed(previousLastUsedAt: Date | null, nextLastUsedAt: Date): boolean {

@@ -21,4 +21,5 @@ apps/web/.e2e-storage/
 apps/web/playwright-report/
 apps/web/test-results/
 apps/server/storage/
+apps/server/storage-e2e/
 deploy/**/secrets/

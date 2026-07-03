@@ -83,8 +83,8 @@ export async function unreadDocuments(
         documentId: doc.id,
         createdAt: { gt: cursor.lastReadAt },
         ...(auth.tokenId
-          ? { NOT: { authorTokenId: auth.tokenId } }
-          : { NOT: { authorUserId: auth.userId, authorTokenId: null } }),
+          ? { OR: [{ authorTokenId: null }, { authorTokenId: { not: auth.tokenId } }] }
+          : { OR: [{ authorTokenId: { not: null } }, { authorUserId: { not: auth.userId } }] }),
       };
       const [count, latest] = await Promise.all([
         prisma.documentComment.count({ where: unreadCommentWhere }),
