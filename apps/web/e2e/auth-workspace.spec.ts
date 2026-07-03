@@ -9,10 +9,10 @@ test("auth/workspace: register lands directly in the new workspace", async ({ pa
   const suffix = Date.now().toString(36);
 
   await page.goto("/register");
-  await page.getByLabel("Name").fill("Ada Lovelace");
+  await expect(page.getByLabel("Name")).toHaveCount(0);
+  await expect(page.getByLabel("Company")).toHaveCount(0);
   await page.getByLabel("Email").fill(`ada-${suffix}@example.com`);
   await page.getByLabel("Password", { exact: true }).fill("correct-horse-battery");
-  await page.getByLabel("Company").fill(`Acme ${suffix}`);
 
   // Self-hosted: no Workspace URL field is shown (subdomains are cloud-only).
   await expect(page.getByLabel("Workspace URL")).toHaveCount(0);

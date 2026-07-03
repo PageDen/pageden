@@ -15,13 +15,23 @@ function subdomainFromName(value: string): string {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
 }
 
+function nameFromEmail(value: string): string {
+  const localPart = value.trim().split("@")[0] ?? "";
+  const name = localPart.replace(/[._+-]+/g, " ").trim();
+  return name || "User";
+}
+
+function workspaceNameFromSubdomain(value: string): string {
+  const name = value.trim().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!name) return "Workspace";
+  return name.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 export function RegisterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [companyName, setCompanyName] = useState("");
   const [subdomain, setSubdomain] = useState("");
   const [subdomainEdited, setSubdomainEdited] = useState(false);
   const debouncedSubdomain = useDebouncedValue(subdomain.trim(), 250);
@@ -36,7 +46,15 @@ export function RegisterPage() {
   });
 
   const mutation = useMutation({
-    mutationFn: () => api.register(email, name, password, companyName, subdomain, captchaToken ?? undefined),
+    mutationFn: () =>
+      api.register(
+        email,
+        nameFromEmail(email),
+        password,
+        workspaceNameFromSubdomain(subdomain),
+        subdomain,
+        captchaToken ?? undefined,
+      ),
     onSuccess: (me) => {
       queryClient.setQueryData(["me"], me);
       // Alias the anonymous distinct_id to the new user id BEFORE the
@@ -71,30 +89,24 @@ export function RegisterPage() {
           <p className="text-sm text-slate-500">Free to start. Invite your team later.</p>
         </div>
         <label className="block space-y-1">
-          <span className="text-sm text-slate-600">Name</span>
-          <Input aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} className="h-10" required />
-        </label>
-        <label className="block space-y-1">
           <span className="text-sm text-slate-600">Email</span>
-          <Input type="email" aria-label="Email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} className="h-10" required />
-        </label>
-        <label className="block space-y-1">
-          <span className="text-sm text-slate-600">Password</span>
-          <PasswordInput aria-label="Password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className="h-10" required />
-        </label>
-        <label className="block space-y-1">
-          <span className="text-sm font-medium">Company</span>
           <Input
-            aria-label="Company"
-            value={companyName}
+            type="email"
+            aria-label="Email"
+            autoComplete="username"
+            value={email}
             onChange={(e) => {
-              const nextCompanyName = e.target.value;
-              setCompanyName(nextCompanyName);
-              if (!subdomainEdited) setSubdomain(subdomainFromName(nextCompanyName));
+              const nextEmail = e.target.value;
+              setEmail(nextEmail);
+              if (!subdomainEdited) setSubdomain(subdomainFromName(nextEmail.split("@")[0] ?? ""));
             }}
             className="h-10"
             required
           />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-sm text-slate-600">Password</span>
+          <PasswordInput aria-label="Password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} className="h-10" required />
         </label>
         {authConfig.data?.cloudHosted ? (
           <label className="block space-y-1">
