@@ -95,6 +95,14 @@ function searchQueryVariants(query: string): string[] {
   return variants.slice(0, QUERY_TOKEN_MAX);
 }
 
+function wordPatternForQuery(query: string): string | null {
+  if (query.length < QUERY_TOKEN_MIN) return null;
+  for (let i = 0; i < query.length; i += 1) {
+    if (!isQueryTokenChar(query.charCodeAt(i))) return null;
+  }
+  return `(^|[^[:alnum:]])${query.toLowerCase()}([^[:alnum:]]|$)`;
+}
+
 // Build a short excerpt around the first case-insensitive occurrence of `q` in the body, with the
 // match wrapped in the highlight markers. Returns null when the term isn't in the body (e.g. the
 // document only matched on its title).
@@ -130,6 +138,7 @@ async function searchCandidatePage({
   canonicalOnly: boolean;
 }): Promise<Candidate[]> {
   const usesBody = query.length >= SHORT_QUERY_BODY_MIN;
+  const wordPattern = wordPatternForQuery(query);
   if (usesBody) {
     return prisma.$queryRaw<Candidate[]>`
       SELECT "id", "folderId", "title", "path", "status", "updatedAt"
@@ -144,9 +153,11 @@ async function searchCandidatePage({
         )
       ORDER BY
         (CASE
-          WHEN lower(coalesce("title", '')) LIKE ('%' || lower(${query}) || '%') THEN 0
-          WHEN lower(coalesce("path", '')) LIKE ('%' || lower(${query}) || '%') THEN 1
-          ELSE 2
+          WHEN ${wordPattern}::text IS NOT NULL AND lower(coalesce("title", '')) ~ ${wordPattern} THEN 0
+          WHEN ${wordPattern}::text IS NOT NULL AND lower(coalesce("path", '')) ~ ${wordPattern} THEN 1
+          WHEN lower(coalesce("title", '')) LIKE ('%' || lower(${query}) || '%') THEN 2
+          WHEN lower(coalesce("path", '')) LIKE ('%' || lower(${query}) || '%') THEN 3
+          ELSE 4
         END) ASC,
         (CASE "status" WHEN 'canonical' THEN 0 WHEN 'draft' THEN 1 WHEN 'superseded' THEN 2 ELSE 3 END) ASC,
         word_similarity(lower(${query}), lower(coalesce("title", '') || ' ' || coalesce("path", '') || ' ' || coalesce("searchText", ''))) DESC,

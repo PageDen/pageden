@@ -93,6 +93,30 @@ describe("full-text search", () => {
         updatedById: s.admin.id,
       },
     });
+    await prisma.document.create({
+      data: {
+        workspaceId: s.ws.id,
+        folderId: s.folderId,
+        title: "Permission Model Review",
+        slug: "permission-model-review",
+        path: "engineering/permission-model-review.md",
+        searchText: "Permission docs should not outrank a real mission title.",
+        createdById: s.admin.id,
+        updatedById: s.admin.id,
+      },
+    });
+    await prisma.document.create({
+      data: {
+        workspaceId: s.ws.id,
+        folderId: s.folderId,
+        title: "Staging Decommission Runbook",
+        slug: "staging-decommission-runbook",
+        path: "ops/staging-decommission-runbook.md",
+        searchText: "Decommission also contains mission as a substring.",
+        createdById: s.admin.id,
+        updatedById: s.admin.id,
+      },
+    });
 
     const natural = await req({
       method: "GET",
@@ -100,7 +124,10 @@ describe("full-text search", () => {
       cookies: s.adminCookie,
     });
     expect(natural.statusCode).toBe(200);
-    expect((natural.json().results as Array<{ title: string }>).map((r) => r.title)).toContain("Mission Vision and Core Values");
+    const naturalTitles = (natural.json().results as Array<{ title: string }>).map((r) => r.title);
+    expect(naturalTitles[0]).toBe("Mission Vision and Core Values");
+    expect(naturalTitles).toContain("Permission Model Review");
+    expect(naturalTitles).toContain("Staging Decommission Runbook");
 
     const byPath = await req({
       method: "GET",
