@@ -40,6 +40,8 @@ type IntegrationAuth = {
   config: IntegrationConfig;
 };
 
+type WorkspaceSearchResult = SearchDocumentsResult & { workspaceId: string; workspaceName: string };
+
 /** True if docPath is within any of the allowed folder prefixes (empty = all allowed). */
 function isWithinAllowedFolders(docPath: string, allowedFolders: string[]): boolean {
   if (allowedFolders.length === 0) return true;
@@ -48,6 +50,31 @@ function isWithinAllowedFolders(docPath: string, allowedFolders: string[]): bool
     if (!prefix) return true;
     return docPath.startsWith(prefix + "/") || docPath === `${prefix}.md`;
   });
+}
+
+function mergeWorkspaceSearchResults(
+  resultGroups: Array<{ workspaceId: string; workspaceName: string; results: SearchDocumentsResult[] }>,
+  limit: number,
+): WorkspaceSearchResult[] {
+  const merged: WorkspaceSearchResult[] = [];
+  const seen = new Set<string>();
+  let index = 0;
+
+  while (merged.length < limit) {
+    let added = false;
+    for (const group of resultGroups) {
+      const result = group.results[index];
+      if (!result || seen.has(result.id)) continue;
+      seen.add(result.id);
+      merged.push({ ...result, workspaceId: group.workspaceId, workspaceName: group.workspaceName });
+      added = true;
+      if (merged.length >= limit) break;
+    }
+    if (!added) break;
+    index += 1;
+  }
+
+  return merged;
 }
 
 /** Parse a user-supplied path like "/handbook/notes/my-note" → { folderPath, slug }. */
@@ -801,18 +828,18 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
           searchDocuments({ userId: link.userId, workspaceId: wsId, query, limit, canonicalOnly: request.body.canonicalOnly ?? false }),
         ),
       );
-      const results: Array<SearchDocumentsResult & { workspaceId: string; workspaceName: string }> = [];
+      const resultGroups: Array<{ workspaceId: string; workspaceName: string; results: SearchDocumentsResult[] }> = [];
       const errors: { workspaceId: string; reason: string }[] = [];
       for (let i = 0; i < settled.length; i++) {
         const outcome = settled[i]!;
         const wsId = workspaceIds[i]!;
         if (outcome.status === "fulfilled") {
-          for (const r of outcome.value) results.push({ ...r, workspaceId: wsId, workspaceName: nameById.get(wsId) ?? wsId });
+          resultGroups.push({ workspaceId: wsId, workspaceName: nameById.get(wsId) ?? wsId, results: outcome.value });
         } else {
           errors.push({ workspaceId: wsId, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
         }
       }
-      return { results: results.slice(0, limit), errors };
+      return { results: mergeWorkspaceSearchResults(resultGroups, limit), errors };
     }
 
     // Workspace-level search: canonical only, restricted to allowedFolders
@@ -1397,11 +1424,25 @@ async function callIntegrationTool(
       return mcpText(`Your ${externalProvider} account is not linked to PageDen yet.\nConnect your account here: ${linkResult.connectUrl}`);
     }
 
-    const doc = await prisma.document.findFirst({
-      where: documentId
-        ? { id: documentId, workspaceId: integration.workspaceId, deletedAt: null }
-        : { path: path!, workspaceId: integration.workspaceId, deletedAt: null },
+    const memberships = await prisma.workspaceMembership.findMany({
+      where: { userId: linkResult.userId },
+      select: { workspaceId: true },
     });
+    const workspaceIds = memberships.map((m) => m.workspaceId);
+    const candidates = await prisma.document.findMany({
+      where: documentId
+        ? { id: documentId, workspaceId: { in: workspaceIds }, deletedAt: null }
+        : { path: path!, workspaceId: { in: workspaceIds }, deletedAt: null },
+      orderBy: { updatedAt: "desc" },
+    });
+    let doc = null as (typeof candidates)[number] | null;
+    for (const candidate of candidates) {
+      const role = await resolveDocumentRole(linkResult.userId, candidate.id);
+      if (atLeast(role, "viewer")) {
+        doc = candidate;
+        break;
+      }
+    }
     if (!doc) return mcpText("Document not found.");
 
     const role = await resolveDocumentRole(linkResult.userId, doc.id);
@@ -1416,7 +1457,7 @@ async function callIntegrationTool(
       if (revision) content = await readContent(revision.storageKey);
     }
     await prisma.externalAccountLink.update({ where: { id: linkResult.id }, data: { lastUsedAt: new Date() } });
-    return mcpText(JSON.stringify({ id: doc.id, title: doc.title, path: doc.path, status: doc.status, content }, null, 2));
+    return mcpText(JSON.stringify({ id: doc.id, workspaceId: doc.workspaceId, title: doc.title, path: doc.path, status: doc.status, content }, null, 2));
   }
 
   if (name === "pageden_search_documents") {
@@ -1429,13 +1470,24 @@ async function callIntegrationTool(
     }
 
     const limit = clampSearchLimit(args["limit"], 10);
-    const results = await searchDocuments({
-      userId: linkResult.userId,
-      workspaceId: integration.workspaceId,
-      query,
-      limit,
-      canonicalOnly: Boolean(args["canonicalOnly"] ?? false),
+    const memberships = await prisma.workspaceMembership.findMany({
+      where: { userId: linkResult.userId },
+      select: { workspaceId: true, workspace: { select: { name: true } } },
     });
+    const resultGroups = await Promise.all(
+      memberships.map(async (membership) => ({
+        workspaceId: membership.workspaceId,
+        workspaceName: membership.workspace.name,
+        results: await searchDocuments({
+          userId: linkResult.userId,
+          workspaceId: membership.workspaceId,
+          query,
+          limit,
+          canonicalOnly: Boolean(args["canonicalOnly"] ?? false),
+        }),
+      })),
+    );
+    const results = mergeWorkspaceSearchResults(resultGroups, limit);
     await prisma.externalAccountLink.update({ where: { id: linkResult.id }, data: { lastUsedAt: new Date() } });
     return mcpText(JSON.stringify({ results }, null, 2));
   }
