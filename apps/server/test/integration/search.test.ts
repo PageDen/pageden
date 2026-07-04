@@ -58,6 +58,60 @@ describe("full-text search", () => {
     expect(hit!.snippet).toContain(HL_START + "Laptop" + HL_STOP); // original casing preserved in the snippet
   });
 
+  it("finds path and title terms inside natural-language agent questions", async () => {
+    const s = await baseScenario();
+    const policies = await prisma.folder.create({
+      data: {
+        workspaceId: s.ws.id,
+        name: "Policies",
+        slug: "policies",
+        path: "policies",
+        createdById: s.admin.id,
+        updatedById: s.admin.id,
+      },
+    });
+    const hr = await prisma.folder.create({
+      data: {
+        workspaceId: s.ws.id,
+        parentFolderId: policies.id,
+        name: "HR",
+        slug: "hr",
+        path: "policies/hr",
+        createdById: s.admin.id,
+        updatedById: s.admin.id,
+      },
+    });
+    await prisma.document.create({
+      data: {
+        workspaceId: s.ws.id,
+        folderId: hr.id,
+        title: "Mission Vision and Core Values",
+        slug: "mission-vision-and-core-values.md",
+        path: "policies/hr/mission-vision-and-core-values.md",
+        searchText: "Livro Systems builds practical software for organized company knowledge.",
+        createdById: s.admin.id,
+        updatedById: s.admin.id,
+      },
+    });
+
+    const natural = await req({
+      method: "GET",
+      url: `/api/search?workspaceId=${s.ws.id}&q=${encodeURIComponent("unsa man ang mission sa company?")}`,
+      cookies: s.adminCookie,
+    });
+    expect(natural.statusCode).toBe(200);
+    expect((natural.json().results as Array<{ title: string }>).map((r) => r.title)).toContain("Mission Vision and Core Values");
+
+    const byPath = await req({
+      method: "GET",
+      url: `/api/search?workspaceId=${s.ws.id}&q=${encodeURIComponent("policies/hr/mission-vision-and-core-values.md")}`,
+      cookies: s.adminCookie,
+    });
+    expect((byPath.json().results as Array<{ path: string }>).map((r) => r.path)).toContain(
+      "policies/hr/mission-vision-and-core-values.md",
+    );
+  });
+
   it("keeps one- and two-character queries title-only to avoid body scans", async () => {
     const s = await baseScenario();
     await createDoc(s.ws.id, s.folderId, s.adminCookie, "title-ai", "AI handbook", "nothing relevant in body");
