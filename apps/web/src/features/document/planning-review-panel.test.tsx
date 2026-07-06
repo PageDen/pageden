@@ -357,7 +357,6 @@ describe("PlanningReviewPanel", () => {
         reason: "Ready.",
       },
       blockers: [],
-      approval: { required: false },
     });
 
     renderPanel();

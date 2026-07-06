@@ -3,7 +3,7 @@ import { Activity, AlertTriangle, CheckCircle2, CircleDashed, FileDiff, GitPullR
 import { useMemo, type ReactNode } from "react";
 import type { z } from "zod";
 import type { handoffPacketSchema } from "@pageden/api-types";
-import { api, crudErrorMessage } from "../../lib/api";
+import { api, ApiError, crudErrorMessage } from "../../lib/api";
 import { documentDiffQuery, documentHandoffQuery, documentHistoryQuery, documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
 import { formatDateTime } from "../../lib/format";
 import { Button } from "../../components/ui/button";

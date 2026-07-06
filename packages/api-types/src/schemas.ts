@@ -429,6 +429,8 @@ export const documentCommentSchema = z
     authorLabel: z.string().nullable(),
     resolvedAt: iso.nullable(),
     resolvedById: z.string().nullable(),
+    resolvedByTokenId: z.string().nullable(),
+    resolvedByLabel: z.string().nullable(),
     createdAt: iso,
     updatedAt: iso,
     mentionedUserIds: z.array(z.string()),

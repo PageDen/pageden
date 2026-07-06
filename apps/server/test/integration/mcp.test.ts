@@ -116,7 +116,11 @@ describe("MCP agent access", () => {
       destructiveHint: true,
       openWorldHint: false,
     });
-    expect(annotationsByName.get("pageden_review_plan")).toMatchObject({ title: "Review planning document", readOnlyHint: false, destructiveHint: false });
+    expect(tools.find((t) => t.name === "pageden_review_plan")?.annotations).toMatchObject({
+      title: "Review planning document",
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
 
     const search = await tool(s.token, "pageden_search", { workspaceId: s.ws.id, query: "Runbook" });
     expect(search.statusCode).toBe(200);

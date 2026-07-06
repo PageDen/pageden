@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { writeAuditEvent } from "../audit.js";
-import { authenticate, requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
+import { authenticate, requireTokenScope, type AuthContext } from "../auth.js";
 import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
