@@ -76,12 +76,6 @@ test("manual real two-agent planning workflow reaches canonical accepted state",
   const { workspace } = await json<CurrentWorkspace>(
     await page.request.get(`${ORIGIN}/api/workspaces/current`, { headers: csrfHeaders }),
   );
-  await json(
-    await page.request.put(`${ORIGIN}/api/workspaces/${workspace.id}/settings/approvals`, {
-      headers: csrfHeaders,
-      data: { enabled: false },
-    }),
-  );
 
   const agentA = await createAgentToken(page, workspace.id, `Agent A Real E2E ${suffix}`);
   const agentB = await createAgentToken(page, workspace.id, `Agent B Real E2E ${suffix}`);
@@ -133,7 +127,7 @@ test("manual real two-agent planning workflow reaches canonical accepted state",
     started.id,
     version,
     "open-questions",
-    "- RESOLVED: Should unresolved comments block finalization? Yes.\n- Deferred: Should approval routing be part of this run? Covered by browser E2E.\n",
+    "- RESOLVED: Should unresolved comments block finalization? Yes.\n",
   );
   version = await replaceSection(
     page,

@@ -38,14 +38,6 @@ async function workspaceId(page: Page): Promise<string> {
   return current.workspace.id;
 }
 
-async function setApprovals(page: Page, workspaceId: string, enabled: boolean) {
-  const response = await page.request.put(`${ORIGIN}/api/workspaces/${workspaceId}/settings/approvals`, {
-    headers: csrfHeaders,
-    data: { enabled },
-  });
-  expect(response.ok()).toBeTruthy();
-}
-
 async function createPlanningDocument(page: Page, workspaceId: string, suffix: string, titlePrefix: string): Promise<{
   folderSlug: string;
   docSlug: string;
@@ -123,7 +115,6 @@ test("planning review: dashboard visibility, blocker display, and safe web final
   const suffix = Date.now().toString(36);
   await login(page);
   const wsId = await workspaceId(page);
-  await setApprovals(page, wsId, false);
   const seeded = await createPlanningDocument(page, wsId, suffix, "Browser Planning");
 
   const comment = await json<CommentCreate>(await page.request.post(`${ORIGIN}/api/documents/${seeded.doc.id}/comments`, {
@@ -171,18 +162,4 @@ test("planning review: dashboard visibility, blocker display, and safe web final
   await finalized;
   await expect(reviewPanel.getByText("Canonical plan is accepted.")).toBeVisible();
   await expect(reviewPanel.getByRole("button", { name: "Mark canonical" })).toHaveCount(0);
-});
-
-test("planning review: approval-enabled workspaces stop at approval required", async ({ page }) => {
-  const suffix = Date.now().toString(36);
-  await login(page);
-  const wsId = await workspaceId(page);
-  await setApprovals(page, wsId, true);
-  const seeded = await createPlanningDocument(page, wsId, suffix, "Approval Planning");
-
-  await page.goto(`/w/${wsId}/p/${seeded.folderSlug}/${seeded.docSlug}`);
-  await expect(page.locator("header").getByRole("heading", { name: seeded.title })).toBeVisible();
-  await expect(page.getByText("Approval required before canonical promotion.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Mark canonical" })).toHaveCount(0);
-  await expect(page.locator("header").getByText("Draft", { exact: true })).toBeVisible();
 });

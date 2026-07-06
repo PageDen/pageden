@@ -106,12 +106,11 @@ export function documentContentWithStatus(content: string, status: DocumentStatu
   let skippingKey: string | null = null;
 
   for (const line of lines) {
-    const keyMatch = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (keyMatch) {
-      const key = keyMatch[1]!.toLowerCase();
+    const key = frontmatterKey(line);
+    if (key !== null) {
       skippingKey = key === "status" || key === "supersededby" ? key : null;
       if (key === "status" || key === "supersededby") continue;
-    } else if (skippingKey && /^\s*-\s+/.test(line)) {
+    } else if (skippingKey && isYamlListContinuation(line)) {
       continue;
     } else {
       skippingKey = null;
@@ -122,6 +121,35 @@ export function documentContentWithStatus(content: string, status: DocumentStatu
   const cleaned = kept.filter((line, index, arr) => line.trim() || arr[index - 1]?.trim() || arr[index + 1]?.trim());
   cleaned.unshift(statusLine);
   return `---\n${cleaned.join("\n").trim()}\n---\n\n${body.replace(/^\s+/, "")}`;
+}
+
+function frontmatterKey(line: string): string | null {
+  const colon = line.indexOf(":");
+  if (colon <= 0) return null;
+
+  for (let index = 0; index < colon; index += 1) {
+    const code = line.charCodeAt(index);
+    const isAlphaNumeric =
+      (code >= 48 && code <= 57) ||
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122);
+    if (!isAlphaNumeric && code !== 45 && code !== 95) return null;
+  }
+
+  return line.slice(0, colon).toLowerCase();
+}
+
+function isYamlListContinuation(line: string): boolean {
+  let index = 0;
+  while (index < line.length) {
+    const code = line.charCodeAt(index);
+    if (code !== 32 && code !== 9) break;
+    index += 1;
+  }
+
+  if (line.charCodeAt(index) !== 45) return false;
+  const next = line.charCodeAt(index + 1);
+  return next === 32 || next === 9;
 }
 
 type RevisionListRow = {
