@@ -6,9 +6,10 @@ import { requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
 import { writeAuditEvent } from "../audit.js";
 import { canonicalize, checksum as computeChecksum } from "../checksum.js";
 import { aiReadinessForDocument, documentContext } from "../ai-readiness.js";
-import { implementationReadinessFor, taskPacketFor, type TaskPacket } from "./handoff.js";
+import { implementationReadinessFor, taskPacketFor, type Decision, type TaskPacket } from "./handoff.js";
 import { documentRelationships } from "./relationships.js";
-import { replaceSection, suggestAnchors } from "./sections.js";
+import { addDecisionToContent, DecisionWriteError } from "./decisions.js";
+import { findRange, replaceSection, sectionRanges, suggestAnchors } from "./sections.js";
 import { documentStatsFor } from "./stats.js";
 import { documentDiffFor } from "./diff.js";
 
@@ -91,6 +92,64 @@ export async function metadataFromContent(
   });
   const supersededById = target?.id && target.id !== exceptDocumentId ? target.id : null;
   return { status, supersededById };
+}
+
+export function documentContentWithStatus(content: string, status: DocumentStatus): string {
+  const statusLine = `status: ${status}`;
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return `---\n${statusLine}\n---\n\n${content}`;
+
+  const rawFrontmatter = match[1] ?? "";
+  const body = content.slice(match[0].length);
+  const lines = rawFrontmatter.split(/\r?\n/);
+  const kept: string[] = [];
+  let skippingKey: string | null = null;
+
+  for (const line of lines) {
+    const key = frontmatterKey(line);
+    if (key !== null) {
+      skippingKey = key === "status" || key === "supersededby" ? key : null;
+      if (key === "status" || key === "supersededby") continue;
+    } else if (skippingKey && isYamlListContinuation(line)) {
+      continue;
+    } else {
+      skippingKey = null;
+    }
+    kept.push(line);
+  }
+
+  const cleaned = kept.filter((line, index, arr) => line.trim() || arr[index - 1]?.trim() || arr[index + 1]?.trim());
+  cleaned.unshift(statusLine);
+  return `---\n${cleaned.join("\n").trim()}\n---\n\n${body.replace(/^\s+/, "")}`;
+}
+
+function frontmatterKey(line: string): string | null {
+  const colon = line.indexOf(":");
+  if (colon <= 0) return null;
+
+  for (let index = 0; index < colon; index += 1) {
+    const code = line.charCodeAt(index);
+    const isAlphaNumeric =
+      (code >= 48 && code <= 57) ||
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122);
+    if (!isAlphaNumeric && code !== 45 && code !== 95) return null;
+  }
+
+  return line.slice(0, colon).toLowerCase();
+}
+
+function isYamlListContinuation(line: string): boolean {
+  let index = 0;
+  while (index < line.length) {
+    const code = line.charCodeAt(index);
+    if (code !== 32 && code !== 9) break;
+    index += 1;
+  }
+
+  if (line.charCodeAt(index) !== 45) return false;
+  const next = line.charCodeAt(index + 1);
+  return next === 32 || next === 9;
 }
 
 type RevisionListRow = {
@@ -205,6 +264,7 @@ const HISTORY_EVENT_ACTIONS = [
   "document_created_by_agent",
   "document_updated_by_agent",
   "document_appended_by_agent",
+  "document_plan_finalized",
   "document_revision_metadata_updated",
 ] as const;
 
@@ -396,6 +456,274 @@ export async function applyDocumentWrite(opts: {
     });
     return { ok: true, documentId: doc.id, version: revision.id, checksum: sum, updatedAt: updated.updatedAt };
   });
+}
+
+export async function promoteDocumentToCanonical(opts: {
+  documentId: string;
+  auth: AuthContext;
+  changeSource: ChangeSource;
+}): Promise<WriteOutcome> {
+  const doc = await prisma.document.findFirst({
+    where: { id: opts.documentId, deletedAt: null },
+    select: {
+      id: true,
+      currentVersionId: true,
+      currentChecksum: true,
+      updatedAt: true,
+      status: true,
+      supersededById: true,
+    },
+  });
+  if (!doc) return { ok: false, status: "not_found" };
+
+  const az = await authorizeDocumentRole(opts.auth, doc.id, "editor");
+  if (!az.ok) return az;
+
+  if (doc.status === "canonical" && doc.supersededById === null) {
+    return {
+      ok: true,
+      documentId: doc.id,
+      version: doc.currentVersionId ?? "",
+      checksum: doc.currentChecksum ?? "",
+      updatedAt: doc.updatedAt,
+      noOp: true,
+    };
+  }
+
+  let content = "";
+  if (doc.currentVersionId) {
+    const revision = await prisma.documentRevision.findUnique({
+      where: { id: doc.currentVersionId },
+      select: { storageKey: true },
+    });
+    if (revision) content = await readContent(revision.storageKey);
+  }
+
+  return applyDocumentWrite({
+    documentId: doc.id,
+    auth: opts.auth,
+    baseVersion: doc.currentVersionId ?? "",
+    content: documentContentWithStatus(content, "canonical"),
+    changeSource: opts.changeSource,
+    allowNonCanonical: true,
+  });
+}
+
+type PlanningFinalizeResult =
+  | {
+      ok: true;
+      workspaceId: string;
+      documentId: string;
+      version: string;
+      checksum: string;
+      updatedAt: string;
+      status: "canonical";
+      workflowStatus: "accepted";
+      decision: Decision | null;
+      blockers: [];
+    }
+  | { ok: false; status: "not_found" | "forbidden" | "conflict"; currentVersion?: string }
+  | { ok: false; status: "plan_not_ready"; message: string; blockers: string[] };
+
+async function finalizePlanningDocumentForWeb(opts: {
+  documentId: string;
+  auth: AuthContext;
+  baseVersion: string;
+  finalDecisionText?: string;
+  owner?: string;
+  reason?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}): Promise<PlanningFinalizeResult> {
+  const doc = await prisma.document.findFirst({
+    where: { id: opts.documentId, deletedAt: null },
+    select: { id: true, workspaceId: true, currentVersionId: true, currentChecksum: true, updatedAt: true, status: true, supersededById: true },
+  });
+  if (!doc) return { ok: false, status: "not_found" };
+
+  const az = await authorizeDocumentRole(opts.auth, doc.id, "editor");
+  if (!az.ok) return az;
+  if ((doc.currentVersionId ?? "") !== opts.baseVersion) return { ok: false, status: "conflict", currentVersion: doc.currentVersionId ?? "" };
+  if (doc.status !== "draft" && doc.status !== "canonical") {
+    const message = `Cannot finalize a ${doc.status} document.`;
+    return { ok: false, status: "plan_not_ready", message, blockers: [message] };
+  }
+
+  let currentContent = "";
+  if (doc.currentVersionId) {
+    const revision = await prisma.documentRevision.findUnique({ where: { id: doc.currentVersionId }, select: { storageKey: true } });
+    if (revision) currentContent = await readContent(revision.storageKey);
+  }
+
+  let nextContent = currentContent;
+  if (opts.finalDecisionText && isPlanningSectionPlaceholder(nextContent, "final-plan")) {
+    nextContent = replaceSection(nextContent, "final-plan", `${opts.finalDecisionText.trim()}\n`)?.body ?? nextContent;
+  }
+
+  const comments = await prisma.documentComment.findMany({
+    where: { documentId: doc.id, resolvedAt: null },
+    select: { id: true, body: true, sectionAnchor: true },
+    orderBy: { createdAt: "asc" },
+    take: 100,
+  });
+  const packet = taskPacketFor({
+    status: doc.status,
+    supersededBy: null,
+    context: documentContext(nextContent),
+    comments,
+  });
+  const blockers = planningFinalizationBlockers(packet, nextContent);
+  if (blockers.length > 0) {
+    return { ok: false, status: "plan_not_ready", message: `Plan is not ready to finalize: ${blockers.join(" ")}`, blockers };
+  }
+
+  let decision = packet.decisions.find((item) => item.id === "final-plan") ?? null;
+  if (!decision) {
+    const added = addDecisionToContent(nextContent, {
+      id: "final-plan",
+      status: "accepted",
+      owner: opts.owner ?? packet.workflow?.leadAgent ?? "human",
+      decision: opts.finalDecisionText ?? "This plan is accepted as the current source of truth.",
+      reason: opts.reason ?? "Review comments were resolved and remaining open questions were handled or deferred.",
+    });
+    nextContent = added.body;
+    decision = added.decision;
+  }
+
+  const acceptedDraftContent = contentWithPlanningWorkflowStatus(nextContent, "accepted");
+  const outcome = await applyDocumentWrite({
+    documentId: doc.id,
+    auth: opts.auth,
+    baseVersion: opts.baseVersion,
+    content: documentContentWithStatus(acceptedDraftContent, "canonical"),
+    changeSource: "web_app",
+    allowNonCanonical: doc.status === "draft",
+  });
+  if (!outcome.ok) return planningWriteFailure(outcome, "Finalize plan failed.");
+  await writeAuditEvent({
+    workspaceId: doc.workspaceId,
+    userId: opts.auth.userId,
+    action: "document_plan_finalized",
+    targetType: "document",
+    targetId: doc.id,
+    ipAddress: opts.ipAddress,
+    userAgent: opts.userAgent,
+    metadata: { version: outcome.version, decisionId: decision?.id ?? null },
+  });
+  return planningFinalizeSuccess({
+    workspaceId: doc.workspaceId,
+    documentId: doc.id,
+    outcome,
+    decision,
+  });
+}
+
+function planningFinalizeSuccess(opts: {
+  workspaceId: string;
+  documentId: string;
+  outcome: WriteOutcome;
+  decision: Decision | null;
+}): PlanningFinalizeResult {
+  return {
+    ok: true,
+    workspaceId: opts.workspaceId,
+    documentId: opts.documentId,
+    version: opts.outcome.version ?? "",
+    checksum: opts.outcome.checksum ?? "",
+    updatedAt: opts.outcome.updatedAt?.toISOString() ?? new Date().toISOString(),
+    status: "canonical",
+    workflowStatus: "accepted",
+    decision: opts.decision,
+    blockers: [],
+  };
+}
+
+function planningWriteFailure(outcome: WriteOutcome, fallback: string): PlanningFinalizeResult {
+  if (outcome.status === "not_found") return { ok: false, status: "not_found" };
+  if (outcome.status === "forbidden") return { ok: false, status: "forbidden" };
+  if (outcome.status === "conflict") return { ok: false, status: "conflict", currentVersion: outcome.currentVersion };
+  const message = outcome.status ?? fallback;
+  return { ok: false, status: "plan_not_ready", message, blockers: [message] };
+}
+
+function planningFinalizationBlockers(packet: TaskPacket, content: string): string[] {
+  const blockers: string[] = [];
+  const openCommentCount = packet.openCommentsBySection.reduce((sum, group) => sum + group.count, 0);
+  if (packet.workflow?.workflow !== "multi-agent-planning") blockers.push("Document is not a multi-agent planning workflow.");
+  if (openCommentCount > 0) blockers.push(`${openCommentCount} unresolved comment${openCommentCount === 1 ? "" : "s"} remain.`);
+  if (packet.openQuestions.length > 0) blockers.push(`${packet.openQuestions.length} open question${packet.openQuestions.length === 1 ? "" : "s"} remain.`);
+  if (packet.acceptanceCriteria.length === 0) blockers.push("Acceptance criteria are required before finalization.");
+  for (const section of placeholderPlanningSections(content)) blockers.push(`${section} section still contains placeholder content.`);
+  const finalDecision = packet.decisions.find((decision) => decision.id === "final-plan");
+  if (finalDecision && finalDecision.status.toLowerCase() !== "accepted") blockers.push("Decision final-plan already exists but is not accepted.");
+  return blockers;
+}
+
+function contentWithPlanningWorkflowStatus(content: string, workflowStatus: string): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) {
+    return `---${newline}workflow: multi-agent-planning${newline}workflowStatus: ${workflowStatus}${newline}---${newline}${newline}${content}`;
+  }
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const withWorkflow = upsertFrontmatterScalar(raw, "workflow", "multi-agent-planning");
+  const nextFrontmatter = upsertFrontmatterScalar(withWorkflow, "workflowStatus", workflowStatus);
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
+function upsertFrontmatterScalar(raw: string, key: string, value: string): string {
+  const lines = raw.split(/\r?\n/);
+  const index = lines.findIndex((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}:`));
+  const nextLine = `${key}: ${value}`;
+  if (index >= 0) {
+    lines[index] = nextLine;
+    return lines.join("\n").trimEnd();
+  }
+  return [...lines, nextLine].join("\n").trimEnd();
+}
+
+const REQUIRED_PLANNING_SECTION_LABELS: Record<string, string> = {
+  assumptions: "Assumptions",
+  "proposed-plan": "Proposed Plan",
+  risks: "Risks",
+  "final-plan": "Final Plan",
+  "acceptance-criteria": "Acceptance Criteria",
+};
+
+function placeholderPlanningSections(content: string): string[] {
+  return Object.entries(REQUIRED_PLANNING_SECTION_LABELS)
+    .filter(([anchor]) => isPlanningSectionPlaceholder(content, anchor))
+    .map(([, label]) => label);
+}
+
+function isPlanningSectionPlaceholder(content: string, anchor: string): boolean {
+  const context = documentContext(content);
+  const body = context.body;
+  const lines = body.split("\n");
+  const ranges = sectionRanges(body);
+  const range = findRange(ranges, anchor);
+  if (!range) return true;
+  const nextPeerOrParent = ranges.find((candidate) => candidate.headingLine > range.headingLine && candidate.level <= range.level);
+  const sectionBody = lines.slice(range.contentStart, nextPeerOrParent?.headingLine ?? lines.length).join("\n");
+  return isPlaceholderOnly(sectionBody);
+}
+
+function isPlaceholderOnly(value: string): boolean {
+  const normalized = value
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^[-*+]\s+\[[ x]\]\s+/i, "")
+        .replace(/^[-*+]\s+/, "")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+    .join("\n");
+  return normalized === "" || normalized === "tbd" || normalized === "tbd." || normalized === "todo" || normalized === "todo.";
 }
 
 async function writeStatusTransitionAudit(
@@ -941,8 +1269,19 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
     }
   });
 
+  app.post<{ Params: { id: string } }>("/api/documents/:id/mark-canonical", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const outcome = await promoteDocumentToCanonical({
+      documentId: request.params.id,
+      auth,
+      changeSource: "web_app",
+    });
+    return sendWriteOutcome(reply, outcome);
+  });
+
   // Update from the web app.
-  app.put<{ Params: { id: string }; Body: { baseVersion?: string; title?: string; content?: string } }>(
+  app.put<{ Params: { id: string }; Body: { baseVersion?: string; title?: string; content?: string; allowDraft?: boolean } }>(
     "/api/documents/:id",
     async (request, reply) => {
       const auth = await requireAuth(request);
@@ -950,7 +1289,9 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       const baseVersion = request.body.baseVersion;
       if (!baseVersion) return validationError(reply, { baseVersion: "baseVersion is required." });
       if (request.body.content === undefined) return validationError(reply, { content: "content is required." });
-
+      const current = request.body.allowDraft
+        ? await prisma.document.findFirst({ where: { id: request.params.id, deletedAt: null }, select: { status: true } })
+        : null;
       const outcome = await applyDocumentWrite({
         documentId: request.params.id,
         auth,
@@ -958,10 +1299,128 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
         content: request.body.content,
         title: request.body.title?.trim(),
         changeSource: "web_app",
+        allowNonCanonical: request.body.allowDraft === true && current?.status === "draft",
       });
       return sendWriteOutcome(reply, outcome);
     },
   );
+
+  app.post<{
+    Params: { id: string };
+    Body: { baseVersion?: string; finalDecisionText?: string; owner?: string; reason?: string };
+  }>("/api/documents/:id/finalize-plan", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const baseVersion = request.body.baseVersion;
+    if (!baseVersion) return validationError(reply, { baseVersion: "baseVersion is required." });
+    const result = await finalizePlanningDocumentForWeb({
+      documentId: request.params.id,
+      auth,
+      baseVersion,
+      finalDecisionText: request.body.finalDecisionText?.trim() || undefined,
+      owner: request.body.owner?.trim() || undefined,
+      reason: request.body.reason?.trim() || undefined,
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"],
+    });
+    if (result.ok) {
+      return reply.send({
+        workspaceId: result.workspaceId,
+        documentId: result.documentId,
+        version: result.version,
+        checksum: result.checksum,
+        updatedAt: result.updatedAt,
+        status: result.status,
+        workflowStatus: result.workflowStatus,
+        decision: result.decision,
+        blockers: result.blockers,
+      });
+    }
+    if (result.status === "not_found") return notFound(reply, "Document not found.");
+    if (result.status === "forbidden") return forbidden(reply, "You do not have permission to edit this document.");
+    if (result.status === "conflict") return conflict(reply, result.currentVersion ?? "", "This document changed on the server after you downloaded it.");
+    const planError = result as Extract<PlanningFinalizeResult, { status: "plan_not_ready" }>;
+    return reply.code(409).send({ error: "plan_not_ready", message: planError.message, blockers: planError.blockers });
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      baseVersion?: string;
+      id?: string;
+      status?: string;
+      owner?: string;
+      decision?: string;
+      reason?: string;
+      replaces?: string | null;
+      allowDraft?: boolean;
+    };
+  }>("/api/documents/:id/decisions", async (request, reply) => {
+    const auth = await requireAuth(request);
+    requireTokenScope(auth, "update");
+    const baseVersion = request.body.baseVersion;
+    const fields: Record<string, string> = {};
+    if (!baseVersion) fields.baseVersion = "baseVersion is required.";
+    if (!request.body.id?.trim()) fields.id = "id is required.";
+    if (!request.body.status?.trim()) fields.status = "status is required.";
+    if (!request.body.owner?.trim()) fields.owner = "owner is required.";
+    if (!request.body.decision?.trim()) fields.decision = "decision is required.";
+    if (!request.body.reason?.trim()) fields.reason = "reason is required.";
+    if (Object.keys(fields).length > 0) return validationError(reply, fields);
+
+    const doc = await prisma.document.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      select: { id: true, currentVersionId: true, status: true },
+    });
+    if (!doc) return notFound(reply, "Document not found.");
+    let body = "";
+    if (doc.currentVersionId) {
+      const revision = await prisma.documentRevision.findUnique({
+        where: { id: doc.currentVersionId },
+        select: { storageKey: true },
+      });
+      if (revision) body = await readContent(revision.storageKey);
+    }
+
+    let nextBody: string;
+    let decision;
+    try {
+      const added = addDecisionToContent(body, {
+        id: request.body.id!,
+        status: request.body.status!,
+        owner: request.body.owner!,
+        decision: request.body.decision!,
+        reason: request.body.reason!,
+        replaces: request.body.replaces,
+      });
+      nextBody = added.body;
+      decision = added.decision;
+    } catch (error) {
+      if (error instanceof DecisionWriteError && error.code === "duplicate_decision") {
+        return reply.code(409).send({ error: "duplicate_decision", message: error.message });
+      }
+      if (error instanceof DecisionWriteError) return validationError(reply, error.fields);
+      throw error;
+    }
+
+    const outcome = await applyDocumentWrite({
+      documentId: doc.id,
+      auth,
+      baseVersion: baseVersion!,
+      content: nextBody,
+      changeSource: "web_app",
+      allowNonCanonical: request.body.allowDraft === true && doc.status === "draft",
+    });
+    if (!outcome.ok) return sendWriteOutcome(reply, outcome);
+    return reply.send({
+      id: outcome.documentId,
+      version: outcome.version,
+      checksum: outcome.checksum,
+      updatedAt: outcome.updatedAt?.toISOString(),
+      noOp: outcome.noOp ?? false,
+      decision,
+    });
+  });
 
   // Push from the Obsidian plugin.
   app.post<{ Params: { id: string }; Body: { baseVersion?: string; checksum?: string; content?: string } }>(
@@ -994,7 +1453,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
   // baseVersion model so this is just a thin wrapper around applyDocumentWrite.
   app.post<{
     Params: { id: string };
-    Body: { anchor?: string; content?: string; baseVersion?: string; mode?: string };
+    Body: { anchor?: string; content?: string; baseVersion?: string; mode?: string; allowDraft?: boolean };
   }>(
     "/api/documents/:id/sections",
     { config: { rateLimit: { max: Number(process.env.SECTION_WRITE_RATE_LIMIT_MAX ?? 60), timeWindow: "1 minute" } } },
@@ -1047,6 +1506,7 @@ export async function registerDocumentRoutes(app: FastifyInstance): Promise<void
       baseVersion: baseVersion!,
       content: spliced.body,
       changeSource: "agent",
+      allowNonCanonical: request.body.allowDraft === true && doc.status === "draft",
     });
     if (outcome.ok) {
       return reply.send({
@@ -1557,11 +2017,24 @@ export async function buildHandoffPacket(
     orderBy: { createdAt: "asc" },
     take: 50,
   });
+  const activeClaim = await prisma.documentClaim.findFirst({
+    where: { documentId: doc.id, releasedAt: null, expiresAt: { gt: new Date() } },
+    select: { id: true, actorLabel: true, note: true, expiresAt: true },
+    orderBy: { expiresAt: "asc" },
+  });
   const supersededBy =
     doc.supersededBy && !doc.supersededBy.deletedAt
       ? { id: doc.supersededBy.id, title: doc.supersededBy.title, path: doc.supersededBy.path }
       : null;
   const packet = taskPacketFor({ status: doc.status, supersededBy, context, comments });
+  packet.activeClaim = activeClaim
+    ? {
+        id: activeClaim.id,
+        actorLabel: activeClaim.actorLabel,
+        note: activeClaim.note,
+        expiresAt: activeClaim.expiresAt.toISOString(),
+      }
+    : null;
   return {
     status: "ok",
     value: {

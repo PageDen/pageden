@@ -68,6 +68,25 @@ export interface TaskPacket {
   summary: string;
   status: DocumentStatus;
   supersededBy: { id: string; title: string; path: string } | null;
+  workflow: {
+    workflow: string;
+    workflowStatus: string | null;
+    reviewRound: number | null;
+    leadAgent: string | null;
+    reviewAgent: string | null;
+  } | null;
+  recommendedAction: "comment_only" | "revise" | "safe_edit" | "finalize" | "human_review" | null;
+  openCommentsBySection: Array<{
+    sectionAnchor: string | null;
+    count: number;
+    comments: Array<{ id?: string; body: string }>;
+  }>;
+  activeClaim?: {
+    id: string;
+    actorLabel: string | null;
+    note: string | null;
+    expiresAt: string;
+  } | null;
   currentPhase: string | null;
   nextSteps: string[];
   acceptanceCriteria: string[];
@@ -420,11 +439,21 @@ export function taskPacketFor({
   const tests = sectionByPattern(SECTION_PATTERNS.tests);
   const nonGoals = sectionByPattern(SECTION_PATTERNS.nonGoals);
   const openQ = sectionByPattern(SECTION_PATTERNS.openQuestions);
+  const workflow = workflowMetadata(context.frontmatter);
+  const groupedComments = groupCommentsBySection(comments ?? []);
 
   return {
     summary: condense(summary, 480),
     status,
     supersededBy,
+    workflow,
+    recommendedAction: recommendedActionFor({
+      status,
+      workflowStatus: workflow?.workflowStatus ?? null,
+      openQuestionCount: collectBullets(openQ?.content).length,
+      openCommentCount: comments?.length ?? 0,
+    }),
+    openCommentsBySection: groupedComments,
     currentPhase: currentPhaseSection?.heading ?? null,
     nextSteps: collectBullets(nextStepsSection?.content),
     acceptanceCriteria: collectBullets(acceptance?.content),
@@ -436,6 +465,64 @@ export function taskPacketFor({
     prLinks: extractPrLinks(context.body, context.frontmatter),
     implementationReadiness: implementationReadinessFor({ status, context, comments }),
   };
+}
+
+function workflowMetadata(frontmatter: Record<string, string | string[]>): TaskPacket["workflow"] {
+  const workflow = frontmatterString(frontmatter.workflow);
+  if (workflow !== "multi-agent-planning") return null;
+  return {
+    workflow,
+    workflowStatus: frontmatterString(frontmatter.workflowStatus),
+    reviewRound: frontmatterNumber(frontmatter.reviewRound),
+    leadAgent: frontmatterString(frontmatter.leadAgent),
+    reviewAgent: frontmatterString(frontmatter.reviewAgent),
+  };
+}
+
+function frontmatterString(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0]?.trim() || null;
+  return value?.trim() || null;
+}
+
+function frontmatterNumber(value: string | string[] | undefined): number | null {
+  const raw = frontmatterString(value);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function groupCommentsBySection(comments: ReadinessComment[]): TaskPacket["openCommentsBySection"] {
+  const groups = new Map<string, { sectionAnchor: string | null; comments: Array<{ id?: string; body: string }> }>();
+  for (const comment of comments) {
+    const sectionAnchor = comment.sectionAnchor?.trim() || null;
+    const key = sectionAnchor ?? "__document__";
+    const group = groups.get(key) ?? { sectionAnchor, comments: [] };
+    group.comments.push({ id: comment.id, body: condense(comment.body, 240) });
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => ({ ...group, count: group.comments.length }));
+}
+
+function recommendedActionFor({
+  status,
+  workflowStatus,
+  openQuestionCount,
+  openCommentCount,
+}: {
+  status: DocumentStatus;
+  workflowStatus: string | null;
+  openQuestionCount: number;
+  openCommentCount: number;
+}): TaskPacket["recommendedAction"] {
+  if (!workflowStatus) return null;
+  if (status !== "draft" && status !== "canonical") return "human_review";
+  if (workflowStatus === "review") return "comment_only";
+  if (workflowStatus === "revision") return openCommentCount > 0 ? "revise" : "safe_edit";
+  if (workflowStatus === "final-review") return openQuestionCount > 0 || openCommentCount > 0 ? "comment_only" : "human_review";
+  if (workflowStatus === "accepted") return openQuestionCount > 0 || openCommentCount > 0 ? "human_review" : "finalize";
+  if (workflowStatus === "drafting") return "safe_edit";
+  if (workflowStatus === "deferred") return "human_review";
+  return "human_review";
 }
 
 // Public re-export so the route layer can call documentContext without importing

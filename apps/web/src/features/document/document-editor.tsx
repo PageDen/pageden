@@ -14,9 +14,10 @@ import { documentQuery, revisionsQuery, treeQuery } from "../../lib/queries";
 import { useDocumentDraft } from "../../lib/draft";
 import { Button } from "../../components/ui/button";
 import { RichMarkdownEditor } from "./rich-markdown-editor";
+import { PlanningReviewPanel } from "./planning-review-panel";
 import { PermissionsDialog } from "../permissions/permissions-dialog";
 import { isAllowedEmbedSrc } from "./media";
-import { TableOfContents, headingId } from "./table-of-contents";
+import { TableOfContents, createHeadingIdGenerator } from "./table-of-contents";
 import { parseFrontmatter } from "./frontmatter";
 import { renderDecisionBlocks } from "./decision-blocks";
 import { documentDeepLink, documentReadablePath, documentReviewNote, workspaceRelativePath } from "../../lib/document-links";
@@ -50,6 +51,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     enabled: preview || !canEdit,
   });
   const parsedPreview = useMemo(() => parseFrontmatter(canEdit ? draft.content : doc.content), [canEdit, doc.content, draft.content]);
+  const isPlanningWorkflow = parsedPreview.attributes.workflow === "multi-agent-planning";
   const decisionRender = useMemo(
     () => renderDecisionBlocks(parsedPreview.body, { decisionsOnly }),
     [parsedPreview.body, decisionsOnly],
@@ -60,6 +62,7 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
     [decisionRender.body, tree.data, workspaceId],
   );
   const attachmentUrls = useMemo(() => buildAttachmentUrlMap(attachments.data), [attachments.data]);
+  const headingIdFor = createHeadingIdGenerator();
   const liveConfig = useMemo(
     () =>
       live && canEdit
@@ -359,12 +362,12 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
                         <table {...props}>{children}</table>
                       </div>
                     ),
-                    h1: ({ children, ...props }) => <h1 {...props} id={headingId(markdownText(children))}>{children}</h1>,
-                    h2: ({ children, ...props }) => <h2 {...props} id={headingId(markdownText(children))}>{children}</h2>,
-                    h3: ({ children, ...props }) => <h3 {...props} id={headingId(markdownText(children))}>{children}</h3>,
-                    h4: ({ children, ...props }) => <h4 {...props} id={headingId(markdownText(children))}>{children}</h4>,
-                    h5: ({ children, ...props }) => <h5 {...props} id={headingId(markdownText(children))}>{children}</h5>,
-                    h6: ({ children, ...props }) => <h6 {...props} id={headingId(markdownText(children))}>{children}</h6>,
+                    h1: ({ children, ...props }) => <h1 {...props} id={headingIdFor(markdownText(children))}>{children}</h1>,
+                    h2: ({ children, ...props }) => <h2 {...props} id={headingIdFor(markdownText(children))}>{children}</h2>,
+                    h3: ({ children, ...props }) => <h3 {...props} id={headingIdFor(markdownText(children))}>{children}</h3>,
+                    h4: ({ children, ...props }) => <h4 {...props} id={headingIdFor(markdownText(children))}>{children}</h4>,
+                    h5: ({ children, ...props }) => <h5 {...props} id={headingIdFor(markdownText(children))}>{children}</h5>,
+                    h6: ({ children, ...props }) => <h6 {...props} id={headingIdFor(markdownText(children))}>{children}</h6>,
                     iframe: ({ src, ...props }) =>
                       src && isAllowedEmbedSrc(src) ? (
                         <span className="block aspect-video w-full max-w-2xl overflow-hidden rounded">
@@ -381,7 +384,21 @@ export function DocumentEditor({ doc, workspaceId }: { doc: Doc; workspaceId: st
             <RichMarkdownEditor documentId={doc.id} value={draft.content} onChange={draft.setContent} live={liveConfig} />
           )}
         </div>
-        {!canEdit || preview ? <DocumentInsightsPanel content={previewContent} readiness={doc.aiReadiness} /> : null}
+        {!canEdit || preview || isPlanningWorkflow ? (
+          <DocumentInsightsPanel
+            content={previewContent}
+            documentContent={doc.content}
+            readiness={doc.aiReadiness}
+            workspaceId={workspaceId}
+            documentId={doc.id}
+            baseVersion={doc.version ?? ""}
+            documentStatus={doc.status}
+            planningWorkflow={isPlanningWorkflow}
+            showInsights={!canEdit || preview}
+            canEdit={canEdit}
+            hasUnsavedChanges={draft.dirty}
+          />
+        ) : null}
       </div>
       {shareOpen ? (
         <PermissionsDialog
@@ -591,13 +608,49 @@ function AiReadinessBadge({ readiness }: { readiness: Doc["aiReadiness"] }) {
   );
 }
 
-function DocumentInsightsPanel({ content, readiness }: { content: string; readiness: Doc["aiReadiness"] }) {
+function DocumentInsightsPanel({
+  content,
+  documentContent,
+  readiness,
+  workspaceId,
+  documentId,
+  baseVersion,
+  documentStatus,
+  canEdit,
+  planningWorkflow,
+  showInsights,
+  hasUnsavedChanges,
+}: {
+  content: string;
+  documentContent: string;
+  readiness: Doc["aiReadiness"];
+  workspaceId: string;
+  documentId: string;
+  baseVersion: string;
+  documentStatus: Doc["status"];
+  canEdit: boolean;
+  planningWorkflow: boolean;
+  showInsights: boolean;
+  hasUnsavedChanges: boolean;
+}) {
   return (
     <aside className="hidden w-64 flex-shrink-0 overflow-auto border-l border-slate-200 bg-slate-50 px-4 py-6 dark:border-slate-800 dark:bg-slate-950 lg:block">
-      <AiReadinessPanel readiness={readiness} />
-      <div className="mt-7 border-t border-slate-200 pt-5 dark:border-slate-800">
-        <TableOfContents content={content} embedded />
-      </div>
+      {showInsights ? <AiReadinessPanel readiness={readiness} /> : null}
+      <PlanningReviewPanel
+        documentId={documentId}
+        workspaceId={workspaceId}
+        enabled={planningWorkflow}
+        canEdit={canEdit}
+        content={documentContent}
+        baseVersion={baseVersion}
+        documentStatus={documentStatus}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
+      {showInsights ? (
+        <div className="mt-7 border-t border-slate-200 pt-5 dark:border-slate-800">
+          <TableOfContents content={content} embedded />
+        </div>
+      ) : null}
     </aside>
   );
 }

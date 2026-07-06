@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z as zod, type z } from "zod";
 import {
   currentWorkspaceSchema,
   accountDeletionCodeSchema,
@@ -14,6 +14,8 @@ import {
   attachmentSchema,
   attachmentListSchema,
   documentCreateSchema,
+  decisionSchema,
+  decisionAddResponseSchema,
   documentMoveSchema,
   documentRenameSchema,
   documentWorkspaceTransferSchema,
@@ -55,6 +57,7 @@ import {
   authConfigSchema,
   publicCurrentWorkspaceSchema,
   documentHistorySchema,
+  documentDiffSchema,
   revisionDetailSchema,
   revisionsSchema,
   treeSchema,
@@ -67,6 +70,20 @@ import {
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
+const iso = zod.string();
+const planningFinalizeSchema = zod
+  .object({
+    workspaceId: zod.string(),
+    documentId: zod.string(),
+    version: zod.string(),
+    checksum: zod.string(),
+    updatedAt: iso,
+    status: zod.literal("canonical"),
+    workflowStatus: zod.literal("accepted"),
+    decision: decisionSchema.nullable(),
+    blockers: zod.array(zod.string()),
+  })
+  .strict();
 // Global 401 handler (wired by the router) so an expired session anywhere bounces to /login.
 let onUnauthorized: (() => void) | null = null;
 export function setOnUnauthorized(fn: () => void): void {
@@ -408,12 +425,44 @@ export const api = {
     request("GET", `/documents/${encodeURIComponent(id)}/revisions`, { schema: revisionsSchema }),
   documentHistory: (id: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/history`, { schema: documentHistorySchema }),
+  documentDiff: (id: string, fromVersion: string, toVersion: string) =>
+    request(
+      "GET",
+      `/documents/${encodeURIComponent(id)}/diff?fromVersion=${encodeURIComponent(fromVersion)}&toVersion=${encodeURIComponent(toVersion)}`,
+      { schema: documentDiffSchema },
+    ),
   revisionDetail: (id: string, revisionId: string) =>
     request("GET", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}`, {
       schema: revisionDetailSchema,
     }),
-  updateDocument: (id: string, body: { baseVersion: string; content: string; title?: string }) =>
+  updateDocument: (
+    id: string,
+    body: {
+      baseVersion: string;
+      content: string;
+      title?: string;
+      allowDraft?: boolean;
+    },
+  ) =>
     request("PUT", `/documents/${encodeURIComponent(id)}`, { body, schema: writeResultSchema }),
+  markDocumentCanonical: (id: string) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/mark-canonical`, { schema: writeResultSchema }),
+  finalizePlan: (id: string, body: { baseVersion: string; finalDecisionText?: string; owner?: string; reason?: string }) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/finalize-plan`, { body, schema: planningFinalizeSchema }),
+  addDecision: (
+    id: string,
+    body: {
+      baseVersion: string;
+      id: string;
+      status: string;
+      owner: string;
+      decision: string;
+      reason: string;
+      replaces?: string | null;
+      allowDraft?: boolean;
+    },
+  ) =>
+    request("POST", `/documents/${encodeURIComponent(id)}/decisions`, { body, schema: decisionAddResponseSchema }),
   restoreRevision: (id: string, revisionId: string) =>
     request("POST", `/documents/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
       schema: writeResultSchema,

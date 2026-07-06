@@ -83,6 +83,25 @@ export interface DocumentRef {
   path: string;
 }
 
+export interface DocumentClaim {
+  id: string;
+  workspaceId: string;
+  documentId: string;
+  tokenId: string | null;
+  userId: string | null;
+  actorLabel: string | null;
+  note: string | null;
+  expiresAt: string;
+  releasedAt: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentClaimWithDoc extends DocumentClaim {
+  document: DocumentRef;
+}
+
 export interface AiReadinessIssue {
   code: string;
   severity: "info" | "warning";
@@ -130,6 +149,25 @@ export interface TaskPacket {
   summary: string;
   status: DocumentStatus;
   supersededBy: DocumentRef | null;
+  workflow: {
+    workflow: string;
+    workflowStatus: string | null;
+    reviewRound: number | null;
+    leadAgent: string | null;
+    reviewAgent: string | null;
+  } | null;
+  recommendedAction: "comment_only" | "revise" | "safe_edit" | "finalize" | "human_review" | null;
+  openCommentsBySection: Array<{
+    sectionAnchor: string | null;
+    count: number;
+    comments: Array<{ id?: string; body: string }>;
+  }>;
+  activeClaim?: {
+    id: string;
+    actorLabel: string | null;
+    note: string | null;
+    expiresAt: string;
+  } | null;
   currentPhase: string | null;
   nextSteps: string[];
   acceptanceCriteria: string[];
@@ -166,12 +204,31 @@ export interface ActivityFeed {
 
 export interface DashboardStats {
   workspaceId: string;
-  totals: { folders: number; documents: number };
+  totals: { folders: number; documents: number; openComments: number };
   statusCounts: { canonical: number; draft: number; superseded: number; archived: number };
   supersededDocs: Array<{ id: string; title: string; path: string; supersededBy: DocumentRef | null }>;
   recentChanges: Array<{ id: string; title: string; path: string; status: DocumentStatus; updatedAt: string }>;
   recentActivity: ActivityEvent[];
+  activePlanning: Array<{
+    id: string;
+    title: string;
+    path: string;
+    status: DocumentStatus;
+    updatedAt: string;
+    workflowStatus: string | null;
+    reviewRound: number | null;
+    leadAgent: string | null;
+    reviewAgent: string | null;
+    openCommentCount: number;
+    activeClaim: {
+      id: string;
+      actorLabel: string | null;
+      note: string | null;
+      expiresAt: string;
+    } | null;
+  }>;
   topFolders: Array<{ id: string; path: string; name: string; documentCount: number }>;
+  activeClaims: DocumentClaimWithDoc[];
 }
 
 export interface HandoffPacket {

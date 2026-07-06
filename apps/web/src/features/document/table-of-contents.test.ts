@@ -9,6 +9,14 @@ describe("extractHeadings", () => {
     ]);
   });
 
+  it("deduplicates repeated heading ids", () => {
+    expect(extractHeadings("## Phase\n\n## Phase\n\n### Phase\n")).toEqual([
+      { level: 2, text: "Phase", id: "phase" },
+      { level: 2, text: "Phase", id: "phase-2" },
+      { level: 3, text: "Phase", id: "phase-3" },
+    ]);
+  });
+
   it("ignores heading-like shell comments inside fenced code blocks", () => {
     const headings = extractHeadings(`# Deployment Plan
 

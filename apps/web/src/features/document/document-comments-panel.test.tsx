@@ -15,6 +15,8 @@ const openComment = {
   authorLabel: "Chris",
   resolvedAt: null,
   resolvedById: null,
+  resolvedByTokenId: null,
+  resolvedByLabel: null,
   mentionedUserIds: ["user-2"],
   createdAt: "2026-06-28T09:00:00.000Z",
   updatedAt: "2026-06-28T09:00:00.000Z",

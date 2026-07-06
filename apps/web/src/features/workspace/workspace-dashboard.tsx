@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { Activity, AlertTriangle, ArrowRight, ClipboardList, FileText, FolderTree, Hand, Sparkles } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, ClipboardCheck, ClipboardList, Clock3, FileText, FolderTree, Hand, MessageSquare, Sparkles, UserRound } from "lucide-react";
 import type { z } from "zod";
-import type { documentStatusSchema } from "@pageden/api-types";
+import type { DashboardStats, documentStatusSchema } from "@pageden/api-types";
 import { ApiError } from "../../lib/api";
 import { documentReadablePath } from "../../lib/document-links";
 import { workspaceDashboardQuery } from "../../lib/queries";
@@ -24,6 +24,22 @@ const statusTone: Record<Status, string> = {
   superseded: "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200",
   archived: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
 };
+
+const workflowTone: Record<string, string> = {
+  drafting: "bg-sky-50 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200",
+  review: "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200",
+  revision: "bg-orange-50 text-orange-800 dark:bg-orange-500/15 dark:text-orange-200",
+  "final-review": "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200",
+  deferred: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+};
+
+function workflowLabel(value: string | null): string {
+  if (!value) return "Planning";
+  return value
+    .split("-")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
 export function WorkspaceDashboard() {
   const params = useParams({ strict: false });
@@ -107,6 +123,8 @@ export function WorkspaceDashboard() {
         </section>
 
         <section className="space-y-4">
+          <ActivePlanningCard workspaceId={workspaceId} plans={d.activePlanning} />
+
           <Card icon={<ClipboardList className="h-5 w-5" aria-hidden="true" />} title="Recently updated">
             {d.recentChanges.length === 0 ? (
               <p className="text-sm italic text-slate-400">No changes yet.</p>
@@ -173,6 +191,64 @@ export function WorkspaceDashboard() {
         </section>
       </div>
     </main>
+  );
+}
+
+export function ActivePlanningCard({ workspaceId, plans }: { workspaceId: string; plans: DashboardStats["activePlanning"] }) {
+  return (
+    <Card icon={<ClipboardCheck className="h-5 w-5" aria-hidden="true" />} title={`Active planning (${plans.length})`}>
+      {plans.length === 0 ? (
+        <p className="text-sm italic text-slate-400">No active multi-agent plans.</p>
+      ) : (
+        <ul className="space-y-3 text-sm">
+          {plans.map((plan) => (
+            <li key={plan.id} className="space-y-1.5 border-b border-slate-100 pb-3 last:border-0 last:pb-0 dark:border-slate-800">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Link
+                  to={documentReadablePath(workspaceId, plan.path)}
+                  className="min-w-0 truncate font-medium text-slate-700 hover:text-orange-700 dark:text-slate-200 dark:hover:text-orange-300"
+                >
+                  {plan.title}
+                </Link>
+                <span
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    workflowTone[plan.workflowStatus ?? ""] ?? statusTone[plan.status]
+                  }`}
+                >
+                  {workflowLabel(plan.workflowStatus)}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                <span>Round {plan.reviewRound ?? 0}</span>
+                <span className="inline-flex items-center gap-1">
+                  <MessageSquare size={12} aria-hidden="true" />
+                  {plan.openCommentCount} open
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <Clock3 size={12} aria-hidden="true" />
+                  Updated {new Date(plan.updatedAt).toLocaleDateString()}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                {plan.leadAgent ? (
+                  <span className="inline-flex items-center gap-1">
+                    <UserRound size={12} aria-hidden="true" />
+                    Lead {plan.leadAgent}
+                  </span>
+                ) : null}
+                {plan.reviewAgent ? <span>Review {plan.reviewAgent}</span> : null}
+                {plan.activeClaim ? (
+                  <span className="font-medium text-slate-600 dark:text-slate-300">
+                    Claimed by {plan.activeClaim.actorLabel ?? "an agent"}
+                    {plan.activeClaim.note ? `: ${plan.activeClaim.note}` : ""}
+                  </span>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 

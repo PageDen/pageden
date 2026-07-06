@@ -6,6 +6,8 @@ import { notFound, validationError } from "../errors.js";
 import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { listActiveClaims } from "../documents/claims.js";
 import { openCommentCountByDocument } from "../documents/comments.js";
+import { documentContext } from "../ai-readiness.js";
+import { readContent } from "../storage.js";
 
 // Activity timeline + workspace dashboard. Both are derived from data we already
 // store (AuditEvent + Document + Folder), so we can ship them without a schema
@@ -33,7 +35,32 @@ const DOCUMENT_ACTIONS = new Set([
   "comment_deleted",
 ]);
 
+const ACTIVE_PLANNING_STATUSES = new Set(["drafting", "review", "revision", "final-review", "deferred"]);
+const ACTIVE_PLANNING_SCAN_LIMIT = 200;
+const ACTIVE_PLANNING_RESULT_LIMIT = 20;
+
 type ActorKind = "user" | "agent" | "system" | "obsidian_plugin" | "unknown";
+type ActivityEventDto = {
+  id: string;
+  workspaceId: string | null;
+  userId: string | null;
+  actor: ActorKind;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  documentTitle: string | null;
+  documentPath: string | null;
+  createdAt: string;
+  metadata: unknown;
+};
+
+const COALESCED_AGENT_ACTIONS = new Set(["document_updated_by_agent", "comment_added_by_agent", "comment_resolved_by_agent"]);
+const AGENT_STATUS_ACTIONS = new Set([
+  "document_marked_canonical_by_agent",
+  "document_marked_superseded_by_agent",
+  "document_marked_draft_by_agent",
+  "document_marked_archived_by_agent",
+]);
 
 function actorFor(action: string, metadata: unknown, userId: string | null): ActorKind {
   if (action.endsWith("_by_agent") || action === "mcp_tool_called") return "agent";
@@ -50,6 +77,98 @@ function actorFor(action: string, metadata: unknown, userId: string | null): Act
   }
   if (userId) return "user";
   return "system";
+}
+
+function frontmatterString(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0]?.trim() || null;
+  return value?.trim() || null;
+}
+
+function frontmatterNumber(value: string | string[] | undefined): number | null {
+  const raw = frontmatterString(value);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function metadataObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function coalesceKey(event: ActivityEventDto): string | null {
+  if (event.actor !== "agent" || !COALESCED_AGENT_ACTIONS.has(event.action)) return null;
+  const metadata = metadataObject(event.metadata);
+  const tokenId = typeof metadata.tokenId === "string" ? metadata.tokenId : event.userId ?? "";
+  return [event.action, event.targetId ?? "", tokenId].join(":");
+}
+
+function coalesceActivity(events: ActivityEventDto[]): ActivityEventDto[] {
+  const result: ActivityEventDto[] = [];
+  for (const event of events) {
+    const key = coalesceKey(event);
+    const previous = result[result.length - 1];
+    if (key && previous && coalesceKey(previous) === key) {
+      const previousMetadata = metadataObject(previous.metadata);
+      const eventMetadata = metadataObject(event.metadata);
+      const count = Number(previousMetadata.count ?? 1) + 1;
+      const eventIds = Array.isArray(previousMetadata.eventIds) ? previousMetadata.eventIds : [previous.id];
+      const versions = Array.isArray(previousMetadata.versions)
+        ? previousMetadata.versions
+        : typeof previousMetadata.version === "string"
+          ? [previousMetadata.version]
+          : [];
+      if (typeof eventMetadata.version === "string") versions.push(eventMetadata.version);
+      previous.metadata = {
+        ...previousMetadata,
+        count,
+        eventIds: [...eventIds, event.id],
+        ...(versions.length > 0 ? { versions: [...new Set(versions)] } : {}),
+      };
+      continue;
+    }
+    result.push(event);
+  }
+  return result.filter((event, index) => !isRedundantStatusUpdate(event, result[index + 1] ?? null));
+}
+
+function activityTokenId(event: ActivityEventDto): string | null {
+  const metadata = metadataObject(event.metadata);
+  return typeof metadata.tokenId === "string" ? metadata.tokenId : null;
+}
+
+function isRedundantStatusUpdate(event: ActivityEventDto, next: ActivityEventDto | null): boolean {
+  if (event.action !== "document_updated_by_agent" || !next || !AGENT_STATUS_ACTIONS.has(next.action)) return false;
+  if (event.targetId !== next.targetId) return false;
+  if (activityTokenId(event) !== activityTokenId(next)) return false;
+  return Math.abs(new Date(event.createdAt).getTime() - new Date(next.createdAt).getTime()) <= 10_000;
+}
+
+function activityDtoFor(
+  event: {
+    id: string;
+    workspaceId: string | null;
+    userId: string | null;
+    action: string;
+    targetType: string;
+    targetId: string | null;
+    createdAt: Date;
+    metadata: unknown;
+  },
+  doc: { id: string; title: string; path: string } | null,
+): ActivityEventDto {
+  return {
+    id: event.id,
+    workspaceId: event.workspaceId,
+    userId: event.userId,
+    actor: actorFor(event.action, event.metadata, event.userId),
+    action: event.action,
+    targetType: event.targetType,
+    targetId: doc?.id ?? event.targetId,
+    documentTitle: doc?.title ?? null,
+    documentPath: doc?.path ?? null,
+    createdAt: event.createdAt.toISOString(),
+    metadata: event.metadata ?? null,
+  };
 }
 
 async function assertWorkspaceMember(userId: string, workspaceId: string): Promise<boolean> {
@@ -104,26 +223,16 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
       return {
         workspaceId,
-        events: events
-          .map((event) => {
-            const docId = documentIdForEvent(event);
-            const doc = docId ? docById.get(docId) ?? null : null;
-            if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
-            return {
-              id: event.id,
-              workspaceId: event.workspaceId,
-              userId: event.userId,
-              actor: actorFor(event.action, event.metadata, event.userId),
-              action: event.action,
-              targetType: event.targetType,
-              targetId: doc?.id ?? event.targetId,
-              documentTitle: doc?.title ?? null,
-              documentPath: doc?.path ?? null,
-              createdAt: event.createdAt.toISOString(),
-              metadata: event.metadata ?? null,
-            };
-          })
-          .filter((event): event is NonNullable<typeof event> => event !== null),
+        events: coalesceActivity(
+          events
+            .map((event) => {
+              const docId = documentIdForEvent(event);
+              const doc = docId ? docById.get(docId) ?? null : null;
+              if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
+              return activityDtoFor(event, doc);
+            })
+            .filter((event): event is NonNullable<typeof event> => event !== null),
+        ).slice(0, limit),
         nextBefore: next ? next.createdAt.toISOString() : null,
       };
     },
@@ -141,7 +250,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
       const resolver = await buildWorkspaceResolver(auth.userId, workspaceId);
       const docs = await prisma.document.findMany({
         where: { workspaceId, deletedAt: null },
-        select: { id: true, folderId: true, title: true, path: true, status: true, updatedAt: true, supersededById: true },
+        select: { id: true, folderId: true, title: true, path: true, status: true, updatedAt: true, supersededById: true, currentVersionId: true },
       });
       const visibleDocs = docs.filter((doc) => resolver.documentRole({ id: doc.id, folderId: doc.folderId }) !== null);
       const statusCounts: Record<DocumentStatus, number> = { canonical: 0, draft: 0, superseded: 0, archived: 0 };
@@ -197,7 +306,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
       const recentEvents = await prisma.auditEvent.findMany({
         where: { workspaceId, action: { in: [...DOCUMENT_ACTIONS] } },
         orderBy: { createdAt: "desc" },
-        take: 25,
+        take: 75,
       });
       const recentDocIds = new Set<string>();
       for (const event of recentEvents) {
@@ -212,27 +321,16 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
         : [];
       const recentById = new Map(recentDocs.map((doc) => [doc.id, doc]));
 
-      const recentActivity = recentEvents
-        .map((event) => {
-          const docId = documentIdForEvent(event);
-          const doc = docId ? recentById.get(docId) ?? null : null;
-          if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
-          return {
-            id: event.id,
-            workspaceId: event.workspaceId,
-            userId: event.userId,
-            actor: actorFor(event.action, event.metadata, event.userId),
-            action: event.action,
-            targetType: event.targetType,
-            targetId: doc?.id ?? event.targetId,
-            documentTitle: doc?.title ?? null,
-            documentPath: doc?.path ?? null,
-            createdAt: event.createdAt.toISOString(),
-            metadata: event.metadata ?? null,
-          };
-        })
-        .filter((event): event is NonNullable<typeof event> => event !== null)
-        .slice(0, 15);
+      const recentActivity = coalesceActivity(
+        recentEvents
+          .map((event) => {
+            const docId = documentIdForEvent(event);
+            const doc = docId ? recentById.get(docId) ?? null : null;
+            if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
+            return activityDtoFor(event, doc);
+          })
+          .filter((event): event is NonNullable<typeof event> => event !== null),
+      ).slice(0, 15);
 
       // Filter claims down to documents the caller can see; this prevents
       // surfacing a doc title through a claim row that the user has no
@@ -243,6 +341,51 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
 
       const openCommentCounts = await openCommentCountByDocument(visibleDocs.map((d) => d.id));
       const openComments = [...openCommentCounts.entries()].reduce((sum, [, count]) => sum + count, 0);
+      const activeClaimByDocument = new Map(activeClaims.map((claim) => [claim.documentId, claim]));
+
+      const activePlanningCandidates = [...visibleDocs]
+        .filter((doc) => doc.status !== "archived" && doc.currentVersionId)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+        .slice(0, ACTIVE_PLANNING_SCAN_LIMIT);
+      const revisionIds = activePlanningCandidates.map((doc) => doc.currentVersionId!).filter(Boolean);
+      const revisions = revisionIds.length
+        ? await prisma.documentRevision.findMany({
+            where: { id: { in: revisionIds } },
+            select: { id: true, storageKey: true },
+          })
+        : [];
+      const storageKeyByRevisionId = new Map(revisions.map((revision) => [revision.id, revision.storageKey]));
+      const activePlanning = [];
+      for (const doc of activePlanningCandidates) {
+        const storageKey = doc.currentVersionId ? storageKeyByRevisionId.get(doc.currentVersionId) : null;
+        if (!storageKey) continue;
+        const context = documentContext(await readContent(storageKey));
+        if (frontmatterString(context.frontmatter.workflow) !== "multi-agent-planning") continue;
+        const workflowStatus = frontmatterString(context.frontmatter.workflowStatus);
+        if (!workflowStatus || !ACTIVE_PLANNING_STATUSES.has(workflowStatus)) continue;
+        const claim = activeClaimByDocument.get(doc.id) ?? null;
+        activePlanning.push({
+          id: doc.id,
+          title: doc.title,
+          path: doc.path,
+          status: doc.status,
+          updatedAt: doc.updatedAt.toISOString(),
+          workflowStatus,
+          reviewRound: frontmatterNumber(context.frontmatter.reviewRound),
+          leadAgent: frontmatterString(context.frontmatter.leadAgent),
+          reviewAgent: frontmatterString(context.frontmatter.reviewAgent),
+          openCommentCount: openCommentCounts.get(doc.id) ?? 0,
+          activeClaim: claim
+            ? {
+                id: claim.id,
+                actorLabel: claim.actorLabel,
+                note: claim.note,
+                expiresAt: claim.expiresAt,
+              }
+            : null,
+        });
+        if (activePlanning.length >= ACTIVE_PLANNING_RESULT_LIMIT) break;
+      }
 
       return {
         workspaceId,
@@ -251,6 +394,7 @@ export async function registerWorkspaceInsightsRoutes(app: FastifyInstance): Pro
         supersededDocs,
         recentChanges,
         recentActivity,
+        activePlanning,
         topFolders,
         activeClaims,
       };
@@ -300,26 +444,16 @@ async function workspaceActivityImpl(
 
   return {
     workspaceId,
-    events: events
-      .map((event) => {
-        const docId = documentIdForEvent(event);
-        const doc = docId ? docById.get(docId) ?? null : null;
-        if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
-        return {
-          id: event.id,
-          workspaceId: event.workspaceId,
-          userId: event.userId,
-          actor: actorFor(event.action, event.metadata, event.userId),
-          action: event.action,
-          targetType: event.targetType,
-          targetId: doc?.id ?? event.targetId,
-          documentTitle: doc?.title ?? null,
-          documentPath: doc?.path ?? null,
-          createdAt: event.createdAt.toISOString(),
-          metadata: event.metadata ?? null,
-        };
-      })
-      .filter((event): event is NonNullable<typeof event> => event !== null),
+    events: coalesceActivity(
+      events
+        .map((event) => {
+          const docId = documentIdForEvent(event);
+          const doc = docId ? docById.get(docId) ?? null : null;
+          if (doc && resolver.documentRole({ id: doc.id, folderId: doc.folderId }) === null) return null;
+          return activityDtoFor(event, doc);
+        })
+        .filter((event): event is NonNullable<typeof event> => event !== null),
+    ).slice(0, opts.limit),
     nextBefore: next ? next.createdAt.toISOString() : null,
   };
 }

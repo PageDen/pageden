@@ -116,6 +116,11 @@ describe("MCP agent access", () => {
       destructiveHint: true,
       openWorldHint: false,
     });
+    expect(tools.find((t) => t.name === "pageden_review_plan")?.annotations).toMatchObject({
+      title: "Review planning document",
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
 
     const search = await tool(s.token, "pageden_search", { workspaceId: s.ws.id, query: "Runbook" });
     expect(search.statusCode).toBe(200);
@@ -204,6 +209,10 @@ describe("MCP agent access", () => {
     expect(firstRead.headings.map((h: { title: string }) => h.title)).toContain("Scope");
     expect(firstRead.content).toBe("");
     expect(firstRead.body).toBeUndefined();
+
+    const scopeSection = toolJson(await tool(s.token, "pageden_read_section", { documentId: created.id, anchor: "scope" }));
+    expect(scopeSection.section).toMatchObject({ heading: "Scope", anchor: "scope" });
+    expect(scopeSection.section.content).toContain("Old text");
 
     await tool(s.token, "pageden_update_document", {
       documentId: created.id,
@@ -541,6 +550,507 @@ describe("MCP agent access", () => {
       ],
     });
     expect(toolJson(importedAgain).totals.skippedDocuments).toBe(2);
+  });
+
+  it("starts a multi-agent planning workflow and allows explicit draft section edits", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/example-agent-plan.md",
+        title: "Example Agent Plan",
+        goal: "Draft and review the first implementation plan.",
+        context: "Use comments for uncertainty and edits for accepted revisions.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    expect(started.action).toBe("created");
+    expect(started.workflow).toBe("multi-agent-planning");
+    expect(started.workflowStatus).toBe("drafting");
+
+    const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    expect(read.status).toBe("draft");
+    expect(read.frontmatter.workflow).toBe("multi-agent-planning");
+    expect(read.frontmatter.workflowStatus).toBe("drafting");
+    expect(read.content).toContain("## Proposed Plan");
+    expect(read.content).toContain(":::decision");
+
+    const blocked = await tool(s.token, "pageden_replace_section", {
+      documentId: started.id,
+      anchor: "proposed-plan",
+      content: "- Ship the planning template.\n",
+      baseVersion: started.version,
+    });
+    expect(blocked.json().error.message).toMatch(/not_canonical|not canonical/i);
+
+    const replaced = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "proposed-plan",
+        content: "- Ship the planning template.\n- Ask the reviewer for comments.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    expect(replaced.latestChangedSection.anchor).toBe("proposed-plan");
+
+    const comment = toolJson(
+      await tool(s.token, "pageden_add_section_comment", {
+        documentId: started.id,
+        sectionAnchor: "risks",
+        body: "Clarify the rollback plan before final review.",
+      }),
+    );
+    expect(comment.documentId).toBe(started.id);
+
+    const claimed = toolJson(
+      await tool(s.token, "pageden_claim_document", {
+        documentId: started.id,
+        note: "Reviewing plan round 0",
+        ttlMinutes: 10,
+      }),
+    );
+    expect(claimed.active).toBe(true);
+
+    const packet = toolJson(await tool(s.token, "pageden_get_task_packet", { documentId: started.id }));
+    expect(packet.packet.workflow).toMatchObject({
+      workflow: "multi-agent-planning",
+      workflowStatus: "drafting",
+      reviewRound: 0,
+      leadAgent: "agent-a",
+      reviewAgent: "agent-b",
+    });
+    expect(packet.packet.recommendedAction).toBe("safe_edit");
+    expect(packet.packet.openCommentsBySection).toEqual([
+      {
+        sectionAnchor: "risks",
+        count: 1,
+        comments: [{ id: comment.id, body: "Clarify the rollback plan before final review." }],
+      },
+    ]);
+    expect(packet.packet.activeClaim).toMatchObject({ note: "Reviewing plan round 0" });
+  });
+
+  it("safely finalizes a multi-agent planning workflow only after blockers are clear", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/finalize-agent-plan.md",
+        title: "Finalize Agent Plan",
+        goal: "Finalize a reviewed plan safely.",
+        context: "Exercise the finalization guardrails.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    const assumptionsUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "assumptions",
+        content: "- Review comments identify blockers before finalization.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    const planUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "proposed-plan",
+        content: "- Resolve comments.\n- Confirm acceptance criteria.\n- Finalize the accepted plan.\n",
+        baseVersion: assumptionsUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const risksUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "risks",
+        content: "- Open comments can block canonical promotion.\n",
+        baseVersion: planUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const openQuestionsCleared = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "open-questions",
+        content: "None.\n",
+        baseVersion: risksUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const criteriaUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "acceptance-criteria",
+        content: "- Finalization refuses unresolved comments.\n- Finalization records an accepted decision.\n",
+        baseVersion: openQuestionsCleared.version,
+        allowDraft: true,
+      }),
+    );
+    const finalPlanUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "final-plan",
+        content: "Finalize the reviewed plan once blockers are resolved and acceptance criteria are satisfied.\n",
+        baseVersion: criteriaUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const comment = toolJson(
+      await tool(s.token, "pageden_add_section_comment", {
+        documentId: started.id,
+        sectionAnchor: "risks",
+        body: "Confirm no blocking comments remain before finalization.",
+      }),
+    );
+
+    const blocked = await tool(s.token, "pageden_finalize_plan", {
+      documentId: started.id,
+      baseVersion: finalPlanUpdated.version,
+    });
+    expect(blocked.json().error.message).toMatch(/unresolved comment/i);
+    expect(blocked.json().error.data).toMatchObject({
+      code: "plan_not_ready",
+      blockers: [expect.stringMatching(/unresolved comment/i)],
+    });
+
+    const resolved = toolJson(await tool(s.token, "pageden_resolve_comment", { commentId: comment.id }));
+    expect(resolved.resolvedAt).toBeTruthy();
+    expect(resolved).toMatchObject({
+      resolvedByTokenId: s.tokenId,
+      resolvedByLabel: "Codex agent (agent)",
+    });
+    const resolvedComments = toolJson(await tool(s.token, "pageden_list_comments", { documentId: started.id, includeResolved: true }));
+    expect(resolvedComments.comments.find((row: { id: string }) => row.id === comment.id)).toMatchObject({
+      resolvedByTokenId: s.tokenId,
+      resolvedByLabel: "Codex agent (agent)",
+    });
+
+    const latest = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    const finalized = toolJson(
+      await tool(s.token, "pageden_finalize_plan", {
+        documentId: started.id,
+        baseVersion: latest.version,
+        owner: "agent-a",
+      }),
+    );
+    expect(finalized.status).toBe("canonical");
+    expect(finalized.workflowStatus).toBe("accepted");
+    expect(finalized.decision).toMatchObject({ id: "final-plan", status: "accepted" });
+
+    const canonicalRead = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id, canonicalOnly: true }));
+    expect(canonicalRead.status).toBe("canonical");
+    expect(canonicalRead.frontmatter.workflowStatus).toBe("accepted");
+    expect(canonicalRead.content).toContain("id: final-plan");
+    expect(canonicalRead.content).toContain("status: accepted");
+  });
+
+  it("submits comments-only planning reviews without update scope", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/review-comments-only.md",
+        title: "Review Comments Only",
+        goal: "Let reviewers comment without editing.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    const tokenRes = await req({
+      method: "POST",
+      url: "/api/tokens",
+      cookies: s.adminCookie,
+      payload: { name: "Reviewer", kind: "agent", workspaceId: s.ws.id, scopes: ["search", "read", "create"] },
+    });
+    expect(tokenRes.statusCode).toBe(201);
+    const reviewerToken = tokenRes.json().token as string;
+    const reviewerTokenId = tokenRes.json().id as string;
+    await tool(s.token, "pageden_read_document", { documentId: started.id });
+
+    const reviewed = toolJson(
+      await req({
+        method: "POST",
+        url: "/mcp",
+        headers: bearer(reviewerToken),
+        cookies: s.adminCookie,
+        payload: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "pageden_review_plan",
+            arguments: {
+              documentId: started.id,
+              baseVersion: started.version,
+              summary: "The plan is readable but needs rollback detail.",
+              strengths: ["The goal is clear."],
+              risks: ["Rollback path is not described."],
+              blockingQuestions: ["Who approves production rollout?"],
+            },
+          },
+        },
+      }),
+    );
+    expect(reviewed.version).toBe(started.version);
+    expect(reviewed.comments).toHaveLength(4);
+    expect(reviewed.comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authorTokenId: reviewerTokenId,
+          authorLabel: "Reviewer (agent)",
+        }),
+      ]),
+    );
+    expect(reviewed.changedSections).toEqual([]);
+    expect(reviewed.recommendedWorkflowStatus).toBe("revision");
+
+    const comments = toolJson(await tool(s.token, "pageden_list_comments", { documentId: started.id }));
+    expect(comments.comments.map((comment: { body: string }) => comment.body)).toEqual(
+      expect.arrayContaining([
+        "Review summary: The plan is readable but needs rollback detail.",
+        "Strength: The goal is clear.",
+        "Risk: Rollback path is not described.",
+        "Blocking question: Who approves production rollout?",
+      ]),
+    );
+    const unread = toolJson(await tool(s.token, "pageden_my_unread", { workspaceId: s.ws.id }));
+    expect(unread.documents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: started.id,
+          version: started.version,
+          lastReadVersion: started.version,
+          unreadCommentCount: 4,
+        }),
+      ]),
+    );
+  });
+
+  it("applies safe section edits and proposed decisions through planning reviews", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/review-safe-edits.md",
+        title: "Review Safe Edits",
+        goal: "Allow low-risk reviewer edits.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+
+    const reviewed = toolJson(
+      await tool(s.token, "pageden_review_plan", {
+        documentId: started.id,
+        baseVersion: started.version,
+        mode: "comments_and_safe_edits",
+        summary: "Applied wording and proposed a deployment decision.",
+        suggestedSectionEdits: [
+          {
+            anchor: "proposed-plan",
+            content: "- Prepare the migration.\n- Run the deployment checklist.\n",
+          },
+        ],
+        decisionRecommendations: [
+          {
+            id: "deployment-window",
+            decision: "Use a weekday deployment window.",
+            reason: "Support coverage is highest during weekdays.",
+          },
+        ],
+      }),
+    );
+    expect(reviewed.version).not.toBe(started.version);
+    expect(reviewed.changedSections).toEqual([{ anchor: "proposed-plan" }]);
+    expect(reviewed.decisions[0]).toMatchObject({ id: "deployment-window", status: "proposed" });
+    expect(reviewed.comments[0].body).toContain("Applied wording");
+    expect(reviewed.reviewRound).toBe(1);
+
+    const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: started.id }));
+    expect(read.frontmatter.reviewRound).toBe("1");
+    expect(read.content).toContain("- Run the deployment checklist.");
+    expect(read.content).toContain("id: deployment-window");
+  });
+
+  it("refuses to finalize while required planning sections are placeholders", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/placeholder-final-plan.md",
+        title: "Placeholder Final Plan",
+        goal: "Reject placeholder final content.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    const assumptionsUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "assumptions",
+        content: "- The placeholder guard runs before canonical promotion.\n",
+        baseVersion: started.version,
+        allowDraft: true,
+      }),
+    );
+    const planUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "proposed-plan",
+        content: "- Fill every required section except Final Plan.\n",
+        baseVersion: assumptionsUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const risksUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "risks",
+        content: "- Placeholder final content must not be promoted.\n",
+        baseVersion: planUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const openQuestionsCleared = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "open-questions",
+        content: "None.\n",
+        baseVersion: risksUpdated.version,
+        allowDraft: true,
+      }),
+    );
+    const criteriaUpdated = toolJson(
+      await tool(s.token, "pageden_replace_section", {
+        documentId: started.id,
+        anchor: "acceptance-criteria",
+        content: "- Placeholder content blocks canonical promotion.\n",
+        baseVersion: openQuestionsCleared.version,
+        allowDraft: true,
+      }),
+    );
+
+    const blocked = await tool(s.token, "pageden_finalize_plan", {
+      documentId: started.id,
+      baseVersion: criteriaUpdated.version,
+    });
+    expect(blocked.json().error.message).toMatch(/Final Plan section still contains placeholder content/i);
+  });
+
+  it("refuses stale planning reviews before adding comments", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const started = toolJson(
+      await tool(s.token, "pageden_start_planning_workflow", {
+        workspaceId: s.ws.id,
+        path: "strategy/review-stale.md",
+        title: "Review Stale",
+        goal: "Reject stale review submissions.",
+        leadAgentLabel: "agent-a",
+        reviewAgentLabel: "agent-b",
+        createFolders: true,
+      }),
+    );
+    await tool(s.token, "pageden_replace_section", {
+      documentId: started.id,
+      anchor: "proposed-plan",
+      content: "- Move the version forward.\n",
+      baseVersion: started.version,
+      allowDraft: true,
+    });
+
+    const stale = await tool(s.token, "pageden_review_plan", {
+      documentId: started.id,
+      baseVersion: started.version,
+      summary: "This should not be written.",
+    });
+    expect(stale.json().error.message).toMatch(/Conflict/);
+
+    const comments = toolJson(await tool(s.token, "pageden_list_comments", { documentId: started.id }));
+    expect(comments.comments).toEqual([]);
+  });
+
+  it("refuses to finalize when final-plan exists but is not accepted", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const created = toolJson(
+      await tool(s.token, "pageden_upsert_document_by_path", {
+        workspaceId: s.ws.id,
+        path: "strategy/proposed-final-plan.md",
+        title: "Proposed Final Plan",
+        createFolders: true,
+        content: [
+          "---",
+          "status: draft",
+          "docType: plan",
+          "workflow: multi-agent-planning",
+          "workflowStatus: final-review",
+          "reviewRound: 1",
+          "leadAgent: agent-a",
+          "reviewAgent: agent-b",
+          "---",
+          "",
+          "# Proposed Final Plan",
+          "",
+          "## Open Questions",
+          "",
+          "## Decisions",
+          "",
+          ":::decision",
+          "id: final-plan",
+          "status: proposed",
+          "owner: agent-a",
+          "",
+          "decision: Proposed final plan.",
+          "reason: It has not been accepted yet.",
+          ":::",
+          "",
+          "## Acceptance Criteria",
+          "",
+          "- The final decision must be accepted.",
+          "",
+        ].join("\n"),
+      }),
+    );
+
+    const res = await tool(s.token, "pageden_finalize_plan", {
+      documentId: created.id,
+      baseVersion: created.version,
+    });
+    expect(res.json().error.message).toMatch(/final-plan already exists but is not accepted/i);
+  });
+
+  it("does not allow allowDraft to edit superseded documents", async () => {
+    const s = await agentToken(["search", "read", "create", "update"]);
+    const created = toolJson(
+      await tool(s.token, "pageden_upsert_document_by_path", {
+        workspaceId: s.ws.id,
+        path: "strategy/superseded-plan.md",
+        title: "Superseded Plan",
+        createFolders: true,
+        content: "---\nstatus: superseded\n---\n\n# Superseded Plan\n\n## Notes\n\nOld text.\n",
+      }),
+    );
+    const read = toolJson(await tool(s.token, "pageden_read_document", { documentId: created.id }));
+    expect(read.status).toBe("superseded");
+
+    const rejected = await tool(s.token, "pageden_replace_section", {
+      documentId: created.id,
+      anchor: "notes",
+      content: "Should not write.\n",
+      baseVersion: created.version,
+      allowDraft: true,
+    });
+    expect(rejected.json().error.message).toMatch(/not_canonical|not canonical/i);
   });
 
   it("reports JSON-RPC errors for unknown tools, bad resources, and wrong workspaces", async () => {

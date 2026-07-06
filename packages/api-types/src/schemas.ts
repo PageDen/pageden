@@ -344,11 +344,42 @@ export const decisionSchema = z
   })
   .strict();
 
+export const planningWorkflowSchema = z
+  .object({
+    workflow: z.string(),
+    workflowStatus: z.string().nullable(),
+    reviewRound: z.number().nullable(),
+    leadAgent: z.string().nullable(),
+    reviewAgent: z.string().nullable(),
+  })
+  .strict();
+
+export const taskPacketCommentGroupSchema = z
+  .object({
+    sectionAnchor: z.string().nullable(),
+    count: z.number(),
+    comments: z.array(z.object({ id: z.string().optional(), body: z.string() }).strict()),
+  })
+  .strict();
+
+export const taskPacketActiveClaimSchema = z
+  .object({
+    id: z.string(),
+    actorLabel: z.string().nullable(),
+    note: z.string().nullable(),
+    expiresAt: iso,
+  })
+  .strict();
+
 export const taskPacketSchema = z
   .object({
     summary: z.string(),
     status: documentStatusSchema,
     supersededBy: documentRefSchema.nullable(),
+    workflow: planningWorkflowSchema.nullable(),
+    recommendedAction: z.enum(["comment_only", "revise", "safe_edit", "finalize", "human_review"]).nullable(),
+    openCommentsBySection: z.array(taskPacketCommentGroupSchema),
+    activeClaim: taskPacketActiveClaimSchema.nullable().optional(),
     currentPhase: z.string().nullable(),
     nextSteps: z.array(z.string()),
     acceptanceCriteria: z.array(z.string()),
@@ -398,6 +429,8 @@ export const documentCommentSchema = z
     authorLabel: z.string().nullable(),
     resolvedAt: iso.nullable(),
     resolvedById: z.string().nullable(),
+    resolvedByTokenId: z.string().nullable(),
+    resolvedByLabel: z.string().nullable(),
     createdAt: iso,
     updatedAt: iso,
     mentionedUserIds: z.array(z.string()),
@@ -437,6 +470,22 @@ export const workspaceClaimsListSchema = z
   .object({ workspaceId: z.string(), claims: z.array(documentClaimWithDocSchema) })
   .strict();
 
+export const activePlanningDocSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    path: z.string(),
+    status: documentStatusSchema,
+    updatedAt: iso,
+    workflowStatus: z.string().nullable(),
+    reviewRound: z.number().nullable(),
+    leadAgent: z.string().nullable(),
+    reviewAgent: z.string().nullable(),
+    openCommentCount: z.number(),
+    activeClaim: taskPacketActiveClaimSchema.nullable(),
+  })
+  .strict();
+
 export const dashboardStatsSchema = z
   .object({
     workspaceId: z.string(),
@@ -473,6 +522,7 @@ export const dashboardStatsSchema = z
         .strict(),
     ),
     recentActivity: z.array(activityEventSchema),
+    activePlanning: z.array(activePlanningDocSchema),
     topFolders: z.array(
       z
         .object({
@@ -529,6 +579,8 @@ export const writeResultSchema = z
     noOp: z.boolean().optional(),
   })
   .strict();
+
+export const decisionAddResponseSchema = writeResultSchema.extend({ decision: decisionSchema }).strict();
 
 export const documentRenameSchema = z.object({ id: z.string(), path: z.string() }).strict();
 export const documentMoveSchema = z.object({ id: z.string(), folderId: z.string(), path: z.string() }).strict();
@@ -635,6 +687,18 @@ export const revisionDetailSchema = z
       })
       .strict(),
     document: z.object({ id: z.string(), currentTitle: z.string() }).strict(),
+  })
+  .strict();
+
+export const documentDiffSchema = z
+  .object({
+    documentId: z.string(),
+    fromVersion: z.string(),
+    toVersion: z.string(),
+    unified: z.string(),
+    added: z.number(),
+    removed: z.number(),
+    unchanged: z.number(),
   })
   .strict();
 

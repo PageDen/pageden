@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { writeAuditEvent } from "../audit.js";
-import { authenticate, requireAuth, requireTokenScope, type AuthContext } from "../auth.js";
+import { authenticate, requireTokenScope, type AuthContext } from "../auth.js";
 import { checksum as computeChecksum } from "../checksum.js";
 import { lockFolderTree } from "../db.js";
 import { env } from "../env.js";
@@ -11,12 +11,13 @@ import { buildWorkspaceResolver } from "../permissions/resolver.js";
 import { buildDocumentPath, buildFolderPath, isValidSlug } from "../paths.js";
 import { prisma } from "../prisma.js";
 import { readContent, writeContent } from "../storage.js";
-import { applyDocumentWrite, buildHandoffPacket, metadataFromContent, searchTextFor } from "../documents/routes.js";
+import { applyDocumentWrite, buildHandoffPacket, documentContentWithStatus, metadataFromContent, promoteDocumentToCanonical, searchTextFor } from "../documents/routes.js";
 import { searchDocuments as runSearchDocuments, SEARCH_QUERY_MAX, type SearchDocumentsResult } from "../search/service.js";
-import { extractDecisions, extractSections, findSection, implementationReadinessFor } from "../documents/handoff.js";
+import { extractDecisions, extractSections, findSection, implementationReadinessFor, taskPacketFor, type Decision } from "../documents/handoff.js";
+import { addDecisionToContent, DecisionWriteError, type DecisionInput } from "../documents/decisions.js";
 import { extractMarkdownHeadings } from "../documents/headings.js";
 import { documentRelationships } from "../documents/relationships.js";
-import { replaceSection, suggestAnchors } from "../documents/sections.js";
+import { findRange, replaceSection, sectionRanges, suggestAnchors } from "../documents/sections.js";
 import { brokenLinkExplanation, lintWikilinks, rewriteWikilinks, type RewriteReplacement } from "../documents/wikilinks.js";
 import { documentStatsFor } from "../documents/stats.js";
 import { documentDiffFor } from "../documents/diff.js";
@@ -275,8 +276,27 @@ const toolDefinitions = [
         content: { type: "string" },
         createFolders: { type: "boolean", description: "Create missing folders along the path." },
         baseVersion: { type: "string", description: "Optional conflict guard when updating an existing document." },
+        allowDraft: { type: "boolean", description: "Allow updating a status: draft document. Superseded and archived documents remain protected." },
       },
       required: ["path", "title", "content"],
+    },
+  },
+  {
+    name: "pageden_start_planning_workflow",
+    description: "Create a draft multi-agent planning document from Pageden's standard review-loop template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        path: { type: "string", description: "Markdown path such as strategy/example-agent-plan.md." },
+        title: { type: "string" },
+        goal: { type: "string" },
+        context: { type: "string" },
+        leadAgentLabel: { type: "string" },
+        reviewAgentLabel: { type: "string" },
+        createFolders: { type: "boolean", description: "Create missing folders along the path." },
+      },
+      required: ["path", "title", "goal"],
     },
   },
   {
@@ -316,6 +336,7 @@ const toolDefinitions = [
         baseVersion: { type: "string" },
         content: { type: "string" },
         title: { type: "string" },
+        allowDraft: { type: "boolean", description: "Allow replacing status: draft documents. Superseded and archived documents remain protected." },
       },
       required: ["documentId", "baseVersion", "content"],
     },
@@ -330,6 +351,70 @@ const toolDefinitions = [
         path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
         workspaceId: { type: "string", description: "Required when using path unless the agent token is workspace-bound." },
       },
+    },
+  },
+  {
+    name: "pageden_finalize_plan",
+    description: "Safely finalize a multi-agent planning draft by verifying blockers, recording the accepted final decision, setting workflowStatus accepted, and promoting it to canonical.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        finalDecisionText: { type: "string", description: "Decision text for the final-plan accepted decision when it is not already present." },
+        reason: { type: "string", description: "Reason for the final-plan accepted decision when it is not already present." },
+        owner: { type: "string", description: "Human or agent label responsible for the final decision. Defaults to leadAgent or token name." },
+      },
+      required: ["baseVersion"],
+    },
+  },
+  {
+    name: "pageden_review_plan",
+    description: "Submit structured review feedback for a multi-agent planning document. Adds comments by default and only applies safe section edits or proposed decisions when mode is comments_and_safe_edits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string", description: "Alternative to documentId — resolves to a document by path within the workspace." },
+        baseVersion: { type: "string", description: "DocumentRevision id the reviewer inspected; checked before comments or edits are written." },
+        summary: { type: "string", description: "Overall review summary." },
+        strengths: { type: "array", items: { type: "string" }, description: "Positive findings to add as review-note comments." },
+        risks: { type: "array", items: { type: "string" }, description: "Risks or concerns to add as comments on the Risks section." },
+        blockingQuestions: { type: "array", items: { type: "string" }, description: "Blocking questions to add as comments on the Open Questions section." },
+        suggestedSectionEdits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              anchor: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["anchor", "content"],
+          },
+          description: "Safe section replacements to apply only in comments_and_safe_edits mode.",
+        },
+        decisionRecommendations: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              status: { type: "string" },
+              owner: { type: "string" },
+              decision: { type: "string" },
+              reason: { type: "string" },
+              replaces: { type: "string" },
+            },
+            required: ["id", "decision", "reason"],
+          },
+          description: "Proposed decisions to add only in comments_and_safe_edits mode.",
+        },
+        mode: { type: "string", enum: ["comments_only", "comments_and_safe_edits"], description: "Defaults to comments_only." },
+      },
+      required: ["baseVersion"],
     },
   },
   {
@@ -358,6 +443,7 @@ const toolDefinitions = [
         anchor: { type: "string", description: "Heading anchor (e.g. 'acceptance-criteria') or human-readable heading text." },
         content: { type: "string", description: "New Markdown body for that section. Heading line is preserved by the server." },
         baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        allowDraft: { type: "boolean", description: "Allow replacing a section in a status: draft document. Superseded and archived documents remain protected." },
         mode: { type: "string", enum: ["strict", "lenient"], description: "Reserved for future per-section drift detection. Today both behave the same as the global baseVersion check." },
       },
       required: ["anchor", "content", "baseVersion"],
@@ -376,8 +462,11 @@ const toolDefinitions = [
           type: "string",
           description: "Heading anchor (e.g. \"acceptance-criteria\") or human-readable heading text.",
         },
+        anchor: {
+          type: "string",
+          description: "Alias for heading. Prefer this when targeting a known heading anchor.",
+        },
       },
-      required: ["heading"],
     },
   },
   {
@@ -402,6 +491,27 @@ const toolDefinitions = [
         documentId: { type: "string" },
         path: { type: "string" },
       },
+    },
+  },
+  {
+    name: "pageden_add_decision",
+    description: "Append one structured `:::decision` block to a document's Decisions section with duplicate-id validation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspaceId: { type: "string" },
+        documentId: { type: "string" },
+        path: { type: "string" },
+        baseVersion: { type: "string", description: "DocumentRevision id the caller last saw; conflict-detected against the live version." },
+        id: { type: "string", description: "Stable decision id, e.g. final-plan or auth-storage-choice." },
+        status: { type: "string", description: "Decision status, e.g. proposed, accepted, superseded." },
+        owner: { type: "string", description: "Human or agent label responsible for this decision." },
+        decision: { type: "string", description: "The actual decision made." },
+        reason: { type: "string", description: "Why this decision was made." },
+        replaces: { type: "string", description: "Optional decision id this supersedes." },
+        allowDraft: { type: "boolean", description: "Allow adding a decision to a status: draft document. Superseded and archived documents remain protected." },
+      },
+      required: ["baseVersion", "id", "status", "owner", "decision", "reason"],
     },
   },
   {
@@ -637,14 +747,18 @@ const toolAnnotations: Record<string, McpToolAnnotations> = {
   pageden_request_attachment_upload: writeTool("Request attachment upload URL"),
   pageden_create_folder: writeTool("Create folder"),
   pageden_upsert_document_by_path: writeTool("Upsert document by path", { destructive: true }),
+  pageden_start_planning_workflow: writeTool("Start planning workflow"),
   pageden_import_markdown_tree: writeTool("Import Markdown tree", { destructive: true }),
   pageden_update_document: writeTool("Update document", { destructive: true }),
   pageden_mark_document_canonical: writeTool("Mark document canonical"),
+  pageden_finalize_plan: writeTool("Finalize planning document", { destructive: true }),
+  pageden_review_plan: writeTool("Review planning document"),
   pageden_append_to_document: writeTool("Append to document"),
   pageden_replace_section: writeTool("Replace document section", { destructive: true }),
   pageden_read_section: readOnlyTool("Read document section"),
   pageden_get_task_packet: readOnlyTool("Get task packet"),
   pageden_list_decisions: readOnlyTool("List decisions"),
+  pageden_add_decision: writeTool("Add decision", { destructive: true }),
   pageden_document_relationships: readOnlyTool("Show document relationships"),
   pageden_doc_stats: readOnlyTool("Show document stats"),
   pageden_diff: readOnlyTool("Show document diff"),
@@ -715,7 +829,7 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/mcp", async (request, reply) => {
-    const auth = await authenticate(request);
+    const auth = await authenticate(request, { preferBearer: true });
     if (auth) {
       return reply.send({
         ok: true,
@@ -728,7 +842,8 @@ export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/mcp", async (request, reply) => {
-    const auth = await requireAuth(request);
+    const auth = await authenticate(request, { preferBearer: true });
+    if (!auth) return mcpAuthenticationRequired(request, reply);
     const body = request.body;
     if (Array.isArray(body)) {
       const responses = await Promise.all(body.map((entry) => handleJsonRpc(entry, auth, request)));
@@ -805,7 +920,7 @@ async function handleJsonRpc(
     }
     return rpcError(id, -32601, `Unsupported method: ${msg.method}`);
   } catch (error) {
-    return rpcError(id, -32000, error instanceof Error ? error.message : "MCP tool failed.");
+    return rpcError(id, -32000, error instanceof Error ? error.message : "MCP tool failed.", rpcErrorData(error));
   }
 }
 
@@ -831,14 +946,18 @@ async function callTool(
   else if (name === "pageden_request_attachment_upload") data = await requestAttachmentUpload(auth, args, request);
   else if (name === "pageden_create_folder") data = await createFolder(auth, args, request);
   else if (name === "pageden_upsert_document_by_path") data = await upsertDocumentByPath(auth, args, request);
+  else if (name === "pageden_start_planning_workflow") data = await startPlanningWorkflow(auth, args, request);
   else if (name === "pageden_import_markdown_tree") data = await importMarkdownTree(auth, args, request);
   else if (name === "pageden_update_document") data = await updateDocument(auth, args, request);
   else if (name === "pageden_mark_document_canonical") data = await markDocumentCanonical(auth, args, request);
+  else if (name === "pageden_finalize_plan") data = await finalizePlanByMcp(auth, args, request);
+  else if (name === "pageden_review_plan") data = await reviewPlanByMcp(auth, args, request);
   else if (name === "pageden_append_to_document") data = await appendToDocument(auth, args, request);
   else if (name === "pageden_replace_section") data = await replaceSectionByMcp(auth, args, request);
   else if (name === "pageden_read_section") data = await readSection(auth, args);
   else if (name === "pageden_get_task_packet") data = await getTaskPacket(auth, args);
   else if (name === "pageden_list_decisions") data = await listDecisions(auth, args);
+  else if (name === "pageden_add_decision") data = await addDecisionByMcp(auth, args, request);
   else if (name === "pageden_document_relationships") data = await documentRelationshipsHandler(auth, args);
   else if (name === "pageden_doc_stats") data = await docStatsHandler(auth, args);
   else if (name === "pageden_diff") data = await docDiffHandler(auth, args);
@@ -1205,7 +1324,8 @@ function anchorForMcp(value: string): string {
 }
 
 async function readSection(auth: AuthContext, args: Record<string, unknown>) {
-  const heading = stringParam(args, "heading");
+  const heading = maybeString(args.heading) ?? maybeString(args.anchor);
+  if (!heading) throw new Error("heading or anchor is required.");
   // Reuse the same auth/lookup logic as readDocument so permission checks and
   // workspace-binding behave identically; we then narrow the response to the
   // requested section so an agent loads one chunk instead of the whole doc.
@@ -1252,6 +1372,298 @@ async function listDecisions(auth: AuthContext, args: Record<string, unknown>) {
     title: doc.title,
     path: doc.path,
     decisions,
+  };
+}
+
+async function addDecisionByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const baseVersion = stringParam(args, "baseVersion");
+  let added;
+  try {
+    added = addDecisionToContent(current.content, {
+      id: stringParam(args, "id"),
+      status: stringParam(args, "status"),
+      owner: stringParam(args, "owner"),
+      decision: stringParam(args, "decision"),
+      reason: stringParam(args, "reason"),
+      replaces: maybeString(args.replaces) ?? null,
+    });
+  } catch (error) {
+    if (error instanceof DecisionWriteError) {
+      const wrapped: Error & { code?: string; data?: unknown } = new Error(error.message);
+      wrapped.code = error.code;
+      wrapped.data = error.fields;
+      throw wrapped;
+    }
+    throw error;
+  }
+  const outcome = await applyDocumentWrite({
+    documentId: current.id,
+    auth,
+    baseVersion,
+    content: added.body,
+    changeSource: "agent",
+    allowNonCanonical: booleanParam(args.allowDraft) && current.status === "draft",
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      outcome.status === "conflict"
+        ? `Conflict. Current version is ${outcome.currentVersion}.`
+        : outcome.status ?? "Add decision failed.",
+    );
+  }
+  await writeAuditEvent({
+    workspaceId: current.workspaceId,
+    userId: auth.userId,
+    action: "document_decision_added_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version, decisionId: added.decision.id },
+  });
+  return {
+    workspaceId: current.workspaceId,
+    documentId: outcome.documentId,
+    version: outcome.version,
+    checksum: outcome.checksum,
+    updatedAt: outcome.updatedAt?.toISOString(),
+    decision: added.decision,
+    latestChangedSection: { anchor: added.sectionAnchor },
+  };
+}
+
+async function finalizePlanByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "update");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const baseVersion = stringParam(args, "baseVersion");
+  if (current.status !== "draft" && current.status !== "canonical") {
+    throw new Error(`Cannot finalize a ${current.status} document.`);
+  }
+  let nextContent = current.content;
+  const finalDecisionText = maybeString(args.finalDecisionText);
+  if (finalDecisionText && isPlanningSectionPlaceholder(nextContent, "final-plan")) {
+    nextContent = replaceSection(nextContent, "final-plan", `${finalDecisionText.trim()}\n`)?.body ?? nextContent;
+  }
+
+  const comments = await prisma.documentComment.findMany({
+    where: { documentId: current.id, resolvedAt: null },
+    select: { id: true, body: true, sectionAnchor: true },
+    orderBy: { createdAt: "asc" },
+    take: 100,
+  });
+  const packet = taskPacketFor({
+    status: current.status,
+    supersededBy: current.supersededBy,
+    context: documentContext(nextContent),
+    comments,
+  });
+  const blockers: string[] = [];
+  const openCommentCount = packet.openCommentsBySection.reduce((sum, group) => sum + group.count, 0);
+  if (packet.workflow?.workflow !== "multi-agent-planning") blockers.push("Document is not a multi-agent planning workflow.");
+  if (openCommentCount > 0) blockers.push(`${openCommentCount} unresolved comment${openCommentCount === 1 ? "" : "s"} remain.`);
+  if (packet.openQuestions.length > 0) blockers.push(`${packet.openQuestions.length} open question${packet.openQuestions.length === 1 ? "" : "s"} remain.`);
+  if (packet.acceptanceCriteria.length === 0) blockers.push("Acceptance criteria are required before finalization.");
+  for (const section of placeholderPlanningSections(nextContent)) {
+    blockers.push(`${section} section still contains placeholder content.`);
+  }
+
+  const finalDecision = packet.decisions.find((decision) => decision.id === "final-plan");
+  if (finalDecision && finalDecision.status.toLowerCase() !== "accepted") {
+    blockers.push("Decision final-plan already exists but is not accepted.");
+  }
+  if (blockers.length > 0) {
+    const error: Error & { code?: string; data?: unknown } = new Error(`Plan is not ready to finalize: ${blockers.join(" ")}`);
+    error.code = "plan_not_ready";
+    error.data = { blockers };
+    throw error;
+  }
+
+  let decision = finalDecision ?? null;
+  if (!decision) {
+    const owner = maybeString(args.owner) ?? packet.workflow?.leadAgent ?? auth.tokenName ?? "agent";
+    const added = addDecisionToContent(nextContent, {
+      id: "final-plan",
+      status: "accepted",
+      owner,
+      decision: finalDecisionText ?? "This plan is accepted as the current source of truth.",
+      reason: maybeString(args.reason) ?? "Review comments were resolved and remaining open questions were handled or deferred.",
+    });
+    nextContent = added.body;
+    decision = added.decision;
+  }
+  nextContent = documentContentWithStatus(contentWithPlanningWorkflowStatus(nextContent, "accepted"), "canonical");
+
+  const outcome = await applyDocumentWrite({
+    documentId: current.id,
+    auth,
+    baseVersion,
+    content: nextContent,
+    changeSource: "agent",
+    allowNonCanonical: current.status === "draft",
+  });
+  if (!outcome.ok) {
+    throw new Error(
+      outcome.status === "conflict"
+        ? `Conflict. Current version is ${outcome.currentVersion}.`
+        : outcome.status ?? "Finalize plan failed.",
+    );
+  }
+  await writeAuditEvent({
+    workspaceId: current.workspaceId,
+    userId: auth.userId,
+    action: "document_plan_finalized_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: { tokenId: auth.tokenId, tokenName: auth.tokenName, version: outcome.version, decisionId: decision?.id ?? null },
+  });
+  return {
+    workspaceId: current.workspaceId,
+    documentId: outcome.documentId,
+    version: outcome.version,
+    checksum: outcome.checksum,
+    updatedAt: outcome.updatedAt?.toISOString(),
+    status: "canonical",
+    workflowStatus: "accepted",
+    decision,
+    blockers: [],
+  };
+}
+
+async function reviewPlanByMcp(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  requireTokenScope(auth, "create");
+  const mode = parseReviewMode(args.mode);
+  if (mode === "comments_and_safe_edits") requireTokenScope(auth, "update");
+  const current = await readDocument(auth, {
+    workspaceId: args.workspaceId,
+    documentId: args.documentId,
+    path: args.path,
+  });
+  await assertTokenOwnsDocument(auth, current.id);
+  const baseVersion = stringParam(args, "baseVersion");
+  if (current.version !== baseVersion) throw new Error(`Conflict. Current version is ${current.version ?? ""}.`);
+  const context = documentContext(current.content);
+  const packet = taskPacketFor({ status: current.status, supersededBy: current.supersededBy, context, comments: [] });
+  if (packet.workflow?.workflow !== "multi-agent-planning") throw new Error("Document is not a multi-agent planning workflow.");
+
+  const commentsToAdd = reviewCommentsFromArgs(args);
+  const sectionEdits = parseSuggestedSectionEdits(args.suggestedSectionEdits);
+  const decisionInputs = parseDecisionRecommendations(args.decisionRecommendations, auth.tokenName ?? "agent");
+  if (mode === "comments_only" && (sectionEdits.length > 0 || decisionInputs.length > 0)) {
+    throw new Error("suggestedSectionEdits and decisionRecommendations require mode comments_and_safe_edits.");
+  }
+  if (commentsToAdd.length === 0 && sectionEdits.length === 0 && decisionInputs.length === 0) {
+    throw new Error("Review must include summary, strengths, risks, blockingQuestions, suggestedSectionEdits, or decisionRecommendations.");
+  }
+
+  let nextContent = current.content;
+  const changedSections: Array<{ anchor: string }> = [];
+  const decisions: Decision[] = [];
+  const canUpdateDraft = auth.authType !== "token" || Boolean(auth.tokenScopes?.includes("update"));
+  if (canUpdateDraft) {
+    const nextRound = (packet.workflow.reviewRound ?? 0) + 1;
+    nextContent = contentWithPlanningReviewRound(nextContent, nextRound);
+  }
+  if (mode === "comments_and_safe_edits") {
+    for (const edit of sectionEdits) {
+      const spliced = replaceSection(nextContent, edit.anchor, edit.content);
+      if (!spliced) {
+        const error: Error & { code?: string; data?: unknown } = new Error("anchor_not_found");
+        error.code = "anchor_not_found";
+        error.data = { anchor: edit.anchor, suggested: suggestAnchors(nextContent, edit.anchor) };
+        throw error;
+      }
+      nextContent = spliced.body;
+      changedSections.push({ anchor: spliced.anchor });
+    }
+    for (const input of decisionInputs) {
+      try {
+        const added = addDecisionToContent(nextContent, input);
+        nextContent = added.body;
+        decisions.push(added.decision);
+      } catch (error) {
+        if (error instanceof DecisionWriteError) {
+          const wrapped: Error & { code?: string; data?: unknown } = new Error(error.message);
+          wrapped.code = error.code;
+          wrapped.data = error.fields;
+          throw wrapped;
+        }
+        throw error;
+      }
+    }
+  }
+
+  let writeResult: { version: string | null; checksum: string | null } = { version: current.version, checksum: current.checksum };
+  if (nextContent !== current.content) {
+    const outcome = await applyDocumentWrite({
+      documentId: current.id,
+      auth,
+      baseVersion,
+      content: nextContent,
+      changeSource: "agent",
+      allowNonCanonical: current.status === "draft",
+    });
+    if (!outcome.ok) {
+      throw new Error(
+        outcome.status === "conflict"
+          ? `Conflict. Current version is ${outcome.currentVersion}.`
+          : outcome.status ?? "Review plan failed.",
+      );
+    }
+    writeResult = { version: outcome.version ?? null, checksum: outcome.checksum ?? null };
+  }
+
+  const comments = [];
+  for (const input of commentsToAdd) {
+    const result = await createComment(auth, current.id, input);
+    if (result.status === "not_found") throw new Error("Document not found.");
+    if (result.status === "validation") throw new Error(result.message);
+    comments.push(result.comment);
+  }
+
+  await writeAuditEvent({
+    workspaceId: current.workspaceId,
+    userId: auth.userId,
+    action: "document_plan_reviewed_by_agent",
+    targetType: "document",
+    targetId: current.id,
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+    metadata: {
+      tokenId: auth.tokenId,
+      tokenName: auth.tokenName,
+      version: writeResult.version,
+      mode,
+      commentCount: comments.length,
+      changedSectionCount: changedSections.length,
+      decisionCount: decisions.length,
+    },
+  });
+
+  return {
+    workspaceId: current.workspaceId,
+    documentId: current.id,
+    version: writeResult.version,
+    checksum: writeResult.checksum,
+    mode,
+    comments,
+    changedSections,
+    decisions,
+    reviewRound: canUpdateDraft ? (packet.workflow.reviewRound ?? 0) + 1 : packet.workflow.reviewRound,
+    recommendedWorkflowStatus: comments.length > 0 ? "revision" : "final-review",
   };
 }
 
@@ -1470,6 +1882,8 @@ async function myUnreadForWorkspace(auth: AuthContext, workspaceId: string, limi
       updatedAt: doc.updatedAt.toISOString(),
       lastReadAt: doc.lastReadAt ? doc.lastReadAt.toISOString() : null,
       lastReadVersion: doc.lastReadVersion,
+      unreadCommentCount: doc.unreadCommentCount,
+      latestUnreadCommentAt: doc.latestUnreadCommentAt ? doc.latestUnreadCommentAt.toISOString() : null,
     }));
 }
 
@@ -1937,36 +2351,6 @@ async function createDocument(auth: AuthContext, args: Record<string, unknown>, 
   }
 }
 
-function documentContentWithStatus(content: string, status: "canonical" | "draft" | "superseded" | "archived"): string {
-  const statusLine = `status: ${status}`;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!match) return `---\n${statusLine}\n---\n\n${content}`;
-
-  const rawFrontmatter = match[1] ?? "";
-  const body = content.slice(match[0].length);
-  const lines = rawFrontmatter.split(/\r?\n/);
-  const kept: string[] = [];
-  let skippingKey: string | null = null;
-
-  for (const line of lines) {
-    const keyMatch = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (keyMatch) {
-      const key = keyMatch[1]!.toLowerCase();
-      skippingKey = key === "status" || key === "supersededby" ? key : null;
-      if (key === "status" || key === "supersededby") continue;
-    } else if (skippingKey && /^\s*-\s+/.test(line)) {
-      continue;
-    } else {
-      skippingKey = null;
-    }
-    kept.push(line);
-  }
-
-  const cleaned = kept.filter((line, index, arr) => line.trim() || arr[index - 1]?.trim() || arr[index + 1]?.trim());
-  cleaned.unshift(statusLine);
-  return `---\n${cleaned.join("\n").trim()}\n---\n\n${body.replace(/^\s+/, "")}`;
-}
-
 async function markDocumentCanonical(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
   requireTokenScope(auth, "update");
   let documentId = maybeString(args.documentId);
@@ -1984,37 +2368,14 @@ async function markDocumentCanonical(auth: AuthContext, args: Record<string, unk
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
-    select: { id: true, workspaceId: true, currentVersionId: true, currentChecksum: true, updatedAt: true, status: true, supersededById: true },
+    select: { id: true, workspaceId: true },
   });
   if (!doc) throw new Error("Document not found.");
-  if (doc.status === "canonical" && doc.supersededById === null) {
-    return {
-      workspaceId: doc.workspaceId,
-      ok: true,
-      documentId: doc.id,
-      version: doc.currentVersionId ?? "",
-      checksum: doc.currentChecksum ?? "",
-      updatedAt: doc.updatedAt.toISOString(),
-      noOp: true,
-    };
-  }
 
-  let content = "";
-  if (doc.currentVersionId) {
-    const revision = await prisma.documentRevision.findUnique({
-      where: { id: doc.currentVersionId },
-      select: { storageKey: true },
-    });
-    if (revision) content = await readContent(revision.storageKey);
-  }
-
-  const outcome = await applyDocumentWrite({
+  const outcome = await promoteDocumentToCanonical({
     documentId: doc.id,
     auth,
-    baseVersion: doc.currentVersionId ?? "",
-    content: documentContentWithStatus(content, "canonical"),
     changeSource: "agent",
-    allowNonCanonical: true,
   });
   if (!outcome.ok) {
     throw new Error(
@@ -2192,6 +2553,7 @@ async function upsertDocumentByPath(auth: AuthContext, args: Record<string, unkn
   const content = stringParamAllowEmpty(args, "content");
   const createFolders = args.createFolders === true;
   const baseVersion = maybeString(args.baseVersion);
+  const allowDraft = booleanParam(args.allowDraft);
   return upsertDocumentAtPath({
     auth,
     workspaceId,
@@ -2200,8 +2562,40 @@ async function upsertDocumentByPath(auth: AuthContext, args: Record<string, unkn
     createFolders,
     mode: "upsert",
     baseVersion,
+    allowDraft,
     request,
   });
+}
+
+async function startPlanningWorkflow(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
+  const workspaceId = await resolveWorkspaceId(auth, maybeString(args.workspaceId), request);
+  const path = stringParam(args, "path");
+  const title = stringParam(args, "title").trim();
+  const goal = stringParam(args, "goal").trim();
+  const context = maybeString(args.context) ?? "";
+  const leadAgentLabel = maybeString(args.leadAgentLabel) ?? auth.tokenName ?? "lead-agent";
+  const reviewAgentLabel = maybeString(args.reviewAgentLabel) ?? "review-agent";
+  const parsed = parseMarkdownPath(path, title);
+  const content = planningWorkflowTemplate({ title, goal, context, leadAgentLabel, reviewAgentLabel });
+  const result = await upsertDocumentAtPath({
+    auth,
+    workspaceId,
+    parsed,
+    content,
+    createFolders: args.createFolders === true,
+    mode: "create_only",
+    request,
+  });
+  return {
+    ...result,
+    workflow: "multi-agent-planning",
+    workflowStatus: result.action === "created" ? "drafting" : null,
+    reviewRound: result.action === "created" ? 0 : null,
+    suggestedNextCall:
+      result.action === "created"
+        ? "pageden_claim_document with note 'Drafting initial plan', then pageden_replace_section with allowDraft=true as the plan develops."
+        : "Read the existing document and continue the current workflow state.",
+  };
 }
 
 async function importMarkdownTree(auth: AuthContext, args: Record<string, unknown>, request: FastifyRequest) {
@@ -2241,6 +2635,7 @@ async function importMarkdownTree(auth: AuthContext, args: Record<string, unknow
         content: file.content,
         createFolders: true,
         mode,
+        allowDraft: false,
         request,
       });
       if (result.action === "created") report.createdDocuments.push(result.path);
@@ -2279,6 +2674,7 @@ async function upsertDocumentAtPath({
   createFolders,
   mode,
   baseVersion,
+  allowDraft = false,
   request,
 }: {
   auth: AuthContext;
@@ -2288,11 +2684,12 @@ async function upsertDocumentAtPath({
   createFolders: boolean;
   mode: UpsertMode;
   baseVersion?: string;
+  allowDraft?: boolean;
   request: FastifyRequest;
 }) {
   const existing = await prisma.document.findFirst({
     where: { workspaceId, path: parsed.documentPath, deletedAt: null },
-    select: { id: true, title: true, path: true, currentVersionId: true, currentChecksum: true },
+    select: { id: true, title: true, path: true, currentVersionId: true, currentChecksum: true, status: true },
   });
   const sum = computeChecksum(content);
 
@@ -2321,6 +2718,7 @@ async function upsertDocumentAtPath({
       content,
       title: parsed.documentTitle,
       changeSource: "agent",
+      allowNonCanonical: allowDraft && existing.status === "draft",
     });
     if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
     await writeAuditEvent({
@@ -2398,9 +2796,16 @@ async function upsertDocumentAtPath({
       const revision = await tx.documentRevision.create({
         data: { documentId: doc.id, versionNumber: 1, storageKey, checksum: sum, createdById: auth.userId, changeSource: "agent", contributorIds: [auth.userId] },
       });
+      const metadata = await metadataFromContent(tx, workspaceId, content, doc.id);
       const updated = await tx.document.update({
         where: { id: doc.id },
-        data: { currentVersionId: revision.id, currentChecksum: sum, searchText: searchTextFor(content) },
+        data: {
+          currentVersionId: revision.id,
+          currentChecksum: sum,
+          searchText: searchTextFor(content),
+          status: metadata.status,
+          supersededById: metadata.supersededById,
+        },
       });
       await writeAuditEvent(
         {
@@ -2610,6 +3015,105 @@ function slugifyImportPath(value: string): string {
   return slug || "untitled";
 }
 
+function planningWorkflowTemplate({
+  title,
+  goal,
+  context,
+  leadAgentLabel,
+  reviewAgentLabel,
+}: {
+  title: string;
+  goal: string;
+  context: string;
+  leadAgentLabel: string;
+  reviewAgentLabel: string;
+}) {
+  const cleanTitle = stripNul(title.trim() || "Multi-Agent Plan");
+  const cleanGoal = stripNul(goal.trim());
+  const cleanContext = stripNul(context.trim());
+  return [
+    "---",
+    "status: draft",
+    "docType: plan",
+    "workflow: multi-agent-planning",
+    "workflowStatus: drafting",
+    "reviewRound: 0",
+    `leadAgent: ${yamlScalar(leadAgentLabel)}`,
+    `reviewAgent: ${yamlScalar(reviewAgentLabel)}`,
+    "---",
+    "",
+    `# ${cleanTitle}`,
+    "",
+    "## Goal",
+    "",
+    cleanGoal,
+    "",
+    "## Context",
+    "",
+    cleanContext || "TBD.",
+    "",
+    "## Assumptions",
+    "",
+    "- TBD.",
+    "",
+    "## Proposed Plan",
+    "",
+    "- TBD.",
+    "",
+    "## Risks",
+    "",
+    "- TBD.",
+    "",
+    "## Open Questions",
+    "",
+    "- TBD.",
+    "",
+    "## Agent Review Notes",
+    "",
+    "- Awaiting initial review.",
+    "",
+    "## Decisions",
+    "",
+    ":::decision",
+    "id: plan-status",
+    "status: proposed",
+    `owner: ${decisionScalar(leadAgentLabel)}`,
+    "",
+    "decision: Initial plan drafted; awaiting review.",
+    "reason: The reviewer has not completed review yet.",
+    ":::",
+    "",
+    "## Final Plan",
+    "",
+    "TBD.",
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- TBD.",
+    "",
+    "## Next Steps",
+    "",
+    "- Claim the document and complete the proposed plan.",
+    "- Move workflowStatus to review when ready for reviewer comments.",
+    "",
+  ].join("\n");
+}
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(stripNul(value.trim() || "agent"));
+}
+
+function decisionScalar(value: string): string {
+  return stripNul(value.trim() || "agent").replace(/\s+/g, " ").slice(0, 120);
+}
+
+async function documentStatusForDraftWrite(auth: AuthContext, documentId: string) {
+  const doc = await prisma.document.findFirst({ where: { id: documentId, deletedAt: null }, select: { workspaceId: true, status: true } });
+  if (!doc) throw new Error("Document not found.");
+  if (auth.tokenWorkspaceId && auth.tokenWorkspaceId !== doc.workspaceId) throw new Error("This agent token is bound to another workspace.");
+  return doc.status;
+}
+
 function stripNul(value: string): string {
   // eslint-disable-next-line no-control-regex -- Postgres text/jsonb reject NUL bytes.
   return value.replace(/\u0000/g, "");
@@ -2622,7 +3126,16 @@ async function updateDocument(auth: AuthContext, args: Record<string, unknown>, 
   const content = stringParam(args, "content");
   const title = maybeString(args.title)?.trim();
   await assertTokenOwnsDocument(auth, documentId);
-  const outcome = await applyDocumentWrite({ documentId, auth, baseVersion, content, title, changeSource: "agent" });
+  const currentStatus = await documentStatusForDraftWrite(auth, documentId);
+  const outcome = await applyDocumentWrite({
+    documentId,
+    auth,
+    baseVersion,
+    content,
+    title,
+    changeSource: "agent",
+    allowNonCanonical: booleanParam(args.allowDraft) && currentStatus === "draft",
+  });
   if (!outcome.ok) throw new Error(outcome.status === "conflict" ? `Conflict. Current version is ${outcome.currentVersion}.` : outcome.status ?? "Write failed.");
   const updateWorkspaceId = await workspaceIdForDocument(documentId);
   await writeAuditEvent({
@@ -2702,6 +3215,7 @@ async function replaceSectionByMcp(auth: AuthContext, args: Record<string, unkno
     baseVersion,
     content: spliced.body,
     changeSource: "agent",
+    allowNonCanonical: booleanParam(args.allowDraft) && current.status === "draft",
   });
   if (!outcome.ok) {
     throw new Error(
@@ -2747,8 +3261,18 @@ function rpcResult(id: JsonRpcRequest["id"], result: unknown) {
   return { jsonrpc: "2.0", id, result };
 }
 
-function rpcError(id: JsonRpcRequest["id"], code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
+function rpcError(id: JsonRpcRequest["id"], code: number, message: string, data?: unknown) {
+  return { jsonrpc: "2.0", id, error: data === undefined ? { code, message } : { code, message, data } };
+}
+
+function rpcErrorData(error: unknown): unknown {
+  if (!(error instanceof Error)) return undefined;
+  const coded = error as Error & { code?: unknown; data?: unknown };
+  if (typeof coded.code !== "string" && coded.data === undefined) return undefined;
+  if (coded.data && typeof coded.data === "object" && !Array.isArray(coded.data)) {
+    return { code: coded.code, ...(coded.data as Record<string, unknown>) };
+  }
+  return { code: coded.code, details: coded.data };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -2757,6 +3281,162 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function maybeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+type ReviewMode = "comments_only" | "comments_and_safe_edits";
+type ReviewCommentInput = { body: string; sectionAnchor: string | null };
+
+function parseReviewMode(value: unknown): ReviewMode {
+  if (value === undefined || value === null || value === "") return "comments_only";
+  if (value === "comments_only" || value === "comments_and_safe_edits") return value;
+  throw new Error("mode must be comments_only or comments_and_safe_edits.");
+}
+
+function reviewCommentsFromArgs(args: Record<string, unknown>): ReviewCommentInput[] {
+  const comments: ReviewCommentInput[] = [];
+  const summary = maybeString(args.summary);
+  if (summary) comments.push({ sectionAnchor: "agent-review-notes", body: `Review summary: ${summary}` });
+  for (const strength of stringArrayParam(args.strengths, "strengths")) {
+    comments.push({ sectionAnchor: "agent-review-notes", body: `Strength: ${strength}` });
+  }
+  for (const risk of stringArrayParam(args.risks, "risks")) {
+    comments.push({ sectionAnchor: "risks", body: `Risk: ${risk}` });
+  }
+  for (const question of stringArrayParam(args.blockingQuestions, "blockingQuestions")) {
+    comments.push({ sectionAnchor: "open-questions", body: `Blocking question: ${question}` });
+  }
+  return comments;
+}
+
+function parseSuggestedSectionEdits(value: unknown): Array<{ anchor: string; content: string }> {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("suggestedSectionEdits must be an array.");
+  if (value.length > 20) throw new Error("suggestedSectionEdits is limited to 20 items.");
+  return value.map((item, index) => {
+    const record = asRecord(item);
+    const anchor = maybeString(record.anchor);
+    const content = typeof record.content === "string" ? record.content : undefined;
+    if (!anchor) throw new Error(`suggestedSectionEdits[${index}].anchor is required.`);
+    if (content === undefined || !content.trim()) throw new Error(`suggestedSectionEdits[${index}].content is required.`);
+    return { anchor, content };
+  });
+}
+
+function parseDecisionRecommendations(value: unknown, defaultOwner: string): DecisionInput[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("decisionRecommendations must be an array.");
+  if (value.length > 20) throw new Error("decisionRecommendations is limited to 20 items.");
+  return value.map((item, index) => {
+    const record = asRecord(item);
+    const id = maybeString(record.id);
+    const decision = maybeString(record.decision);
+    const reason = maybeString(record.reason);
+    if (!id) throw new Error(`decisionRecommendations[${index}].id is required.`);
+    if (!decision) throw new Error(`decisionRecommendations[${index}].decision is required.`);
+    if (!reason) throw new Error(`decisionRecommendations[${index}].reason is required.`);
+    return {
+      id,
+      status: maybeString(record.status) ?? "proposed",
+      owner: maybeString(record.owner) ?? defaultOwner,
+      decision,
+      reason,
+      replaces: maybeString(record.replaces) ?? null,
+    };
+  });
+}
+
+function stringArrayParam(value: unknown, name: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array of strings.`);
+  if (value.length > 50) throw new Error(`${name} is limited to 50 items.`);
+  return value.map((item, index) => {
+    if (typeof item !== "string" || !item.trim()) throw new Error(`${name}[${index}] must be a non-empty string.`);
+    return item.trim();
+  });
+}
+
+function contentWithPlanningWorkflowStatus(content: string, workflowStatus: string): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) {
+    return `---${newline}workflow: multi-agent-planning${newline}workflowStatus: ${workflowStatus}${newline}---${newline}${newline}${content}`;
+  }
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const withWorkflow = upsertFrontmatterScalar(raw, "workflow", "multi-agent-planning");
+  const nextFrontmatter = upsertFrontmatterScalar(withWorkflow, "workflowStatus", workflowStatus);
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
+function contentWithPlanningReviewRound(content: string, reviewRound: number): string {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  if (!content.startsWith(`---${newline}`)) {
+    return `---${newline}workflow: multi-agent-planning${newline}reviewRound: ${reviewRound}${newline}---${newline}${newline}${content}`;
+  }
+  const marker = `${newline}---${newline}`;
+  const end = content.indexOf(marker, 3);
+  if (end === -1) return content;
+  const raw = content.slice(3 + newline.length, end);
+  const body = content.slice(end + marker.length);
+  const withWorkflow = upsertFrontmatterScalar(raw, "workflow", "multi-agent-planning");
+  const nextFrontmatter = upsertFrontmatterScalar(withWorkflow, "reviewRound", String(reviewRound));
+  return `---${newline}${nextFrontmatter}${newline}---${newline}${body}`;
+}
+
+function upsertFrontmatterScalar(raw: string, key: string, value: string): string {
+  const lines = raw.split(/\r?\n/);
+  const index = lines.findIndex((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}:`));
+  const nextLine = `${key}: ${value}`;
+  if (index >= 0) {
+    lines[index] = nextLine;
+    return lines.join("\n").trimEnd();
+  }
+  return [...lines, nextLine].join("\n").trimEnd();
+}
+
+const REQUIRED_PLANNING_SECTION_LABELS: Record<string, string> = {
+  "assumptions": "Assumptions",
+  "proposed-plan": "Proposed Plan",
+  "risks": "Risks",
+  "final-plan": "Final Plan",
+  "acceptance-criteria": "Acceptance Criteria",
+};
+
+function placeholderPlanningSections(content: string): string[] {
+  return Object.entries(REQUIRED_PLANNING_SECTION_LABELS)
+    .filter(([anchor]) => isPlanningSectionPlaceholder(content, anchor))
+    .map(([, label]) => label);
+}
+
+function isPlanningSectionPlaceholder(content: string, anchor: string): boolean {
+  const context = documentContext(content);
+  const body = context.body;
+  const lines = body.split("\n");
+  const range = findRange(sectionRanges(body), anchor);
+  if (!range) return true;
+  const sectionBody = lines.slice(range.contentStart, range.contentEnd).join("\n");
+  return isPlaceholderOnly(sectionBody);
+}
+
+function isPlaceholderOnly(value: string): boolean {
+  const normalized = value
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^[-*+]\s+\[[ x]\]\s+/i, "")
+        .replace(/^[-*+]\s+/, "")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+    .join("\n");
+  return normalized === "" || normalized === "tbd" || normalized === "tbd." || normalized === "todo" || normalized === "todo.";
+}
+
+function booleanParam(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1";
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {
