@@ -820,6 +820,80 @@ describe("hosted integration MCP endpoint (POST /integrations/mcp)", () => {
     expect(parsed.results).toBeInstanceOf(Array);
   });
 
+  it("tools/call searches and reads across all workspaces for the linked user", async () => {
+    const { s, auth } = await setupActions();
+
+    for (let i = 0; i < 8; i += 1) {
+      const noisy = await req({
+        method: "POST",
+        url: "/api/documents",
+        cookies: s.adminCookie,
+        payload: {
+          workspaceId: s.ws.id,
+          folderId: s.folderId,
+          title: `Permission Policy ${i}`,
+          slug: `permission-policy-${i}`,
+          content: `# Permission Policy ${i}\nNoise for mission searches.`,
+        },
+      });
+      expect(noisy.statusCode).toBe(201);
+    }
+
+    const ws2 = await createWorkspace("Livro Systems", `livro-${randomUUID().slice(0, 8)}`);
+    await addMember(ws2.id, s.admin.id, "admin");
+    const folder = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: ws2.id, name: "Policies", slug: "policies" },
+    });
+    expect(folder.statusCode).toBe(201);
+    const doc = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: {
+        workspaceId: ws2.id,
+        folderId: folder.json().id,
+        title: "Mission Vision and Core Values",
+        slug: "mission-vision-and-core-values",
+        content: "# Mission Vision and Core Values\nOur mission is to keep company knowledge useful.",
+      },
+    });
+    expect(doc.statusCode).toBe(201);
+    const missionDocId = doc.json().id as string;
+
+    const search = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: mcpCall("tools/call", {
+        name: "pageden_search_documents",
+        arguments: { externalAccountId: "hermes-admin-1", query: "unsa man ang mission sa company?", limit: 5 },
+      }),
+    });
+    expect(search.statusCode).toBe(200);
+    const searchText = (search.json().result.content as Array<{ text: string }>)[0]?.text ?? "";
+    const searchParsed = JSON.parse(searchText) as { results: Array<{ id: string; workspaceId: string; title: string }> };
+    expect(searchParsed.results.some((r) => r.id === missionDocId && r.workspaceId === ws2.id)).toBe(true);
+
+    const read = await req({
+      method: "POST",
+      url: "/integrations/mcp",
+      headers: auth,
+      payload: mcpCall("tools/call", {
+        name: "pageden_read_document",
+        arguments: { externalAccountId: "hermes-admin-1", documentId: missionDocId },
+      }),
+    });
+    expect(read.statusCode).toBe(200);
+    const readText = (read.json().result.content as Array<{ text: string }>)[0]?.text ?? "";
+    const readParsed = JSON.parse(readText) as { id: string; workspaceId: string; content: string };
+    expect(readParsed.id).toBe(missionDocId);
+    expect(readParsed.workspaceId).toBe(ws2.id);
+    expect(readParsed.content).toContain("Our mission is to keep company knowledge useful.");
+  });
+
   it("tools/call returns scope error message when integration lacks documents:read", async () => {
     const { auth } = await createIntegration(["connect:write", "links:read"]);
     const res = await req({
