@@ -179,6 +179,13 @@ export async function registerWorkspaceLogoRoutes(app: FastifyInstance): Promise
       bytes = await readBlob(ws.logoStorageKey);
     } catch (err) {
       if (!(err instanceof StorageNotFoundError)) throw err;
+      // The row pointed at a blob that is no longer in storage. Clearing the columns keeps the
+      // UI coherent, but it also erases the only evidence that a logo was ever uploaded — so log
+      // loudly first. A burst of these means something is deleting live blobs.
+      request.log.warn(
+        { workspaceId: request.params.id, storageKey: ws.logoStorageKey },
+        "workspace logo blob missing from storage; clearing logo columns",
+      );
       await prisma.workspace.updateMany({
         where: { id: request.params.id, logoStorageKey: ws.logoStorageKey },
         data: { logoStorageKey: null, logoContentType: null, logoSha: null },

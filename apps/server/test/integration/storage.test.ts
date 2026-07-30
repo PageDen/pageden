@@ -134,4 +134,22 @@ describe("storage atomicity + orphan sweep", () => {
     expect(existsSync(join(process.env.STORAGE_ROOT!, liveBlob.storageKey))).toBe(true);
     expect(existsSync(join(process.env.STORAGE_ROOT!, deletedBlob.storageKey))).toBe(false);
   });
+
+  it("keeps a workspace logo blob — it is referenced by a column, not an Attachment row", async () => {
+    const s = await baseScenario();
+    const logo = await writeBlob(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"), s.ws.id);
+    await prisma.workspace.update({
+      where: { id: s.ws.id },
+      data: { logoStorageKey: logo.storageKey, logoContentType: "image/svg+xml", logoSha: logo.hex },
+    });
+
+    // No grace period: the sweep must keep this blob because it is referenced, not because it is new.
+    const swept = await sweepOrphanObjects(prisma, 0);
+
+    expect(existsSync(join(process.env.STORAGE_ROOT!, logo.storageKey))).toBe(true);
+    expect(swept.kept).toBeGreaterThanOrEqual(1);
+    // And the pointer survives: the read path clears these columns when the blob is gone.
+    const after = await prisma.workspace.findUnique({ where: { id: s.ws.id }, select: { logoStorageKey: true } });
+    expect(after?.logoStorageKey).toBe(logo.storageKey);
+  });
 });
