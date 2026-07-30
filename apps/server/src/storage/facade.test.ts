@@ -75,6 +75,7 @@ describe("storage facade with an injected backend", () => {
     const fakeClient = {
       documentRevision: { findMany: async () => [{ storageKey: referenced.storageKey }] },
       attachment: { findMany: async () => [] },
+      workspace: { findMany: async () => [] },
     } as never;
 
     const res = await storage.sweepOrphanObjects(fakeClient, 60 * 60 * 1000);

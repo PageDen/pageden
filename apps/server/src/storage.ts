@@ -174,7 +174,19 @@ export async function sweepOrphanObjects(
   );
   const revisions = await client.documentRevision.findMany({ where: { prunedAt: null }, select: { storageKey: true } });
   const attachments = await client.attachment.findMany({ where: { deletedAt: null }, select: { storageKey: true } });
-  const referenced = new Set([...revisions.map((r) => r.storageKey), ...attachments.map((a) => a.storageKey)]);
+  // Profile-style blobs (workspace logos) are written through writeBlob, so their keys match
+  // ATTACHMENT_KEY_RE and the sweep lists them — but they are owned by a column on another table,
+  // not by an Attachment row. Every owner of a content-addressed key must be enumerated here or
+  // the sweep deletes a live blob and the read path 404s a logo the user did upload.
+  const logos = await client.workspace.findMany({
+    where: { logoStorageKey: { not: null } },
+    select: { logoStorageKey: true },
+  });
+  const referenced = new Set([
+    ...revisions.map((r) => r.storageKey),
+    ...attachments.map((a) => a.storageKey),
+    ...logos.map((w) => w.logoStorageKey as string),
+  ]);
   const now = Date.now();
   let removed = 0;
   let kept = 0;
