@@ -430,10 +430,13 @@ describe("REST-mode document action endpoints", () => {
     expect(res.json().results[0]).toHaveProperty("workspaceId");
   });
 
-  it("document-search: 200 fans out across all user workspaces when user is a member of multiple", async () => {
+  // GHSA-fwgr-c6wh-xxff. This endpoint used to fan out across every workspace the linked
+  // user belonged to, while document-read only ever looks in the integration's workspace.
+  // Search must never surface a document read would refuse — not even its path or snippet.
+  it("document-search: stays inside the integration's workspace, matching document-read", async () => {
     const { s, auth } = await setupActions();
 
-    // Add the same user to a second workspace with its own document
+    // The linked user is also an admin of a second workspace the integration knows nothing about.
     const ws2 = await createWorkspace("Second Workspace", `ws2-${randomUUID().slice(0, 8)}`);
     await addMember(ws2.id, s.admin.id, "admin");
     const f2 = await req({
@@ -450,7 +453,18 @@ describe("REST-mode document action endpoints", () => {
       payload: { workspaceId: ws2.id, folderId: f2.json().id, title: "Runbook 2", slug: "runbook-2", content: "# Runbook 2\n" },
     });
     expect(d2.statusCode).toBe(201);
+    const outOfScopeDocId = d2.json().id as string;
 
+    // document-read refuses the out-of-scope document...
+    const read = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", documentId: outOfScopeDocId },
+    });
+    expect(read.statusCode).toBe(404);
+
+    // ...so search must not leak its existence either.
     const res = await req({
       method: "POST",
       url: "/api/integrations/actions/document-search",
@@ -458,12 +472,65 @@ describe("REST-mode document action endpoints", () => {
       payload: { externalProvider: "hermes", externalAccountId: "hermes-admin-1", query: "Runbook" },
     });
     expect(res.statusCode).toBe(200);
-    const { results, errors } = res.json() as { results: Array<{ workspaceId: string }>; errors?: unknown[] };
+    const { results } = res.json() as { results: Array<{ id: string; workspaceId: string }> };
     expect(results).toBeInstanceOf(Array);
-    expect(errors ?? []).toHaveLength(0);
-    const wsIds = new Set(results.map((r) => r.workspaceId));
-    expect(wsIds.has(s.ws.id)).toBe(true);
-    expect(wsIds.has(ws2.id)).toBe(true);
+    // In-scope documents still come back — this is a scope fix, not a shutdown.
+    expect(results.length).toBeGreaterThan(0);
+    expect(new Set(results.map((r) => r.workspaceId))).toEqual(new Set([s.ws.id]));
+    expect(results.some((r) => r.id === outOfScopeDocId)).toBe(false);
+  });
+
+  it("document-search: never returns a document the linked user cannot read", async () => {
+    const { s, auth } = await setupActions();
+
+    // A plain member with no grants on a private folder: document-read denies them.
+    const member = await createUser(`member-${randomUUID()}@t.co`, "Member");
+    await addMember(s.ws.id, member.id, "member");
+    const link = await req({
+      method: "POST",
+      url: "/api/integrations/connect-sessions",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-member-1" },
+    });
+    expect(link.statusCode).toBe(201);
+    const { sessionId, connectUrl } = link.json() as { sessionId: string; connectUrl: string };
+    await confirm(sessionId, tokenFromConnectUrl(connectUrl), member.id);
+
+    const rf = await req({
+      method: "POST",
+      url: "/api/folders",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, name: "Restricted", slug: "restricted" },
+    });
+    expect(rf.statusCode).toBe(201);
+    const rd = await req({
+      method: "POST",
+      url: "/api/documents",
+      cookies: s.adminCookie,
+      payload: { workspaceId: s.ws.id, folderId: rf.json().id, title: "Layoffs", slug: "layoffs", content: "# Layoffs\nzebrafish plan\n" },
+    });
+    expect(rd.statusCode).toBe(201);
+    const restrictedDocId = rd.json().id as string;
+
+    const read = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-read",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-member-1", documentId: restrictedDocId },
+    });
+    expect(read.statusCode).toBe(403);
+
+    const res = await req({
+      method: "POST",
+      url: "/api/integrations/actions/document-search",
+      headers: auth,
+      payload: { externalProvider: "hermes", externalAccountId: "hermes-member-1", query: "zebrafish" },
+    });
+    expect(res.statusCode).toBe(200);
+    const { results } = res.json() as { results: Array<{ id: string; snippet: string | null }> };
+    expect(results.some((r) => r.id === restrictedDocId)).toBe(false);
+    // Not even a snippet: the body must never be excerpted for a denied document.
+    expect(results.some((r) => (r.snippet ?? "").includes("zebrafish"))).toBe(false);
   });
 
   it("document-search: 400 when query is missing", async () => {
