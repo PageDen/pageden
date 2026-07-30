@@ -786,16 +786,17 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
     const limit = clampSearchLimit(request.body.limit, 10);
 
     if (externalAccountId) {
-      // Per-user search — fan-out across all workspaces the linked user belongs to
+      // Per-user search, scoped to the integration's own workspace.
+      //
+      // GHSA-fwgr-c6wh-xxff: this used to fan out across every workspace the linked user
+      // belonged to. document-read looks only in integration.workspaceId and 404s anything
+      // else, so search surfaced path/title/snippet for documents read would deny — an
+      // integration authorized for one workspace could enumerate the user's other ones.
+      // Search must never return what read would refuse, so the two now share this scope.
       const externalProvider = (request.body.externalProvider ?? integration.providerKey).trim();
       const link = await resolveLink(integration, externalProvider, externalAccountId, reply);
       if (!link) return;
 
-      const memberships = await prisma.workspaceMembership.findMany({
-        where: { userId: link.userId },
-        select: { workspaceId: true },
-      });
-      const workspaceIds = memberships.map((m) => m.workspaceId);
       await prisma.externalAccountLink.update({ where: { id: link.id }, data: { lastUsedAt: new Date() } });
 
       // A per-user search is an agent tool call; mirror the MCP path.
@@ -806,40 +807,16 @@ export async function registerIntegrationRoutes(app: FastifyInstance): Promise<v
         { tool_name: "document_search", token_id: null, token_kind: "integration", change_source: "agent", surface: "integration_rest", external_provider: externalProvider },
       );
 
-      if (workspaceIds.length === 1) {
-        const results = await searchDocuments({
-          userId: link.userId,
-          workspaceId: workspaceIds[0]!,
-          query,
-          limit,
-          canonicalOnly: request.body.canonicalOnly ?? false,
-        });
-        return { results: results.map((r) => ({ ...r, workspaceId: workspaceIds[0]! })) };
-      }
-
-      const workspaceNames = await prisma.workspace.findMany({
-        where: { id: { in: workspaceIds } },
-        select: { id: true, name: true },
+      // searchDocuments applies the linked user's own permissions within the workspace, so a
+      // document they cannot read is filtered out before any snippet is built.
+      const results = await searchDocuments({
+        userId: link.userId,
+        workspaceId: integration.workspaceId,
+        query,
+        limit,
+        canonicalOnly: request.body.canonicalOnly ?? false,
       });
-      const nameById = new Map(workspaceNames.map((w) => [w.id, w.name]));
-
-      const settled = await Promise.allSettled(
-        workspaceIds.map((wsId) =>
-          searchDocuments({ userId: link.userId, workspaceId: wsId, query, limit, canonicalOnly: request.body.canonicalOnly ?? false }),
-        ),
-      );
-      const resultGroups: Array<{ workspaceId: string; workspaceName: string; results: SearchDocumentsResult[] }> = [];
-      const errors: { workspaceId: string; reason: string }[] = [];
-      for (let i = 0; i < settled.length; i++) {
-        const outcome = settled[i]!;
-        const wsId = workspaceIds[i]!;
-        if (outcome.status === "fulfilled") {
-          resultGroups.push({ workspaceId: wsId, workspaceName: nameById.get(wsId) ?? wsId, results: outcome.value });
-        } else {
-          errors.push({ workspaceId: wsId, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
-        }
-      }
-      return { results: mergeWorkspaceSearchResults(resultGroups, limit), errors };
+      return { results: results.map((r) => ({ ...r, workspaceId: integration.workspaceId })) };
     }
 
     // Workspace-level search: canonical only, restricted to allowedFolders
